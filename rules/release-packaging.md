@@ -87,6 +87,24 @@ v0.1.0
 - npm 发布到 `https://registry.npmjs.org/`，dist-tag 为 `latest`。
 - npm CI 发布优先使用 trusted publishing / OIDC，不把长期 npm token 写进仓库。
 
+## npm 首次发布和认证
+
+- npm package 不存在时，首个版本必须由 maintainer 用 npm 账号在本机手动发布一次，创建 package ownership。
+- 不要依赖 granular access token 创建首个 npm package；它可能只能访问已有 package，首发会表现为 `404 Not Found` 或权限错误。
+- 首次手动发布前确认账号、registry 和 2FA / security key 状态：
+
+```bash
+npm whoami --registry=https://registry.npmjs.org/
+npm publish --access public --registry=https://registry.npmjs.org/
+```
+
+- 如果 npm CLI 给出 `Authenticate your account at:` 链接，必须在浏览器中完成 npm passkey / security key 认证，再回到终端继续。
+- package 已经存在后，后续 tag 发布可以由 GitHub Actions 自动发布。
+- 临时自动发布可以使用 GitHub secret `NPM_TOKEN`，但 token 必须有 package read/write、all packages 和 Bypass 2FA 权限。
+- npm UI 创建的 granular token 可能只有短期有效期；记录到期时间，到期前轮换。
+- 长期方案优先改用 npm Trusted Publishing / OIDC。配置完成并验证后，删除 `NPM_TOKEN`。
+- token、passkey recovery codes、provider key、`.env` 或 GitHub token 绝不能进入聊天记录、git、workflow 日志或发布包。
+
 ## 禁止行为
 
 - 不在 pull request 中发布 npm。
