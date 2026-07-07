@@ -81,4 +81,9 @@ npm install -g koubo-clip
 npm whoami --registry=https://registry.npmjs.org/
 ```
 
-GitHub Actions 发布优先使用 npm trusted publishing / OIDC。不要把长期 npm token、provider key、`.env` 或 GitHub token 写入仓库或发布包。
+自动发布有两种认证方式：
+
+- 首次发布：创建一个 granular access token，开启 write 权限和 Bypass 2FA，保存为 GitHub 仓库 secret `NPM_TOKEN`，然后推 tag 发布。
+- 长期发布：包存在后，在 npm 包设置里配置 Trusted Publisher，指向 `MarcusYuan/koubo-clip` 的 `release.yml`，然后删除 `NPM_TOKEN`。
+
+不要把长期 npm token、provider key、`.env` 或 GitHub token 写入仓库或发布包。

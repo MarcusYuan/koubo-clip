@@ -128,10 +128,22 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org/
 
+      - run: npm install -g npm@^11.5.1
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+
+      - id: npm_auth
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "mode=token" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=trusted" >> "$GITHUB_OUTPUT"
+          fi
 
       - id: npm_status
         env:
@@ -143,12 +155,18 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish npm
-        if: steps.npm_status.outputs.exists != 'true'
+      - name: Publish npm with token
+        if: steps.npm_status.outputs.exists != 'true' && steps.npm_auth.outputs.mode == 'token'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TAG: ${{ needs.validate.outputs.npm_tag }}
         run: npm publish --access public --tag "$NPM_TAG" --provenance
+
+      - name: Publish npm with trusted publishing
+        if: steps.npm_status.outputs.exists != 'true' && steps.npm_auth.outputs.mode == 'trusted'
+        env:
+          NPM_TAG: ${{ needs.validate.outputs.npm_tag }}
+        run: npm publish --access public --tag "$NPM_TAG"
 
       - name: Create GitHub Release
         env:
