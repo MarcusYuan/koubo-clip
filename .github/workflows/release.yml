@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      npm_tag: ${{ steps.meta.outputs.npm_tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const tag = process.env.GITHUB_REF_NAME;
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const version = pkg.version;
+
+          if (tag !== `v${version}`) {
+            console.error(`Tag ${tag} must match package.json version ${version}.`);
+            process.exit(1);
+          }
+
+          let npmTag = "latest";
+          let prerelease = "false";
+          if (/-beta\.\d+$/.test(version)) {
+            npmTag = "beta";
+            prerelease = "true";
+          } else if (/-rc\.\d+$/.test(version)) {
+            npmTag = "rc";
+            prerelease = "true";
+          } else if (/-/.test(version)) {
+            console.error("Only beta.N and rc.N prerelease versions are supported.");
+            process.exit(1);
+          }
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `npm_tag=${npmTag}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `prerelease=${prerelease}\n`);
+          NODE
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org/
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run typecheck
+
+      - run: bun run test
+
+      - run: bun ./bin/koubo-clip --help
+
+      - run: npm pack --dry-run
+
+  package:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: linux
+          - os: macos-latest
+            artifact: macos
+          - os: windows-latest
+            artifact: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org/
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun ./bin/koubo-clip --help
+
+      - name: Pack CLI
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          PLATFORM: ${{ matrix.artifact }}
+        run: |
+          mkdir -p dist
+          npm pack --json > dist/pack.json
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+          const pack = JSON.parse(fs.readFileSync("dist/pack.json", "utf8"))[0];
+          const target = path.join("dist", `koubo-clip-${process.env.VERSION}-${process.env.PLATFORM}.tgz`);
+          fs.renameSync(pack.filename, target);
+          NODE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koubo-clip-${{ needs.validate.outputs.version }}-${{ matrix.artifact }}
+          path: dist/koubo-clip-${{ needs.validate.outputs.version }}-${{ matrix.artifact }}.tgz
+
+  release:
+    needs:
+      - validate
+      - package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org/
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - id: npm_status
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          if npm view "koubo-clip@${VERSION}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish npm
+        if: steps.npm_status.outputs.exists != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TAG: ${{ needs.validate.outputs.npm_tag }}
+        run: npm publish --access public --tag "$NPM_TAG" --provenance
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          NPM_TAG: ${{ needs.validate.outputs.npm_tag }}
+        run: |
+          notes="npm: koubo-clip@${VERSION} (${NPM_TAG})"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.tgz --clobber
+          else
+            args=(--title "koubo-clip ${VERSION}" --notes "$notes" --verify-tag)
+            if [ "$PRERELEASE" = "true" ]; then
+              args+=(--prerelease)
+            fi
+            gh release create "$TAG" dist/*.tgz "${args[@]}"
+          fi

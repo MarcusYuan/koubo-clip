@@ -29,16 +29,17 @@ main
 
 ## 测试版发布
 
-测试版由 prerelease tag 触发：
+测试版由 prerelease tag 触发。tag 去掉 `v` 后必须等于 `package.json` 里的 `version`：
 
 ```bash
-git tag v0.0.1-beta.1
-git push origin v0.0.1-beta.1
+# package.json: "version": "0.0.2-beta.1"
+git tag v0.0.2-beta.1
+git push origin v0.0.2-beta.1
 ```
 
 行为：
 
-- 校验 tag 版本等于 `package.json` version。
+- 校验 tag 去掉 `v` 后等于 `package.json` version。
 - 运行 typecheck、tests、npm dry-run 和平台 CLI smoke check。
 - 创建 GitHub prerelease。
 - 上传 Windows、Linux、macOS CLI artifacts。
@@ -46,12 +47,12 @@ git push origin v0.0.1-beta.1
 
 dist-tag 规则：
 
-- `v0.0.1-beta.1` -> `npm install -g koubo-clip@beta`
-- `v0.0.1-rc.1` -> `npm install -g koubo-clip@rc`
+- `v0.0.2-beta.1` -> `npm install -g koubo-clip@beta`
+- `v0.0.2-rc.1` -> `npm install -g koubo-clip@rc`
 
 ## 正式发布
 
-正式版由 stable tag 触发：
+正式版由 stable tag 触发。tag 去掉 `v` 后必须等于 `package.json` 里的 `version`：
 
 ```bash
 git tag v0.0.1
@@ -60,7 +61,7 @@ git push origin v0.0.1
 
 行为：
 
-- 校验 tag 版本等于 `package.json` version。
+- 校验 tag 去掉 `v` 后等于 `package.json` version。
 - 运行 typecheck、tests、npm dry-run 和平台 CLI smoke check。
 - 创建 GitHub Release。
 - 上传 Windows、Linux、macOS CLI artifacts。

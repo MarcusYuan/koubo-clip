@@ -60,7 +60,7 @@ v0.0.1-rc.1
 
 测试版 workflow 必须满足：
 
-- tag 版本必须等于 `package.json` version。
+- tag 去掉 `v` 后必须等于 `package.json` version。
 - 先通过 typecheck、tests、npm dry-run 和平台 CLI smoke check。
 - GitHub Release 必须标记为 prerelease。
 - npm 发布到 `https://registry.npmjs.org/`，但不能使用 `latest` dist-tag。
@@ -80,7 +80,7 @@ v0.1.0
 
 正式发布 workflow 必须满足：
 
-- tag 版本必须等于 `package.json` version。
+- tag 去掉 `v` 后必须等于 `package.json` version。
 - 先通过 typecheck、tests、npm dry-run 和平台 CLI smoke check。
 - GitHub Release 不能标记为 prerelease。
 - GitHub Release 上传 Windows、Linux、macOS CLI artifacts。
