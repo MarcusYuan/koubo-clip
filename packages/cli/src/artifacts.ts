@@ -96,6 +96,13 @@ export type MusicRequestSource = "none" | "local" | "minimax" | "freesound" | "p
 export type VisualAssetType = "icon" | "animated_icon" | "lottie" | "ui_component" | "template" | "sticker" | "broll" | "image";
 export type VisualProvider = "iconify" | "lordicon" | "lottie" | "shadcn" | "21st" | "mcp-handoff" | "local" | "url";
 export type VisualRequestStatus = "candidate" | "selected" | "rejected";
+export type ProviderExecutionMode = "standalone" | "platform";
+
+export type ProjectMetadataArtifact = {
+  provider_execution_mode: ProviderExecutionMode;
+  created_at?: string;
+  updated_at?: string;
+};
 
 export type EnrichmentSlot = {
   id: string;
@@ -480,9 +487,22 @@ export type ProductionProposalArtifact = {
 
 export type CommandResult<TCommand extends string, TData> =
   | { ok: true; command: TCommand; data: TData }
-  | { ok: false; command: TCommand; error: { code: string; message: string } };
+  | {
+      ok: false;
+      command: TCommand;
+      error: {
+        code: string;
+        message: string;
+        provider_execution_mode?: ProviderExecutionMode;
+        stage?: string;
+        artifact?: string;
+        remediation?: string;
+        request?: Record<string, unknown>;
+      };
+    };
 
 export const projectArtifacts = {
+  project: "project.json",
   sources: "sources.json",
   materialReport: "material-report.md",
   transcriptJson: "transcript.json",
@@ -520,6 +540,15 @@ export const projectArtifacts = {
   subtitles: "subtitles.srt",
   report: "report.md",
 } as const;
+
+export function parseProjectMetadata(value: unknown): ProjectMetadataArtifact {
+  const obj = record(value, "project metadata");
+  return {
+    provider_execution_mode: providerExecutionMode(obj.provider_execution_mode, "provider_execution_mode"),
+    created_at: obj.created_at === undefined ? undefined : string(obj.created_at, "created_at"),
+    updated_at: obj.updated_at === undefined ? undefined : string(obj.updated_at, "updated_at"),
+  };
+}
 
 export function parseSourcesManifest(value: unknown): SourcesManifest {
   const obj = record(value, "sources manifest");
@@ -1550,6 +1579,11 @@ function visualAssetType(value: unknown, name: string): VisualAssetType {
 function visualProvider(value: unknown, name: string): VisualProvider {
   if (value === "iconify" || value === "lordicon" || value === "lottie" || value === "shadcn" || value === "21st" || value === "mcp-handoff" || value === "local" || value === "url") return value;
   throw new Error(`${name} must be iconify, lordicon, lottie, shadcn, 21st, mcp-handoff, local, or url`);
+}
+
+function providerExecutionMode(value: unknown, name: string): ProviderExecutionMode {
+  if (value === "standalone" || value === "platform") return value;
+  throw new Error(`${name} must be standalone or platform`);
 }
 
 function assetSource(value: unknown, name: string): AssetManifestSource {

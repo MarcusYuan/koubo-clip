@@ -26,7 +26,7 @@ export type VisualCatalogProvider = {
   available: boolean;
   requires_network: boolean;
   requires_key: boolean;
-  status: "available" | "missing_key" | "handoff" | "future";
+  status: "available" | "missing_key" | "handoff" | "future" | "host-managed" | "disabled";
   supported_asset_types: VisualAssetType[];
   notes: string[];
 };
@@ -142,6 +142,79 @@ export function buildVisualCatalog(): VisualCatalogArtifact {
     mcp_handoffs: [
       { id: "shadcn-mcp", label: "shadcn MCP", status: "host_required", notes: ["host agent searches and exports static candidate"] },
       { id: "21st-mcp", label: "21st.dev MCP", status: "host_required", notes: ["host agent supplies source, license/cost risk, and local static export"] },
+    ],
+  };
+}
+
+export function buildPlatformVisualCatalog(): VisualCatalogArtifact {
+  return {
+    version: "1.0",
+    providers: [
+      {
+        id: "iconify",
+        label: "Iconify API",
+        available: false,
+        requires_network: true,
+        requires_key: false,
+        status: "host-managed",
+        supported_asset_types: ["icon"],
+        notes: ["Platform visual capability owns search, download, audit, and provenance"],
+      },
+      {
+        id: "lordicon",
+        label: "Lordicon official API/export",
+        available: false,
+        requires_network: true,
+        requires_key: true,
+        status: "host-managed",
+        supported_asset_types: ["animated_icon", "lottie"],
+        notes: ["Platform visual capability owns search, licensing, download/export, audit, and provenance"],
+      },
+      {
+        id: "lottie",
+        label: "Lottie/dotLottie import",
+        available: false,
+        requires_network: true,
+        requires_key: false,
+        status: "host-managed",
+        supported_asset_types: ["animated_icon", "lottie", "sticker"],
+        notes: ["Host/platform supplies a project-local .json or .lottie asset before CLI import"],
+      },
+      {
+        id: "shadcn",
+        label: "shadcn MCP / compatible registry handoff",
+        available: false,
+        requires_network: true,
+        requires_key: false,
+        status: "host-managed",
+        supported_asset_types: ["ui_component", "template"],
+        notes: ["Host/platform exports a project-local static candidate before CLI import"],
+      },
+      {
+        id: "21st",
+        label: "21st.dev HTTP MCP handoff",
+        available: false,
+        requires_network: true,
+        requires_key: false,
+        status: "host-managed",
+        supported_asset_types: ["ui_component", "template"],
+        notes: ["Host/platform supplies source, license/cost risk, and a project-local static export"],
+      },
+      {
+        id: "rive",
+        label: "Rive",
+        available: false,
+        requires_network: true,
+        requires_key: false,
+        status: "disabled",
+        supported_asset_types: ["animated_icon", "template"],
+        notes: ["future provider; not imported by CLI platform mode"],
+      },
+    ],
+    runtime_allowlist: HYPERFRAMES_DEPENDENCIES.filter((entry) => visualRuntimeDependencyIds.has(entry.id)).map(validateHyperframesCdnDependency),
+    mcp_handoffs: [
+      { id: "shadcn-mcp", label: "shadcn MCP", status: "host_required", notes: ["host/platform searches and exports static candidate before CLI import"] },
+      { id: "21st-mcp", label: "21st.dev MCP", status: "host_required", notes: ["host/platform supplies source, license/cost risk, and local static export"] },
     ],
   };
 }

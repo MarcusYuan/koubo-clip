@@ -3,9 +3,9 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { parseAssetManifest, parseEnrichmentPlan } from "./artifacts";
+import { parseAssetManifest, parseEnrichmentPlan, parseProjectMetadata } from "./artifacts";
 import * as projectApi from "./project";
-import { buildEnrichmentStoryboard, commandExists, createProject, elementCatalogProject, enrichPlanProject, exploreProject, inspectProject, musicAcquireProject, musicCatalogProject, musicReviewProject, normalizeCloudflareWhisperResult, normalizeWhisperJson, proposalProject, renderProject, reviewProject, visualAcquireProject, visualCatalogProject, visualReviewProject } from "./project";
+import { buildEnrichmentStoryboard, commandExists, createProject, elementCatalogProject, enrichPlanProject, exploreProject, inspectProject, musicAcquireProject, musicCatalogProject, musicReviewProject, normalizeCloudflareWhisperResult, normalizeWhisperJson, proposalProject, renderProject, reviewProject, visualAcquireProject, visualCatalogProject, visualReviewProject, visualSearchProject } from "./project";
 
 test("creates, explores, and reviews a source-aware project", async () => {
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-"));
@@ -45,6 +45,402 @@ test("creates, explores, and reviews a source-aware project", async () => {
   expect(reviewMarkdown).toContain("## Original Ranges");
   expect(reviewMarkdown).toContain("confidence=");
   expect(reviewMarkdown).toContain("timing=segment");
+});
+
+test("project provider mode defaults, persists, and rejects mismatches", () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-provider-mode-"));
+  const source = join(dir, "raw.mp4");
+  const standaloneProject = join(dir, "standalone-project");
+  const platformProject = join(dir, "platform-project");
+  const legacyProject = join(dir, "legacy-project");
+  const implicitLegacyProject = join(dir, "implicit-legacy-project");
+  writeFileSync(source, "not real media");
+
+  const standalone = createProject([source], { projectPath: standaloneProject });
+  expect(standalone.ok).toBe(true);
+  if (!standalone.ok) throw new Error(standalone.error.message);
+  expect(standalone.data.provider_mode).toBe("standalone");
+  expect(parseProjectMetadata(JSON.parse(readFileSync(join(standaloneProject, "project.json"), "utf8"))).provider_execution_mode).toBe("standalone");
+
+  const platform = createProject([source], { projectPath: platformProject, providerMode: "platform" });
+  expect(platform.ok).toBe(true);
+  if (!platform.ok) throw new Error(platform.error.message);
+  expect(platform.data.provider_mode).toBe("platform");
+  expect(parseProjectMetadata(JSON.parse(readFileSync(join(platformProject, "project.json"), "utf8"))).provider_execution_mode).toBe("platform");
+
+  const mismatch = elementCatalogProject(platformProject, { providerMode: "standalone" });
+  expect(mismatch.ok).toBe(false);
+  if (mismatch.ok) throw new Error("expected provider mode mismatch");
+  expect(mismatch.error.code).toBe("PROVIDER_MODE_MISMATCH");
+  expect(mismatch.error.provider_execution_mode).toBe("platform");
+  expect(mismatch.error.artifact).toBe("project.json");
+
+  mkdirSync(legacyProject, { recursive: true });
+  const asserted = elementCatalogProject(legacyProject, { providerMode: "platform" });
+  expect(asserted.ok).toBe(true);
+  expect(parseProjectMetadata(JSON.parse(readFileSync(join(legacyProject, "project.json"), "utf8"))).provider_execution_mode).toBe("platform");
+
+  mkdirSync(implicitLegacyProject, { recursive: true });
+  const implicitStandalone = elementCatalogProject(implicitLegacyProject);
+  expect(implicitStandalone.ok).toBe(true);
+  expect(parseProjectMetadata(JSON.parse(readFileSync(join(implicitLegacyProject, "project.json"), "utf8"))).provider_execution_mode).toBe("standalone");
+  const laterPlatform = elementCatalogProject(implicitLegacyProject, { providerMode: "platform" });
+  expect(laterPlatform.ok).toBe(false);
+  if (laterPlatform.ok) throw new Error("expected provider mode mismatch");
+  expect(laterPlatform.error.code).toBe("PROVIDER_MODE_MISMATCH");
+});
+
+test("platform mode explore blocks missing transcript before ASR", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-platform-asr-"));
+  const source = join(dir, "raw.mp4");
+  const project = join(dir, "project");
+  writeFileSync(source, "not real media");
+  createProject([source], { projectPath: project, providerMode: "platform" });
+
+  const explored = await exploreProject(project, { asr: "auto", asrProvider: "whisper-cli", providerMode: "platform" });
+  expect(explored.ok).toBe(false);
+  if (explored.ok) throw new Error("expected platform ASR blocker");
+  expect(explored.error.code).toBe("PLATFORM_PROVIDER_BLOCKED");
+  expect(explored.error.stage).toBe("asr");
+  expect(explored.error.artifact).toBe("transcript.json");
+  expect(explored.error.message).toContain("transcript.json");
+});
+
+test("platform mode blocks music provider acquisition before network", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-platform-music-"));
+  const source = join(dir, "raw.mp4");
+  const project = join(dir, "project");
+  writeFileSync(source, "not real media");
+  createProject([source], { projectPath: project, providerMode: "platform" });
+  writeFileSync(
+    join(project, "music-request.json"),
+    JSON.stringify({ version: "1.0", id: "bed", source: "minimax", reason: "platform should generate music", prompt: "calm bed", target_duration_seconds: 2 }),
+  );
+
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("network should not be called");
+  }) as typeof fetch;
+  try {
+    const acquired = await musicAcquireProject(project, { providerMode: "platform" });
+    expect(acquired.ok).toBe(false);
+    if (acquired.ok) throw new Error("expected music provider blocker");
+    expect(acquired.error.code).toBe("PLATFORM_PROVIDER_BLOCKED");
+    expect(acquired.error.stage).toBe("music-acquire");
+    expect(acquired.error.artifact).toBe("music-request.json");
+    expect(acquired.error.message).toContain("minimax");
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});
+
+test("platform mode music catalog does not expose local provider state", () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-platform-music-catalog-"));
+  const source = join(dir, "raw.mp4");
+  const project = join(dir, "project");
+  const library = join(dir, "secret-library");
+  writeFileSync(source, "not real media");
+  mkdirSync(library, { recursive: true });
+  writeFileSync(join(library, "track.mp3"), "not real audio");
+  createProject([source], { projectPath: project, providerMode: "platform" });
+
+  const oldLibrary = process.env.MUSIC_LIBRARY_DIR;
+  const oldMiniMax = process.env.MINIMAX_API_KEY;
+  process.env.MUSIC_LIBRARY_DIR = library;
+  process.env.MINIMAX_API_KEY = "secret-minimax-value";
+  try {
+    const catalog = musicCatalogProject(project, { providerMode: "platform" });
+    expect(catalog.ok).toBe(true);
+    if (!catalog.ok) throw new Error(catalog.error.message);
+    const text = readFileSync(catalog.data.music_catalog_path, "utf8");
+    expect(text.includes(library)).toBe(false);
+    expect(text.includes("secret-minimax-value")).toBe(false);
+    expect(catalog.data.providers.every((provider) => provider.status === "host-managed")).toBe(true);
+    expect(JSON.parse(text).library.library_dir).toBe("host-managed");
+  } finally {
+    if (oldLibrary === undefined) delete process.env.MUSIC_LIBRARY_DIR;
+    else process.env.MUSIC_LIBRARY_DIR = oldLibrary;
+    if (oldMiniMax === undefined) delete process.env.MINIMAX_API_KEY;
+    else process.env.MINIMAX_API_KEY = oldMiniMax;
+  }
+});
+
+test("platform mode visual search rejects provider download urls", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-download-"));
+  const source = join(dir, "raw.mp4");
+  const project = join(dir, "project");
+  writeFileSync(source, "not real media");
+  createProject([source], { projectPath: project, providerMode: "platform" });
+  writeFileSync(
+    join(project, "visual-request.json"),
+    JSON.stringify({
+      version: "1.0",
+      source_mode: "screen_recording",
+      presentation_intent: "short_form",
+      requests: [
+        {
+          id: "alarm",
+          viewer_job: "show alarm cue",
+          semantic_query: "alarm clock",
+          asset_type: "icon",
+          preferred_sources: ["iconify"],
+          reason: "needs local candidate",
+          selected_candidate_id: "alarm-remote",
+        },
+      ],
+    }),
+  );
+  writeFileSync(
+    join(project, "visual-candidates.json"),
+    JSON.stringify({
+      version: "1.0",
+      candidates: [
+        {
+          id: "alarm-remote",
+          request_id: "alarm",
+          provider: "iconify",
+          asset_type: "icon",
+          title: "alarm remote",
+          semantic_query: "alarm clock",
+          local_path: "handoff.svg",
+          download_url: "https://api.iconify.design/mdi/alarm.svg",
+          license: "MIT",
+          renderable: true,
+          recommended: true,
+          reason: "host did not normalize provider URL away",
+          runtime_dependencies: [],
+        },
+      ],
+      warnings: [],
+    }),
+  );
+
+  const searched = await visualSearchProject(project, { providerMode: "platform" });
+  expect(searched.ok).toBe(false);
+  if (searched.ok) throw new Error("expected visual search blocker");
+  expect(searched.error.code).toBe("PLATFORM_PROVIDER_BLOCKED");
+  expect(searched.error.message).toContain("download_url");
+});
+
+test("platform mode visual catalog does not expose local provider state", () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-catalog-"));
+  const source = join(dir, "raw.mp4");
+  const project = join(dir, "project");
+  writeFileSync(source, "not real media");
+  createProject([source], { projectPath: project, providerMode: "platform" });
+
+  const oldLordicon = process.env.LORDICON_API_KEY;
+  process.env.LORDICON_API_KEY = "secret-lordicon-value";
+  try {
+    const catalog = visualCatalogProject(project, { providerMode: "platform" });
+    expect(catalog.ok).toBe(true);
+    if (!catalog.ok) throw new Error(catalog.error.message);
+    const text = readFileSync(catalog.data.visual_catalog_path, "utf8");
+    expect(text.includes("secret-lordicon-value")).toBe(false);
+    expect(catalog.data.providers.find((provider) => provider.id === "lordicon")?.status).toBe("host-managed");
+    expect(catalog.data.providers.find((provider) => provider.id === "iconify")?.available).toBe(false);
+  } finally {
+    if (oldLordicon === undefined) delete process.env.LORDICON_API_KEY;
+    else process.env.LORDICON_API_KEY = oldLordicon;
+  }
+});
+
+test("platform mode visual search rejects provider source and preview urls", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-source-url-"));
+  const source = join(dir, "raw.mp4");
+  const project = join(dir, "project");
+  writeFileSync(source, "not real media");
+  createProject([source], { projectPath: project, providerMode: "platform" });
+  writeFileSync(
+    join(project, "visual-request.json"),
+    JSON.stringify({
+      version: "1.0",
+      source_mode: "screen_recording",
+      presentation_intent: "short_form",
+      requests: [
+        {
+          id: "alarm",
+          viewer_job: "show alarm cue",
+          semantic_query: "alarm clock",
+          asset_type: "icon",
+          preferred_sources: ["iconify"],
+          reason: "needs local candidate",
+          selected_candidate_id: "alarm-source",
+        },
+      ],
+    }),
+  );
+  writeFileSync(
+    join(project, "visual-candidates.json"),
+    JSON.stringify({
+      version: "1.0",
+      candidates: [
+        {
+          id: "alarm-source",
+          request_id: "alarm",
+          provider: "iconify",
+          asset_type: "icon",
+          title: "alarm source",
+          semantic_query: "alarm clock",
+          local_path: "handoff.svg",
+          source_url: "https://icon-sets.iconify.design/mdi/alarm/",
+          preview_url: "https://api.iconify.design/mdi/alarm.svg",
+          license: "MIT",
+          renderable: true,
+          recommended: true,
+          reason: "host did not normalize provider URLs away",
+          runtime_dependencies: [],
+        },
+      ],
+      warnings: [],
+    }),
+  );
+
+  const searched = await visualSearchProject(project, { providerMode: "platform" });
+  expect(searched.ok).toBe(false);
+  if (searched.ok) throw new Error("expected visual search blocker");
+  expect(searched.error.code).toBe("PLATFORM_PROVIDER_BLOCKED");
+  expect(searched.error.message).toContain("preview_url");
+});
+
+test("platform mode visual search and acquire consume local candidates only", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-"));
+  const source = join(dir, "raw.mp4");
+  const project = join(dir, "project");
+  writeFileSync(source, "not real media");
+  createProject([source], { projectPath: project, providerMode: "platform" });
+  writeFileSync(join(project, "handoff.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10H0z"/></svg>');
+  writeFileSync(
+    join(project, "visual-request.json"),
+    JSON.stringify({
+      version: "1.0",
+      source_mode: "screen_recording",
+      presentation_intent: "short_form",
+      requests: [
+        {
+          id: "alarm",
+          viewer_job: "show alarm cue",
+          semantic_query: "alarm clock",
+          asset_type: "icon",
+          preferred_sources: ["iconify"],
+          reason: "host supplied icon candidate",
+          selected_candidate_id: "alarm-local",
+        },
+      ],
+    }),
+  );
+  writeFileSync(
+    join(project, "visual-candidates.json"),
+    JSON.stringify({
+      version: "1.0",
+      candidates: [
+        {
+          id: "alarm-local",
+          request_id: "alarm",
+          provider: "iconify",
+          asset_type: "icon",
+          title: "alarm local",
+          semantic_query: "alarm clock",
+          local_path: "handoff.svg",
+          license: "MIT",
+          renderable: true,
+          recommended: true,
+          reason: "host wrote local candidate",
+          runtime_dependencies: [],
+        },
+      ],
+      warnings: [],
+    }),
+  );
+
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("network should not be called");
+  }) as typeof fetch;
+  try {
+    const searched = await visualSearchProject(project, { providerMode: "platform" });
+    expect(searched.ok).toBe(true);
+    if (!searched.ok) throw new Error(searched.error.message);
+    expect(searched.data.candidate_count).toBe(1);
+    const acquired = await visualAcquireProject(project, { providerMode: "platform" });
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) throw new Error(acquired.error.message);
+    expect(acquired.data.acquired_count).toBe(1);
+    expect(existsSync(join(project, "assets", "icons", "visual-alarm.svg"))).toBe(true);
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});
+
+test("platform mode visual provider paths return blockers instead of fetching", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-block-"));
+  const source = join(dir, "raw.mp4");
+  const project = join(dir, "project");
+  writeFileSync(source, "not real media");
+  createProject([source], { projectPath: project, providerMode: "platform" });
+  writeFileSync(
+    join(project, "visual-request.json"),
+    JSON.stringify({
+      version: "1.0",
+      source_mode: "screen_recording",
+      presentation_intent: "short_form",
+      requests: [
+        {
+          id: "alarm",
+          viewer_job: "show alarm cue",
+          semantic_query: "alarm clock",
+          asset_type: "icon",
+          preferred_sources: ["iconify"],
+          reason: "needs host candidate",
+          selected_candidate_id: "alarm-remote",
+        },
+      ],
+    }),
+  );
+
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("network should not be called");
+  }) as typeof fetch;
+  try {
+    const searched = await visualSearchProject(project, { providerMode: "platform" });
+    expect(searched.ok).toBe(false);
+    if (searched.ok) throw new Error("expected visual search blocker");
+    expect(searched.error.code).toBe("PLATFORM_PROVIDER_BLOCKED");
+    expect(searched.error.stage).toBe("visual-search");
+
+    writeFileSync(
+      join(project, "visual-candidates.json"),
+      JSON.stringify({
+        version: "1.0",
+        candidates: [
+          {
+            id: "alarm-remote",
+            request_id: "alarm",
+            provider: "iconify",
+            asset_type: "icon",
+            title: "alarm remote",
+            semantic_query: "alarm clock",
+            download_url: "https://api.iconify.design/mdi/alarm.svg",
+            license: "MIT",
+            renderable: true,
+            recommended: true,
+            reason: "remote provider candidate",
+            runtime_dependencies: [],
+          },
+        ],
+        warnings: [],
+      }),
+    );
+    const acquired = await visualAcquireProject(project, { providerMode: "platform" });
+    expect(acquired.ok).toBe(false);
+    if (acquired.ok) throw new Error("expected visual acquire blocker");
+    expect(acquired.error.code).toBe("PLATFORM_PROVIDER_BLOCKED");
+    expect(acquired.error.stage).toBe("visual-acquire");
+    expect(acquired.error.message).toContain("download_url");
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
 });
 
 test("validates and renders a production proposal without creating execution artifacts", async () => {

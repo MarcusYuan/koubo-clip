@@ -84,7 +84,7 @@ Some visual and music capabilities depend on network access, API keys, user-prov
 
 ## Quick Start
 
-After the npm package is published:
+npm install:
 
 ```bash
 npm install -g koubo-clip
@@ -146,7 +146,7 @@ koubo-clip doctor
 
 Install the agent skill:
 
-The examples below use source development commands. After npm installation, replace `bun run koubo-clip --` with `koubo-clip`.
+The examples below use source development commands. After global npm installation, replace `bun run koubo-clip --` with `koubo-clip`.
 
 ```bash
 # Codex: defaults to ~/.agents/skills/koubo-clip
@@ -171,7 +171,7 @@ Overwrite an existing install:
 bun run koubo-clip -- skills install --target codex --force
 ```
 
-The npm package will include `skills/koubo-clip` and HyperFrames sidecar resources. The `koubo-clip` package name is prepared locally; actual publication still requires npm login and a release version.
+The npm package includes `skills/koubo-clip` and HyperFrames sidecar resources. The public package name is `koubo-clip`.
 
 ## skills.sh
 
@@ -372,9 +372,9 @@ Common files in the project directory:
 ## Project Status
 
 - Current version: `0.0.1`.
-- Current package status: preparing for public npm publication.
+- Current package status: published to npm.
 - Current recommended development mode: use Bun from the source repository.
-- npm package: `koubo-clip`; confirm npm login and version before publication.
+- npm package: `koubo-clip`.
 - Visual assets, music, and some provider capabilities depend on network access, API keys, user assets, or host MCP handoff.
 - Rendering depends on FFmpeg, ffprobe, npx, and HyperFrames resources.
 
@@ -393,6 +393,15 @@ Run directly in development:
 ```bash
 bun run koubo-clip -- --help
 ```
+
+### AI-Assisted Development
+
+koubo-clip is also developed with AI tools such as Codex and Claude Code. Before contributing, make your AI tool read the project instructions:
+
+- Codex: use the root `AGENTS.md` as the project instruction entrypoint; it links to the long-lived constraints in `docs/` and `rules/`.
+- Claude Code: create or update a root `CLAUDE.md` from the project section of `AGENTS.md` plus the relevant `docs/` and `rules/`, then start the Claude Code session.
+
+Do not commit local tokens, npm keys, API keys, or personal machine paths to `AGENTS.md`, `CLAUDE.md`, or any other file.
 
 ## License
 

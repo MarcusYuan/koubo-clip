@@ -8,9 +8,10 @@
 
 - `koubo-clip doctor` 环境检查。
 - Project creation 和 canonical output directories。
+- Provider execution mode handling：`standalone` 和 `platform`。
 - FFmpeg/ffprobe probing 和 media metadata。
 - ASR mode handling：`auto`、`off` 和 `external`。
-- 默认线上 ASR adapter：Cloudflare Whisper；显式离线兜底：`whisper-cli`。
+- Standalone 默认线上 ASR adapter：Cloudflare Whisper；显式离线兜底：`whisper-cli`。
 - Transcript ingestion 和 normalization，不受 transcription backend 影响。
 - Transcript timing-granularity labeling：`word`、`segment` 或 `text-only`。
 - Silence、pause、filler、false-start 和 repeat-candidate detection。
@@ -19,8 +20,8 @@
 - Production proposal validation 和 markdown 物化，作为用户确认前的方案面。
 - Edit-plan 和 EDL schema validation。
 - Semantic Focus Planner 的 artifact 物化与校验：focus-candidates、focus-frames、focus-grounding 和 focus-review。
-- Music Acquisition：music-catalog、music-request validation、local library import、network/AI music acquisition、provenance、review artifacts 和 asset-manifest 写入。
-- Visual Acquisition：visual-catalog、visual-request validation、Iconify 搜索和 SVG 下载、Lordicon/Lottie/shadcn/21st handoff 候选导入、SVG sanitization、runtime dependency provenance、review artifacts 和 asset-manifest 写入。
+- Music Acquisition：music-catalog、music-request validation、standalone local library import、standalone network/AI music acquisition、platform landed-asset import/provenance validation、review artifacts 和 asset-manifest 写入。
+- Visual Acquisition：visual-catalog、visual-request validation、standalone Iconify 搜索和 SVG 下载、standalone Lordicon/Lottie/shadcn/21st handoff 候选导入、platform landed candidate/static export import、SVG sanitization、runtime dependency provenance、review artifacts 和 asset-manifest 写入。
 - Enrichment-plan、storyboard、storyboard QA checks 和 asset-manifest validation。
 - Vendored HyperFrames element catalog、registry resolver 和 safe installer。
 - 随 npm package 或内部二进制包作为 sidecar 分发的 HyperFrames resources：registry、HTML fragments、caption themes、字体、SFX、runtime adapters 和示例资源。
@@ -29,6 +30,27 @@
 - 支持 visual enrichment 的 HyperFrames single-composition recut rendering。
 - Artifact inspection 和 report generation。
 - 通过 JSON support commands 向 skills 和 agents 暴露 CLI-owned facts。
+
+## Provider Execution Mode
+
+Provider execution mode 是 project-level governance state，不是 `enrichment-plan.profile`。CLI 应支持：
+
+```bash
+koubo-clip project create <video> --provider-mode standalone
+koubo-clip project create <video> --provider-mode platform
+```
+
+默认 mode 是 `standalone`。Project 创建或摄入后应把 `provider_execution_mode` 写入 project metadata；后续命令显式传 `--provider-mode` 时只能与 project metadata 一致，不一致返回 blocker。需要切换 mode 时新建 project。
+
+`standalone` mode 允许 CLI 在明确的 explore/acquisition commands 中使用用户已配置 provider。`platform` mode 禁止 CLI 主动调用需要 API key、联网、额度、MCP、用户授权、审计或 provider provenance 的外部能力；这些由 host/platform tool fulfillment 负责。CLI 只消费已落地 artifacts、project-relative local paths 或未来 stable workspace refs。
+
+在 `platform` mode 下：
+
+- `project explore --asr auto` 缺少 `transcript.json` 时失败，不调用 Cloudflare Whisper 或 `whisper-cli`。
+- `project music-acquire` 不调用 MiniMax、Freesound、Pixabay；只导入或校验平台已落地音乐 asset。
+- `project visual-search` / `project visual-acquire` 不调用 Iconify、Lordicon、URL download、MCP 或 host handoff provider；只读取平台已写入候选、本地 handoff 文件或 project-local asset。
+- `project render` 和 `project inspect` 继续不联网、不读取 provider key，只消费已校验 artifacts。
+- `doctor` 报告当前 provider execution mode；外部 provider 在 platform mode 下显示为 host-managed 或 disabled，不提示配置 key。
 
 ## CLI 不负责
 
@@ -72,9 +94,9 @@ Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`p
 
 `project element-catalog` 的每个元素应包含 CLI-owned adapter profile，并返回按 source mode 分组的 `recommendations`，以及按 `source_mode × presentation_intent` 分组的 `purpose_recommendations`。Skills 应优先使用 purpose recommendations；只有当用户用途不清楚时才退回 source-mode recommendations，不能在完整 catalog 中盲选。
 
-`--asr-provider whisper-cli` 只用于离线测试或调试。`project music-catalog` 暴露本地曲库和 provider 状态；`project music-acquire` 只能根据 `music-request.json` 获取或生成音乐，并把结果落成 project-local asset；`project music-review` 生成审查面。Music provider calls 只允许在 acquisition commands 中发生，`project render` 禁止联网、禁止读取 API key、禁止消费 provider URL。当前 music commands 不生成 TTS 或旁白，只处理 background music。
+`--asr-provider whisper-cli` 只用于 standalone 离线测试或调试。`project music-catalog` 暴露本地曲库和 provider 状态；`project music-acquire` 在 standalone mode 下根据 `music-request.json` 获取或生成音乐，并把结果落成 project-local asset；在 platform mode 下只摄入平台已 fulfill 的音乐 asset。`project music-review` 生成审查面。Music provider calls 只允许在 standalone acquisition commands 中发生，`project render` 禁止联网、禁止读取 API key、禁止消费 provider URL。当前 music commands 不生成 TTS 或旁白，只处理 background music。
 
-`project visual-catalog` 暴露 CLI-owned Iconify/Lordicon、Lottie/dotLottie import、shadcn/21st handoff 能力和 HyperFrames CDN runtime allowlist；`project visual-search` 校验 `visual-request.json` 并执行 CLI-owned Iconify/Lordicon 搜索或合并 host/MCP handoff 候选；`project visual-acquire` 下载/导入已确认候选，写入 `assets/icons|lottie|visuals|images`、`visual-acquisition.json` 和 `asset-manifest.json`；`project visual-review` 生成审查面。Visual provider calls 只允许在 visual acquisition commands 或 host/MCP handoff 中发生，`project render` 禁止 provider search。
+`project visual-catalog` 暴露 CLI-owned Iconify/Lordicon、Lottie/dotLottie import、shadcn/21st handoff 能力和 HyperFrames CDN runtime allowlist；`project visual-search` 在 standalone mode 下校验 `visual-request.json` 并执行 CLI-owned Iconify/Lordicon 搜索或合并 host/MCP handoff 候选；在 platform mode 下只读取平台已归一化候选。`project visual-acquire` 下载/导入已确认候选，写入 `assets/icons|lottie|visuals|images`、`visual-acquisition.json` 和 `asset-manifest.json`；在 platform mode 下只导入 project-local/local handoff asset。`project visual-review` 生成审查面。Visual provider calls 只允许在 standalone visual acquisition commands 或 host/MCP handoff 中发生，`project render` 禁止 provider search。
 
 ## 合同原则
 
@@ -101,6 +123,17 @@ Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`p
 - Screen-recording focus planning 必须先通过 `focus-candidates`、`focus-frames` 和 `focus-grounding`，再进入 `enrich-plan`；坐标没有 frame evidence 就算无效。
 - Screen-recording risk warnings 是 advisory；invalid timing、missing assets 和 unsafe paths 仍然失败。
 - Asset paths 必须是 project-relative local paths；拒绝 URLs、absolute paths 和 `..`。
+- Platform mode artifacts 不能包含 API key、Bearer token、provider 临时 URL、本机绝对路径或 MCP 原始结果作为 render input。Candidate/review surfaces 可以保留脱敏 provider label、opaque source ref、license/usage note、host audit id、hash 和 attribution。
 - 所有看起来 destructive 的 edits 在 render 前都是虚拟的；永不修改 source video。
 - Output artifacts 必须可恢复、可检查。
 - 如果 skill 需要 CLI-owned timing、layout 或 schema facts，应通过 CLI JSON 暴露，而不是复制 constants 到 skills。
+
+## Blocker Codes
+
+Provider mode 相关失败应使用结构化 blocker，至少包含 `code`、`message`、`provider_execution_mode`、`stage`、`artifact` 和可执行 remediation。最小稳定 codes：
+
+- `PROVIDER_MODE_MISMATCH`: command 或 artifact 与 project mode 冲突。
+- `PLATFORM_PROVIDER_BLOCKED`: platform mode 需要 host/platform fulfillment，CLI 不会触发外部 provider。用 `stage` 区分 `asr`、`music-acquire`、`music-review`、`visual-search` 或 `visual-acquire`，并用 `artifact` 指向缺失或未 fulfill 的 artifact。
+- `UNSAFE_ASSET_REF`: URL、absolute path、Windows drive path、`..` 或非 project-local path 被用作 render asset ref。
+- `RAW_PROVIDER_RESULT_REJECTED`: raw MCP/provider payload 被写入 artifact，而不是归一化 candidate 或 landed-asset metadata。
+- `PROVENANCE_MISSING`: landed asset 缺少最小审计 metadata，例如 provider/source label、license/usage note、hash、type 或 acquired_at。

@@ -10,6 +10,7 @@
 
 ```text
 koubo-clips/<slug>/
+  project.json
   sources.json
   source/
     001-original.<ext>
@@ -74,6 +75,7 @@ koubo-clips/<slug>/
 ## 产物含义
 
 - `material-report.md` 总结输入素材包含什么，以及它可以变成什么。
+- `project.json` 记录 project-level metadata，至少包含 `provider_execution_mode:"standalone"|"platform"`。该字段不是 `enrichment-plan.profile`；同一 project 中不能混用两个 provider execution mode。
 - `sources.json` 记录每个 source video 的 `source_id`、稳定顺序、原始文件名、project-local path、duration 和 probe facts。单 source project 也使用这个 manifest。
 - `transcript.json` 是 machine-readable transcript，包含 source IDs、source-local timings 和明确 timing granularity。
 - `transcript.md` 是 agent/human review surface。
@@ -88,13 +90,13 @@ koubo-clips/<slug>/
 - `focus-grounding.json` 绑定 candidate id、frame id、confidence、coordinate-bearing fields 和 frame evidence。
 - `focus-review.md` 是 enrichment review surface，描述保留、拒绝和仍需确认的 grounded choices。
 - `focus-review.json` 保存对应的 machine-readable review decisions 和 unresolved risks。
-- `music-catalog.json` / `.md` 暴露本地曲库、MiniMax、Freesound 和 Pixabay 的可用性。它不能输出 API key。
-- `music-request.json` 是 agent/user 写入的音乐获取请求，包含来源、用途、mood、target duration、provider、prompt/query 或 local path。AI music 的 prompt 必须是配乐 prompt：background/underscore、纯音乐、no vocals、目标时长和用途要可读；不要把 TTS/旁白提示词放进这里。
+- `music-catalog.json` / `.md` 在 `standalone` mode 下暴露本地曲库、MiniMax、Freesound 和 Pixabay 的可用性；在 `platform` mode 下这些外部 provider 应标记为 host-managed 或 disabled。它不能输出 API key。
+- `music-request.json` 是 agent/user 写入的音乐获取请求，包含来源、用途、mood、target duration、provider、prompt/query 或 local path。AI music 的 prompt 必须是配乐 prompt：background/underscore、纯音乐、no vocals、目标时长和用途要可读；不要把 TTS/旁白提示词放进这里。在 `platform` mode 下它是给平台 music capability 的 request spec，CLI 不据此调用外部 provider。
 - `music-acquisition.json` 是 CLI 写入的实际获取结果，包含 provider、model、prompt/query、duration、hash、license、original_url、cost 和 output asset。
 - `music-review.json` / `.md` 是给用户和 agent 审查的音乐选择面，说明是否建议把获取到的音乐加入 `enrichment-plan.music[]`。
-- `visual-catalog.json` / `.md` 暴露 CLI-owned Iconify/Lordicon、Lottie/dotLottie import、shadcn/21st handoff、Rive future provider，以及 HyperFrames allowlisted runtime dependencies。它不能输出 API key。
-- `visual-request.json` 是 agent/user 写入的视觉素材获取请求，包含 viewer job、semantic query、asset type、preferred sources、用途、可选 timing/zone 和 selected candidate。
-- `visual-candidates.json` / `.md` 保存候选素材，包含 provider、preview/source/download URL 或 local handoff path、license、cost/source risk、runtime dependencies 和推荐理由。候选里允许 provider URL；它们不是 render 输入。
+- `visual-catalog.json` / `.md` 在 `standalone` mode 下暴露 CLI-owned Iconify/Lordicon、Lottie/dotLottie import、shadcn/21st handoff、Rive future provider，以及 HyperFrames allowlisted runtime dependencies；在 `platform` mode 下这些 provider 应标记为 host-managed 或 disabled。它不能输出 API key 或本机 provider 状态。
+- `visual-request.json` 是 agent/user 写入的视觉素材获取请求，包含 viewer job、semantic query、asset type、preferred sources、用途、可选 timing/zone 和 selected candidate。在 `platform` mode 下它是给平台 visual/component capability 的 request spec，CLI 不据此调用 Iconify、Lordicon、URL download 或 MCP。
+- `visual-candidates.json` / `.md` 保存候选素材，包含 provider、preview/source/download URL 或 local handoff path、license、cost/source risk、runtime dependencies 和推荐理由。候选里允许 provider URL；它们不是 render 输入。`platform` mode 下候选应使用平台脱敏后的 provider/source label、opaque source ref 或 project-local handoff path，不保存 API key、Bearer token、provider URL 或 MCP 原始 payload。
 - `visual-acquisition.json` 是 CLI 写入的实际下载或导入结果，包含 provider、asset type、project-local path、hash、license、source_url、original_author、acquired_at、runtime dependencies 和 warnings。
 - `visual-review.json` / `.md` 是给用户和 agent 审查的视觉资产选择面，说明哪个素材建议进入 enrichment，以及来源、授权和 runtime 风险。
 - `edit-plan.json` 包含 agent-reviewed decisions。
@@ -102,7 +104,7 @@ koubo-clips/<slug>/
 - `enrichment-plan.json` 当前主合同是 v1.2 output-timeline `profile` 和 `elements[]`。`elements[]` 可引用 `registry_block`、`registry_component`、`animation_rule`、`caption_identity`、`sfx`、`visual_asset` 或 legacy `generated_asset`。`visual_asset` 必须引用通过 visual acquisition/review 或 manifest provenance 校验的本地 asset。v1.1 `captions/cards/music` 与 legacy v1.0 `slots[]` 可以被接受并归一化为 element usage。
 - `elements[]` 和兼容 `cards[]` 可以包含用于 focus boxes 的 normalized `target_rect`，或用于 callouts 的 `anchor_point`。这些坐标是 output-canvas ratios，必须保持在 `[0,1]` 内。
 - `storyboard.json` 是 CLI-materialized HyperFrames render plan，也是成片 QA checklist 的单一来源。它由 enrichment plan、subtitles、source aspect ratio、asset manifest、visual review 和 music review 生成，并包含 `qa_checks[]`。
-- `asset-manifest.json` 记录 enrichment elements/cards/music 消费的本次 project files 或未来 workspace refs。Provider URLs 不是最终 asset refs；音乐 entry 必须保留 provider/license/prompt/query/hash 等 provenance；外部视觉素材 entry 应保留 provider/source、query 或 prompt、license、source_url/original_url、original_author、acquired_at、hash、runtime_dependencies 和用途说明。视觉 `type` 可为 `icon`、`animated_icon`、`lottie`、`ui_component`、`template`、`sticker`、`broll` 或 `image`。
+- `asset-manifest.json` 记录 enrichment elements/cards/music 消费的本次 project files。V0 的 `path` 必须是 project-relative local path；未来 stable workspace refs 只有在 schema、resolver 和 render materialization 明确实现后才能进入 manifest。Provider URLs 不是最终 asset refs。Standalone mode 的 entry 可以保留 provider/license/prompt/query/source_url/original_url/hash 等 provenance。Platform mode 的 entry 应优先保留平台脱敏 provenance：provider label、opaque source ref、license/usage note、attribution、host audit id、acquired_at、hash、runtime_dependencies 和用途说明，不保存 provider 临时 URL、API key、本机绝对路径或 MCP 原始结果。视觉 `type` 可为 `icon`、`animated_icon`、`lottie`、`ui_component`、`template`、`sticker`、`broll` 或 `image`。
 - `subtitles.srt` 从 transcript timings 和 selected cuts 派生。
 - `renders/clean.mp4` 是 cleaned talking-head video。
 - `.hyperframes/recut/public/index.html` 是生成的 single HyperFrames composition。`public/compositions/` 包含从 vendored HyperFrames registry 安装的 block/component 文件；`public/cards/*.html` 是 v1.1 兼容 card fragments，不是任意 agent-authored HTML。
@@ -114,6 +116,7 @@ koubo-clips/<slug>/
 ## 检查规则
 
 - JSON artifacts 在 schemas 存在后必须能 parse 并匹配 schema。
+- Project metadata 的 `provider_execution_mode` 是 immutable safety boundary。不同 mode 生成的 provider artifacts 不能在另一 mode 下静默复用；需要重新导入、重新校验或新建 project。
 - `transcript.json` 必须声明 timings 是 `word`、`segment` 还是 `text-only`。
 - Text-only transcripts 必须无法通过 precise-cut validation。
 - Source media 永不被覆盖。
@@ -138,12 +141,14 @@ koubo-clips/<slug>/
 - Music 是可选的；存在时不能压过 speech。
 - Music 必须在 final render 前定义 volume/fade/ducking behavior。
 - Music acquisition 可以联网或调用 provider，但 render/inspect 只能消费已落地的 project-local music asset。
+- 在 `platform` mode 下，music acquisition 命令不能触发 MiniMax、Freesound、Pixabay 或其他 provider；缺少已落地音乐 asset 时返回 blocker，要求平台先 fulfill `music-request.json`。
 - `music-acquisition.json` 和 `asset-manifest.json` 不能包含 API key、Bearer token 或未下载的临时 provider URL 作为 asset path。
 - Visual acquisition 可以联网或调用 host MCP、API 或平台工具。它的主路径是互联网语义检索，不是查找长期本地 UI 库。确认后的视觉素材只需要为当前 project 落地或形成稳定 workspace ref，不承担跨 agent 缓存职责。
 - `visual-search` / `visual-acquire` 可以访问 provider；`render` 不能访问 provider。`visual-candidates` 中的 `preview_url`、`source_url`、`download_url` 不能成为最终 asset path。
+- 在 `platform` mode 下，visual search/acquire 命令不能触发 Iconify、Lordicon、URL download、MCP 或 host handoff provider；只能读取平台已写入的候选 metadata、本地 handoff 文件或 project-local asset。
 - SVG/icon assets 必须经过 sanitization。拒绝 `<script>`、`foreignObject`、事件 handler、external href、`javascript:` 和 remote `url()`。
 - Lottie/dotLottie assets 必须是本地 `.json` 或 `.lottie`，并在 manifest/runtime dependency summary 中记录 `lottie_web_5_12_2` 或 `dotlottie_web_0_76_0`。
-- Asset references 必须是 project-relative local paths 或未来显式支持的 stable workspace refs；URLs、absolute paths 和 `..` 无效。
+- Asset references 在 V0 必须是 project-relative local paths。未来 stable workspace refs 只有在 schema、resolver 和 render materialization 明确实现后才允许；URLs、absolute paths 和 `..` 无效。
 - HyperFrames registry 和 render resources 来自 `packages/cli/vendor/hyperframes`。即使上游 mirror 中存在 `SKILL.md` 或目录名包含 `skills`，它们也不是对外 agent skills；agent 只能通过 `skills/koubo-clip` 的 references 和 CLI `element-catalog` 理解并选择元素，不能把任意 HTML/JS 当成 artifact 输入。
 - 除非 render 被跳过，否则应有 final MP4。
 - Multi-source renders 默认按 `sources.json` 顺序；除非 `edit-plan.json` 明确重排 sources。

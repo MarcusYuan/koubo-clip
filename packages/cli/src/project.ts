@@ -24,9 +24,12 @@ import {
   type FocusReviewItem,
   type ProductionProposalArtifact,
   type ProductionProposalOption,
+  type ProjectMetadataArtifact,
+  type ProviderExecutionMode,
   type SourcesManifest,
   type TranscriptArtifact,
   type VisualAcquisitionArtifact,
+  type VisualCandidate,
   type VisualCandidatesArtifact,
   type VisualRequestArtifact,
   type VisualReviewArtifact,
@@ -39,11 +42,14 @@ import {
   parseEditPlan,
   parseEnrichmentPlan,
   parseAnalysis,
+  parseMusicRequest,
   parseProductionProposal,
+  parseProjectMetadata,
   parseReviewPackage,
   parseSourcesManifest,
   parseTranscript,
   parseVisualAcquisition,
+  parseVisualCandidates,
   parseVisualRequest,
   parseVisualReview,
   projectArtifacts,
@@ -78,9 +84,10 @@ import {
   type VendoredHyperframesStats,
 } from "./hyperframes-registry";
 import { acquireMusicAsset, buildMusicReview, renderMusicReviewMarkdown, type MusicAcquisitionArtifact, type MusicReviewArtifact } from "./music/acquire";
-import { buildMusicCatalog, renderMusicCatalogMarkdown, type MusicCatalogArtifact } from "./music/catalog";
+import { buildMusicCatalog, buildPlatformMusicCatalog, renderMusicCatalogMarkdown, type MusicCatalogArtifact } from "./music/catalog";
 import {
   acquireVisualAssets,
+  buildPlatformVisualCatalog,
   buildVisualCatalog,
   buildVisualReview,
   renderVisualCandidatesMarkdown,
@@ -129,6 +136,8 @@ type EnrichmentStoryboard = {
 
 export type ProjectCreateData = {
   project_path: string;
+  project_metadata_path: string;
+  provider_mode: ProviderExecutionMode;
   sources_path: string;
   source_count: number;
 };
@@ -431,15 +440,17 @@ export type InspectionRisk = {
 
 export type AsrMode = "auto" | "off" | "external";
 export type AsrProvider = "cloudflare-whisper" | "whisper-cli";
+export type ProviderModeOption = { providerMode?: ProviderExecutionMode };
 
 const CUT_PADDING_SECONDS = 0.05;
 
 export function createProject(
   inputPaths: string[],
-  options: { projectPath?: string } = {},
+  options: { projectPath?: string; providerMode?: ProviderExecutionMode } = {},
 ): CommandResult<"project.create", ProjectCreateData> {
   try {
     if (inputPaths.length === 0) throw new Error("project create requires at least one video");
+    const providerMode = options.providerMode ?? "standalone";
     const projectPath = options.projectPath ?? defaultProjectPath(inputPaths[0]);
     if (existsSync(projectPath)) throw new Error(`project already exists: ${projectPath}`);
     mkdirSync(join(projectPath, "source"), { recursive: true });
@@ -470,8 +481,9 @@ export function createProject(
     });
 
     const sourcesPath = join(projectPath, projectArtifacts.sources);
+    const projectMetadataPath = writeProjectMetadata(projectPath, providerMode);
     writeJson(sourcesPath, { sources });
-    return ok("project.create", { project_path: projectPath, sources_path: sourcesPath, source_count: sources.length });
+    return ok("project.create", { project_path: projectPath, project_metadata_path: projectMetadataPath, provider_mode: providerMode, sources_path: sourcesPath, source_count: sources.length });
   } catch (error) {
     return fail("project.create", "PROJECT_CREATE_FAILED", error);
   }
@@ -479,13 +491,15 @@ export function createProject(
 
 export function exploreProject(
   projectPath: string,
-  options: { asr?: AsrMode; asrProvider?: AsrProvider } = {},
+  options: { asr?: AsrMode; asrProvider?: AsrProvider } & ProviderModeOption = {},
 ): Promise<CommandResult<"project.explore", ProjectExploreData>> {
   try {
+    const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
     const asr = options.asr ?? "auto";
     const manifest = readManifest(projectPath);
     const transcriptPath = join(projectPath, projectArtifacts.transcriptJson);
     if (!existsSync(transcriptPath)) {
+      if (providerMode === "platform" && asr === "auto") throw platformProviderBlocked("asr", projectArtifacts.transcriptJson, "platform mode requires transcript.json before project explore --asr auto", "Host/platform must write transcript.json into the TaskWorkspace/project before explore, or rerun with --asr external/off to avoid CLI-owned ASR.", { asr, accepted_asr: ["external", "off"], required_artifact: projectArtifacts.transcriptJson });
       if (asr === "off" || asr === "external") throw new Error(`missing transcript.json for --asr ${asr}`);
       return transcribeProject(projectPath, manifest, options.asrProvider).then((transcript) => {
         writeJson(transcriptPath, transcript);
@@ -521,8 +535,9 @@ function finishExploreProject(projectPath: string, manifest: SourcesManifest, tr
   });
 }
 
-export function reviewProject(projectPath: string): CommandResult<"project.review", ProjectReviewData> {
+export function reviewProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.review", ProjectReviewData> {
   try {
+    resolveProjectProviderMode(projectPath, options.providerMode);
     const manifest = readManifest(projectPath);
     const transcript = parseTranscript(readJson(join(projectPath, projectArtifacts.transcriptJson)), manifest);
     const analysis = parseAnalysis(readJson(join(projectPath, projectArtifacts.analysis)), manifest);
@@ -553,8 +568,9 @@ export function reviewProject(projectPath: string): CommandResult<"project.revie
   }
 }
 
-export function proposalProject(projectPath: string): CommandResult<"project.proposal", ProjectProposalData> {
+export function proposalProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.proposal", ProjectProposalData> {
   try {
+    resolveProjectProviderMode(projectPath, options.providerMode);
     const manifest = readManifest(projectPath);
     const review = parseReviewPackage(readJson(join(projectPath, projectArtifacts.reviewJson)), manifest);
     const proposalPath = join(projectPath, projectArtifacts.productionProposal);
@@ -582,8 +598,9 @@ export function proposalProject(projectPath: string): CommandResult<"project.pro
   }
 }
 
-export function enrichPlanProject(projectPath: string): CommandResult<"project.enrich-plan", ProjectEnrichPlanData> {
+export function enrichPlanProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.enrich-plan", ProjectEnrichPlanData> {
   try {
+    resolveProjectProviderMode(projectPath, options.providerMode);
     const { plan, assets, duration, warnings } = validateEnrichmentPlan(projectPath);
     const visualCount = plan.cards.length;
     const musicCount = plan.music.length;
@@ -613,8 +630,9 @@ export function enrichPlanProject(projectPath: string): CommandResult<"project.e
   }
 }
 
-export function elementCatalogProject(projectPath: string): CommandResult<"project.element-catalog", ProjectElementCatalogData> {
+export function elementCatalogProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.element-catalog", ProjectElementCatalogData> {
   try {
+    resolveProjectProviderMode(projectPath, options.providerMode);
     const rawElements = listVendoredElementCatalog();
     const elements = rawElements.map((item) => ({ ...item, adapter: adapterForVendoredElement(item) }));
     return ok("project.element-catalog", {
@@ -632,8 +650,9 @@ export function elementCatalogProject(projectPath: string): CommandResult<"proje
   }
 }
 
-export function focusCandidatesProject(projectPath: string): CommandResult<"project.focus-candidates", ProjectFocusCandidatesData> {
+export function focusCandidatesProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.focus-candidates", ProjectFocusCandidatesData> {
   try {
+    resolveProjectProviderMode(projectPath, options.providerMode);
     const edl = readOrBuildEdl(projectPath);
     const duration = edlDuration(edl);
     const candidatesPath = join(projectPath, projectArtifacts.focusCandidates);
@@ -656,8 +675,9 @@ export function focusCandidatesProject(projectPath: string): CommandResult<"proj
   }
 }
 
-export function focusFramesProject(projectPath: string): CommandResult<"project.focus-frames", ProjectFocusFramesData> {
+export function focusFramesProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.focus-frames", ProjectFocusFramesData> {
   try {
+    resolveProjectProviderMode(projectPath, options.providerMode);
     const edl = readOrBuildEdl(projectPath);
     const candidates = parseFocusCandidates(readJson(join(projectPath, projectArtifacts.focusCandidates)));
     const frames = extractFocusFrames(projectPath, candidates, edl);
@@ -674,8 +694,9 @@ export function focusFramesProject(projectPath: string): CommandResult<"project.
   }
 }
 
-export function focusGroundingProject(projectPath: string): CommandResult<"project.focus-grounding", ProjectFocusGroundingData> {
+export function focusGroundingProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.focus-grounding", ProjectFocusGroundingData> {
   try {
+    resolveProjectProviderMode(projectPath, options.providerMode);
     const candidates = parseFocusCandidates(readJson(join(projectPath, projectArtifacts.focusCandidates)));
     const frames = parseFocusFrames(readJson(join(projectPath, projectArtifacts.focusFrames)));
     const groundingPath = join(projectPath, projectArtifacts.focusGrounding);
@@ -695,8 +716,9 @@ export function focusGroundingProject(projectPath: string): CommandResult<"proje
   }
 }
 
-export function focusReviewProject(projectPath: string): CommandResult<"project.focus-review", ProjectFocusReviewData> {
+export function focusReviewProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.focus-review", ProjectFocusReviewData> {
   try {
+    resolveProjectProviderMode(projectPath, options.providerMode);
     const candidates = parseFocusCandidates(readJson(join(projectPath, projectArtifacts.focusCandidates)));
     const frames = parseFocusFrames(readJson(join(projectPath, projectArtifacts.focusFrames)));
     const grounding = parseFocusGrounding(readJson(join(projectPath, projectArtifacts.focusGrounding)));
@@ -719,9 +741,10 @@ export function focusReviewProject(projectPath: string): CommandResult<"project.
   }
 }
 
-export function musicCatalogProject(projectPath: string): CommandResult<"project.music-catalog", ProjectMusicCatalogData> {
+export function musicCatalogProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.music-catalog", ProjectMusicCatalogData> {
   try {
-    const catalog = buildMusicCatalog();
+    const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
+    const catalog = providerMode === "platform" ? buildPlatformMusicCatalog() : buildMusicCatalog();
     const catalogPath = join(projectPath, projectArtifacts.musicCatalog);
     const markdownPath = join(projectPath, projectArtifacts.musicCatalogMarkdown);
     writeJson(catalogPath, catalog);
@@ -738,8 +761,10 @@ export function musicCatalogProject(projectPath: string): CommandResult<"project
   }
 }
 
-export async function musicAcquireProject(projectPath: string): Promise<CommandResult<"project.music-acquire", ProjectMusicAcquireData>> {
+export async function musicAcquireProject(projectPath: string, options: ProviderModeOption = {}): Promise<CommandResult<"project.music-acquire", ProjectMusicAcquireData>> {
   try {
+    const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
+    if (providerMode === "platform") assertPlatformMusicAcquisitionAllowed(projectPath, "music-acquire");
     const acquisition = await acquireMusicAsset(projectPath);
     const review = buildMusicReview(acquisition);
     const acquisitionPath = join(projectPath, projectArtifacts.musicAcquisition);
@@ -772,9 +797,11 @@ export async function musicAcquireProject(projectPath: string): Promise<CommandR
   }
 }
 
-export async function musicReviewProject(projectPath: string): Promise<CommandResult<"project.music-review", ProjectMusicReviewData>> {
+export async function musicReviewProject(projectPath: string, options: ProviderModeOption = {}): Promise<CommandResult<"project.music-review", ProjectMusicReviewData>> {
   try {
+    const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
     const acquisitionPath = join(projectPath, projectArtifacts.musicAcquisition);
+    if (providerMode === "platform" && !existsSync(acquisitionPath)) assertPlatformMusicAcquisitionAllowed(projectPath, "music-review");
     const acquisition = existsSync(acquisitionPath) ? (readJson(acquisitionPath) as MusicAcquisitionArtifact) : await acquireMusicAsset(projectPath);
     const review = buildMusicReview(acquisition);
     const reviewPath = join(projectPath, projectArtifacts.musicReview);
@@ -793,9 +820,10 @@ export async function musicReviewProject(projectPath: string): Promise<CommandRe
   }
 }
 
-export function visualCatalogProject(projectPath: string): CommandResult<"project.visual-catalog", ProjectVisualCatalogData> {
+export function visualCatalogProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.visual-catalog", ProjectVisualCatalogData> {
   try {
-    const catalog = buildVisualCatalog();
+    const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
+    const catalog = providerMode === "platform" ? buildPlatformVisualCatalog() : buildVisualCatalog();
     const catalogPath = join(projectPath, projectArtifacts.visualCatalog);
     const markdownPath = join(projectPath, projectArtifacts.visualCatalogMarkdown);
     writeJson(catalogPath, catalog);
@@ -812,11 +840,12 @@ export function visualCatalogProject(projectPath: string): CommandResult<"projec
   }
 }
 
-export async function visualSearchProject(projectPath: string): Promise<CommandResult<"project.visual-search", ProjectVisualSearchData>> {
+export async function visualSearchProject(projectPath: string, options: ProviderModeOption = {}): Promise<CommandResult<"project.visual-search", ProjectVisualSearchData>> {
   try {
+    const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
     const requestPath = join(projectPath, projectArtifacts.visualRequest);
     const request = parseVisualRequest(readJson(requestPath));
-    const candidates = await searchVisualAssets(projectPath);
+    const candidates = providerMode === "platform" ? readPlatformVisualCandidatesOrBlock(projectPath, "visual-search") : await searchVisualAssets(projectPath);
     const candidatesPath = join(projectPath, projectArtifacts.visualCandidates);
     const markdownPath = join(projectPath, projectArtifacts.visualCandidatesMarkdown);
     writeJson(candidatesPath, candidates);
@@ -835,8 +864,10 @@ export async function visualSearchProject(projectPath: string): Promise<CommandR
   }
 }
 
-export async function visualAcquireProject(projectPath: string): Promise<CommandResult<"project.visual-acquire", ProjectVisualAcquireData>> {
+export async function visualAcquireProject(projectPath: string, options: ProviderModeOption = {}): Promise<CommandResult<"project.visual-acquire", ProjectVisualAcquireData>> {
   try {
+    const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
+    if (providerMode === "platform") assertPlatformVisualAcquisitionAllowed(projectPath);
     const acquisition = await acquireVisualAssets(projectPath);
     const request = parseVisualRequest(readJson(join(projectPath, projectArtifacts.visualRequest)));
     const review = buildVisualReview(acquisition, request);
@@ -867,8 +898,9 @@ export async function visualAcquireProject(projectPath: string): Promise<Command
   }
 }
 
-export function visualReviewProject(projectPath: string): CommandResult<"project.visual-review", ProjectVisualReviewData> {
+export function visualReviewProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.visual-review", ProjectVisualReviewData> {
   try {
+    resolveProjectProviderMode(projectPath, options.providerMode);
     const acquisitionPath = join(projectPath, projectArtifacts.visualAcquisition);
     if (!existsSync(acquisitionPath)) throw new Error("visual-acquisition.json is required before visual-review");
     const acquisition = parseVisualAcquisition(readJson(acquisitionPath));
@@ -890,8 +922,9 @@ export function visualReviewProject(projectPath: string): CommandResult<"project
   }
 }
 
-export function renderProject(projectPath: string): CommandResult<"project.render", ProjectRenderData> {
+export function renderProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.render", ProjectRenderData> {
   try {
+    resolveProjectProviderMode(projectPath, options.providerMode);
     const manifest = readManifest(projectPath);
     const transcript = parseTranscript(readJson(join(projectPath, projectArtifacts.transcriptJson)), manifest);
     const analysis = parseAnalysis(readJson(join(projectPath, projectArtifacts.analysis)), manifest);
@@ -919,8 +952,9 @@ export function renderProject(projectPath: string): CommandResult<"project.rende
   }
 }
 
-export function inspectProject(projectPath: string): CommandResult<"project.inspect", ProjectInspectData> {
+export function inspectProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.inspect", ProjectInspectData> {
   try {
+    resolveProjectProviderMode(projectPath, options.providerMode);
     const manifest = readManifest(projectPath);
     const edl = parseEdl(readJson(join(projectPath, projectArtifacts.edl)), manifest);
     const analysis = parseAnalysis(readJson(join(projectPath, projectArtifacts.analysis)), manifest);
@@ -3285,6 +3319,192 @@ function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
+function readProjectMetadata(projectPath: string): ProjectMetadataArtifact | undefined {
+  const metadataPath = join(projectPath, projectArtifacts.project);
+  if (!existsSync(metadataPath)) return undefined;
+  return parseProjectMetadata(readJson(metadataPath));
+}
+
+function writeProjectMetadata(projectPath: string, providerMode: ProviderExecutionMode, existing?: ProjectMetadataArtifact): string {
+  const metadataPath = join(projectPath, projectArtifacts.project);
+  const now = new Date().toISOString();
+  writeJson(metadataPath, {
+    provider_execution_mode: providerMode,
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+  } satisfies ProjectMetadataArtifact);
+  return metadataPath;
+}
+
+function resolveProjectProviderMode(projectPath: string, explicitMode: ProviderExecutionMode | undefined): ProviderExecutionMode {
+  const metadata = readProjectMetadata(projectPath);
+  if (metadata) {
+    if (explicitMode && explicitMode !== metadata.provider_execution_mode) throw providerModeMismatch(metadata.provider_execution_mode, explicitMode);
+    return metadata.provider_execution_mode;
+  }
+  if (explicitMode) {
+    writeProjectMetadata(projectPath, explicitMode);
+    return explicitMode;
+  }
+  if (existsSync(projectPath)) writeProjectMetadata(projectPath, "standalone");
+  return "standalone";
+}
+
+function providerModeMismatch(expected: ProviderExecutionMode, actual: ProviderExecutionMode): Error & {
+  code: string;
+  provider_execution_mode: ProviderExecutionMode;
+  stage: string;
+  artifact: string;
+  remediation: string;
+  request: Record<string, unknown>;
+} {
+  const error = new Error(`provider mode mismatch: project is ${expected}, command requested ${actual}`) as Error & {
+    code: string;
+    provider_execution_mode: ProviderExecutionMode;
+    stage: string;
+    artifact: string;
+    remediation: string;
+    request: Record<string, unknown>;
+  };
+  error.code = "PROVIDER_MODE_MISMATCH";
+  error.provider_execution_mode = expected;
+  error.stage = "provider-mode";
+  error.artifact = projectArtifacts.project;
+  error.remediation = `Rerun with --provider-mode ${expected}, or create a new project for ${actual} mode.`;
+  error.request = { expected_provider_mode: expected, requested_provider_mode: actual };
+  return error;
+}
+
+function assertPlatformMusicAcquisitionAllowed(projectPath: string, command: "music-acquire" | "music-review") {
+  const request = parseMusicRequest(readJson(join(projectPath, projectArtifacts.musicRequest)));
+  if (request.source === "none") return;
+  if (request.source === "local" && request.local_path && !request.library_track) return;
+  throw platformProviderBlocked(
+    command,
+    projectArtifacts.musicRequest,
+    `platform mode does not acquire music from ${request.source}`,
+    "Host/platform must generate, search, download, or license music first, then write a project-local file and set music-request.json source=local with local_path.",
+    {
+      music_request_id: request.id,
+      requested_source: request.source,
+      local_path_present: Boolean(request.local_path),
+      library_track_present: Boolean(request.library_track),
+      allowed_sources: ["none", "local"],
+      required_artifact: projectArtifacts.musicRequest,
+    },
+  );
+}
+
+function readPlatformVisualCandidatesOrBlock(projectPath: string, stage: string): VisualCandidatesArtifact {
+  const candidatesPath = join(projectPath, projectArtifacts.visualCandidates);
+  if (!existsSync(candidatesPath)) {
+    throw platformProviderBlocked(
+      stage,
+      projectArtifacts.visualCandidates,
+      "platform mode requires visual-candidates.json before visual-search",
+      "Host/platform must perform visual provider search or MCP handoff first, then write visual-candidates.json with project-local candidates.",
+      { required_artifact: projectArtifacts.visualCandidates },
+    );
+  }
+  const candidates = parseVisualCandidates(readJson(candidatesPath));
+  if (candidates.candidates.length === 0) {
+    throw platformProviderBlocked(
+      stage,
+      projectArtifacts.visualCandidates,
+      "platform mode visual-candidates.json has no candidates",
+      "Host/platform must provide at least one selected or renderable project-local visual candidate before CLI visual acquisition.",
+      { required_artifact: projectArtifacts.visualCandidates, candidate_count: 0 },
+    );
+  }
+  const remoteUrl = platformCandidateProviderUrl(candidates.candidates);
+  if (remoteUrl) {
+    throw platformProviderBlocked(
+      stage,
+      projectArtifacts.visualCandidates,
+      `${remoteUrl.candidate.id}: platform mode visual candidates must not include ${remoteUrl.field}`,
+      "Host/platform must download/export provider assets into the project and write platform-safe attribution before CLI import; CLI platform mode will not keep or fetch provider URLs.",
+      {
+        candidate_id: remoteUrl.candidate.id,
+        provider: remoteUrl.candidate.provider,
+        forbidden_field: remoteUrl.field,
+        required_field: "local_path",
+      },
+    );
+  }
+  return candidates;
+}
+
+function assertPlatformVisualAcquisitionAllowed(projectPath: string) {
+  const request = parseVisualRequest(readJson(join(projectPath, projectArtifacts.visualRequest)));
+  const candidates = readPlatformVisualCandidatesOrBlock(projectPath, "visual-acquire");
+  for (const item of request.requests) {
+    const candidate = selectPlatformVisualCandidate(item.selected_candidate_id, candidates.candidates.filter((entry) => entry.request_id === item.id));
+    if (!candidate) {
+      throw platformProviderBlocked(
+        "visual-acquire",
+        projectArtifacts.visualCandidates,
+        `${item.id}: platform mode requires a selected or renderable visual candidate`,
+        "Host/platform must write visual-candidates.json with a selected_candidate_id or a renderable project-local candidate before visual-acquire.",
+        { request_id: item.id, selected_candidate_id: item.selected_candidate_id, required_artifact: projectArtifacts.visualCandidates },
+      );
+    }
+    if (!candidate.local_path) {
+      throw platformProviderBlocked(
+        "visual-acquire",
+        projectArtifacts.visualCandidates,
+        `${candidate.id}: platform mode visual acquisition requires local_path`,
+        "Host/platform must download or export the visual asset into the project first; CLI platform mode will not fetch download_url/provider URLs.",
+        {
+          request_id: item.id,
+          candidate_id: candidate.id,
+          provider: candidate.provider,
+          download_url_present: Boolean(candidate.download_url),
+          required_field: "local_path",
+        },
+      );
+    }
+  }
+}
+
+function selectPlatformVisualCandidate(selectedCandidateId: string | undefined, candidates: VisualCandidate[]): VisualCandidate | undefined {
+  if (selectedCandidateId) return candidates.find((candidate) => candidate.id === selectedCandidateId);
+  return candidates.find((candidate) => candidate.recommended && candidate.renderable) ?? candidates.find((candidate) => candidate.renderable);
+}
+
+function platformCandidateProviderUrl(candidates: VisualCandidate[]): { candidate: VisualCandidate; field: "download_url" | "preview_url" | "source_url" } | undefined {
+  for (const candidate of candidates) {
+    if (candidate.download_url) return { candidate, field: "download_url" };
+    if (candidate.preview_url) return { candidate, field: "preview_url" };
+    if (candidate.source_url) return { candidate, field: "source_url" };
+  }
+  return undefined;
+}
+
+function platformProviderBlocked(stage: string, artifact: string, message: string, remediation: string, request: Record<string, unknown>): Error & {
+  code: string;
+  provider_execution_mode: ProviderExecutionMode;
+  stage: string;
+  artifact: string;
+  remediation: string;
+  request: Record<string, unknown>;
+} {
+  const error = new Error(message) as Error & {
+    code: string;
+    provider_execution_mode: ProviderExecutionMode;
+    stage: string;
+    artifact: string;
+    remediation: string;
+    request: Record<string, unknown>;
+  };
+  error.code = "PLATFORM_PROVIDER_BLOCKED";
+  error.provider_execution_mode = "platform";
+  error.stage = stage;
+  error.artifact = artifact;
+  error.remediation = remediation;
+  error.request = request;
+  return error;
+}
+
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
@@ -3348,5 +3568,23 @@ function ok<TCommand extends string, TData>(command: TCommand, data: TData): Com
 }
 
 function fail<TCommand extends string, TData>(command: TCommand, code: string, error: unknown): CommandResult<TCommand, TData> {
-  return { ok: false, command, error: { code, message: error instanceof Error ? error.message : String(error) } };
+  const details = error && typeof error === "object" ? (error as Record<string, unknown>) : {};
+  const response = {
+    code: typeof details.code === "string" ? details.code : code,
+    message: error instanceof Error ? error.message : String(error),
+  } as {
+    code: string;
+    message: string;
+    provider_execution_mode?: ProviderExecutionMode;
+    stage?: string;
+    artifact?: string;
+    remediation?: string;
+    request?: Record<string, unknown>;
+  };
+  if (details.provider_execution_mode === "standalone" || details.provider_execution_mode === "platform") response.provider_execution_mode = details.provider_execution_mode;
+  if (typeof details.stage === "string") response.stage = details.stage;
+  if (typeof details.artifact === "string") response.artifact = details.artifact;
+  if (typeof details.remediation === "string") response.remediation = details.remediation;
+  if (details.request && typeof details.request === "object" && !Array.isArray(details.request)) response.request = details.request as Record<string, unknown>;
+  return { ok: false, command, error: response };
 }

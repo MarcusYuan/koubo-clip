@@ -5,8 +5,10 @@ Use this file for the normal project flow. The CLI is the execution surface; thi
 ## Stages
 
 1. Create and explore the project.
-   - Run `project create`.
-   - Run `project explore --asr auto` unless a transcript already exists.
+   - Choose `standalone` or `platform` once, then pass the same `--provider-mode` to project commands.
+   - Run `project create --provider-mode <mode>`.
+   - In `standalone` mode, run `project explore --asr auto` unless a transcript already exists.
+   - In `platform` mode, the host/platform ASR capability must write `transcript.json`; then run `project explore --asr external --provider-mode platform`.
    - Read `material-report.md` before asking final positioning questions.
 
 2. Review cleanup candidates.
@@ -27,6 +29,7 @@ Use this file for the normal project flow. The CLI is the execution surface; thi
    - `music-request.json` and music review artifacts for music.
    - `asset-manifest.json` for local files only.
    - `enrichment-plan.json` for final render instructions.
+   - In `platform` mode, `music-request.json` and `visual-request.json` are request specs for host/platform tools. The CLI must only see fulfilled, project-local assets, normalized candidates, or stable workspace refs.
 
 5. Validate, render, and inspect.
    - Run `project enrich-plan` and show planned `qa_checks[]`.
@@ -37,3 +40,7 @@ Use this file for the normal project flow. The CLI is the execution surface; thi
 ## Confirmation Rule
 
 The proposal can describe desired images, music, UI motion, SFX, and visual assets, but it must not pretend those files already exist. Final asset ids and output timeline coordinates belong in the execution artifacts after confirmation.
+
+## Platform Blockers
+
+If the CLI returns `PROVIDER_MODE_MISMATCH`, keep the project mode and rerun with the matching `--provider-mode`, or create a new project. If it returns `PLATFORM_PROVIDER_BLOCKED`, ask the host/platform capability to fulfill the request and write the required artifact; do not retry by switching to standalone or by passing provider URLs, API keys, raw MCP payloads, or absolute local paths into render artifacts.

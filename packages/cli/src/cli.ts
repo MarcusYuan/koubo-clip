@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { bundleInfo, resolveKouboClipSkillRoot } from "./bundle-paths";
+import { parseProjectMetadata, projectArtifacts, type ProviderExecutionMode } from "./artifacts";
 import {
   commandExists,
   createProject,
@@ -37,11 +38,11 @@ type Io = {
 const help = `koubo-clip
 
 Usage:
-  koubo-clip doctor
+  koubo-clip doctor [--provider-mode standalone|platform]
   koubo-clip skills path [--json]
   koubo-clip skills install --target codex|claude|hermes [--dest <dir>] [--force]
-  koubo-clip project create <video...>
-  koubo-clip project explore <project> [--asr auto|off|external] [--asr-provider cloudflare-whisper|whisper-cli]
+  koubo-clip project create <video...> [--provider-mode standalone|platform]
+  koubo-clip project explore <project> [--provider-mode standalone|platform] [--asr auto|off|external] [--asr-provider cloudflare-whisper|whisper-cli]
   koubo-clip project review <project>
   koubo-clip project proposal <project>
   koubo-clip project element-catalog <project>
@@ -62,29 +63,29 @@ Usage:
 `;
 
 const projectCommands = [
-  "create <video...>",
-  "explore <project> [--asr auto|off|external] [--asr-provider cloudflare-whisper|whisper-cli]",
-  "review <project>",
-  "proposal <project>",
-  "element-catalog <project>",
-  "focus-candidates <project>",
-  "focus-frames <project>",
-  "focus-grounding <project>",
-  "focus-review <project>",
-  "music-catalog <project>",
-  "music-acquire <project>",
-  "music-review <project>",
-  "visual-catalog <project>",
-  "visual-search <project>",
-  "visual-acquire <project>",
-  "visual-review <project>",
-  "enrich-plan <project>",
-  "render <project>",
-  "inspect <project>",
+  "create <video...> [--provider-mode standalone|platform]",
+  "explore <project> [--provider-mode standalone|platform] [--asr auto|off|external] [--asr-provider cloudflare-whisper|whisper-cli]",
+  "review <project> [--provider-mode standalone|platform]",
+  "proposal <project> [--provider-mode standalone|platform]",
+  "element-catalog <project> [--provider-mode standalone|platform]",
+  "focus-candidates <project> [--provider-mode standalone|platform]",
+  "focus-frames <project> [--provider-mode standalone|platform]",
+  "focus-grounding <project> [--provider-mode standalone|platform]",
+  "focus-review <project> [--provider-mode standalone|platform]",
+  "music-catalog <project> [--provider-mode standalone|platform]",
+  "music-acquire <project> [--provider-mode standalone|platform]",
+  "music-review <project> [--provider-mode standalone|platform]",
+  "visual-catalog <project> [--provider-mode standalone|platform]",
+  "visual-search <project> [--provider-mode standalone|platform]",
+  "visual-acquire <project> [--provider-mode standalone|platform]",
+  "visual-review <project> [--provider-mode standalone|platform]",
+  "enrich-plan <project> [--provider-mode standalone|platform]",
+  "render <project> [--provider-mode standalone|platform]",
+  "inspect <project> [--provider-mode standalone|platform]",
 ] as const;
 
 export async function main(argv = process.argv.slice(2), io: Io = {}): Promise<number> {
-  loadLocalEnv();
+  if (shouldLoadLocalEnv(argv)) loadLocalEnv();
   const out = io.stdout ?? console.log;
   const err = io.stderr ?? console.error;
   const [command] = argv;
@@ -95,10 +96,13 @@ export async function main(argv = process.argv.slice(2), io: Io = {}): Promise<n
   }
 
   if (command === "doctor") {
+    const { flags } = parseArgs(argv.slice(1));
+    const mode = providerMode(flags["provider-mode"], "standalone") ?? "standalone";
     const bun = (globalThis as typeof globalThis & { Bun?: { version: string } }).Bun;
     out(
       JSON.stringify({
         ok: true,
+        provider_mode: mode,
         runtime: "bun",
         bun: bun?.version ?? null,
         node: process.version,
@@ -107,16 +111,7 @@ export async function main(argv = process.argv.slice(2), io: Io = {}): Promise<n
         npx: commandExists("npx"),
         whisper_cli: commandExists("whisper-cli"),
         bundle: bundleInfo(),
-        providers: {
-          minimax_music: Boolean(process.env.MINIMAX_API_KEY),
-          cloudflare_whisper: Boolean(process.env.GATEWAY_CLOUDFLARE_AI_ACCOUNT_ID && process.env.GATEWAY_CLOUDFLARE_AI_API_TOKEN && process.env.GATEWAY_CLOUDFLARE_AI_TRANSCRIPTION_MODEL),
-          freesound: Boolean(process.env.FREESOUND_API_KEY),
-          music_library_dir: Boolean(process.env.MUSIC_LIBRARY_DIR),
-          iconify: true,
-          lordicon: Boolean(process.env.LORDICON_API_KEY),
-          shadcn_mcp_handoff: true,
-          "21st_mcp_handoff": true,
-        },
+        providers: providerStatus(mode),
       }),
     );
     return 0;
@@ -188,6 +183,36 @@ function loadLocalEnv() {
   loadEnvFile(join(process.env.HOME ?? homedir(), ".koubo-clip", ".env"));
 }
 
+function shouldLoadLocalEnv(argv: string[]): boolean {
+  const explicitMode = explicitProviderMode(argv);
+  if (explicitMode) return explicitMode === "standalone";
+  return projectProviderModeFromMetadata(argv) !== "platform";
+}
+
+function explicitProviderMode(argv: string[]): ProviderExecutionMode | undefined {
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== "--provider-mode") continue;
+    const value = argv[index + 1];
+    if (value === "standalone" || value === "platform") return value;
+    return undefined;
+  }
+  return undefined;
+}
+
+function projectProviderModeFromMetadata(argv: string[]): ProviderExecutionMode | undefined {
+  if (argv[0] !== "project") return undefined;
+  const { positionals } = parseArgs(argv.slice(1));
+  const [subcommand, projectPath] = positionals;
+  if (!subcommand || subcommand === "create" || !projectPath) return undefined;
+  const metadataPath = join(projectPath, projectArtifacts.project);
+  if (!existsSync(metadataPath)) return undefined;
+  try {
+    return parseProjectMetadata(JSON.parse(readFileSync(metadataPath, "utf8"))).provider_execution_mode;
+  } catch {
+    return undefined;
+  }
+}
+
 function loadEnvFile(path: string) {
   if (!existsSync(path)) return;
   for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
@@ -195,6 +220,31 @@ function loadEnvFile(path: string) {
     if (!match || process.env[match[1]] !== undefined) continue;
     process.env[match[1]] = match[2].replace(/^(['"])(.*)\1$/, "$2");
   }
+}
+
+function providerStatus(mode: ProviderExecutionMode): Record<string, boolean | "host-managed" | "disabled"> {
+  if (mode === "platform") {
+    return {
+      minimax_music: "host-managed",
+      cloudflare_whisper: "host-managed",
+      freesound: "host-managed",
+      music_library_dir: "disabled",
+      iconify: "host-managed",
+      lordicon: "host-managed",
+      shadcn_mcp_handoff: "host-managed",
+      "21st_mcp_handoff": "host-managed",
+    };
+  }
+  return {
+    minimax_music: Boolean(process.env.MINIMAX_API_KEY),
+    cloudflare_whisper: Boolean(process.env.GATEWAY_CLOUDFLARE_AI_ACCOUNT_ID && process.env.GATEWAY_CLOUDFLARE_AI_API_TOKEN && process.env.GATEWAY_CLOUDFLARE_AI_TRANSCRIPTION_MODEL),
+    freesound: Boolean(process.env.FREESOUND_API_KEY),
+    music_library_dir: Boolean(process.env.MUSIC_LIBRARY_DIR),
+    iconify: true,
+    lordicon: Boolean(process.env.LORDICON_API_KEY),
+    shadcn_mcp_handoff: true,
+    "21st_mcp_handoff": true,
+  };
 }
 
 async function safeProjectCommand(argv: string[]) {
@@ -212,25 +262,26 @@ async function safeProjectCommand(argv: string[]) {
 async function runProjectCommand(argv: string[]) {
   const { positionals, flags } = parseArgs(argv);
   const [subcommand, ...rest] = positionals;
-  if (subcommand === "create") return createProject(rest, { projectPath: flags.project });
-  if (subcommand === "explore") return await exploreProject(required(rest[0], "project path"), { asr: asrMode(flags.asr), asrProvider: asrProvider(flags["asr-provider"]) });
-  if (subcommand === "review") return reviewProject(required(rest[0], "project path"));
-  if (subcommand === "proposal") return proposalProject(required(rest[0], "project path"));
-  if (subcommand === "element-catalog") return elementCatalogProject(required(rest[0], "project path"));
-  if (subcommand === "focus-candidates") return focusCandidatesProject(required(rest[0], "project path"));
-  if (subcommand === "focus-frames") return focusFramesProject(required(rest[0], "project path"));
-  if (subcommand === "focus-grounding") return focusGroundingProject(required(rest[0], "project path"));
-  if (subcommand === "focus-review") return focusReviewProject(required(rest[0], "project path"));
-  if (subcommand === "music-catalog") return musicCatalogProject(required(rest[0], "project path"));
-  if (subcommand === "music-acquire") return await musicAcquireProject(required(rest[0], "project path"));
-  if (subcommand === "music-review") return await musicReviewProject(required(rest[0], "project path"));
-  if (subcommand === "visual-catalog") return visualCatalogProject(required(rest[0], "project path"));
-  if (subcommand === "visual-search") return await visualSearchProject(required(rest[0], "project path"));
-  if (subcommand === "visual-acquire") return await visualAcquireProject(required(rest[0], "project path"));
-  if (subcommand === "visual-review") return visualReviewProject(required(rest[0], "project path"));
-  if (subcommand === "enrich-plan") return enrichPlanProject(required(rest[0], "project path"));
-  if (subcommand === "render") return renderProject(required(rest[0], "project path"));
-  if (subcommand === "inspect") return inspectProject(required(rest[0], "project path"));
+  const mode = providerMode(flags["provider-mode"]);
+  if (subcommand === "create") return createProject(rest, { projectPath: flags.project, providerMode: mode });
+  if (subcommand === "explore") return await exploreProject(required(rest[0], "project path"), { asr: asrMode(flags.asr), asrProvider: asrProvider(flags["asr-provider"]), providerMode: mode });
+  if (subcommand === "review") return reviewProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "proposal") return proposalProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "element-catalog") return elementCatalogProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "focus-candidates") return focusCandidatesProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "focus-frames") return focusFramesProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "focus-grounding") return focusGroundingProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "focus-review") return focusReviewProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "music-catalog") return musicCatalogProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "music-acquire") return await musicAcquireProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "music-review") return await musicReviewProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "visual-catalog") return visualCatalogProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "visual-search") return await visualSearchProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "visual-acquire") return await visualAcquireProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "visual-review") return visualReviewProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "enrich-plan") return enrichPlanProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "render") return renderProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "inspect") return inspectProject(required(rest[0], "project path"), { providerMode: mode });
   return { ok: false as const, command: "project", error: { code: "UNKNOWN_PROJECT_COMMAND", message: `Unknown project command: ${subcommand ?? ""}` } };
 }
 
@@ -273,6 +324,18 @@ function asrProvider(value: string | undefined): AsrProvider | undefined {
       return value;
     default:
       throw new Error(`Invalid --asr-provider value: ${value}`);
+  }
+}
+
+function providerMode(value: string | undefined, defaultMode?: ProviderExecutionMode): ProviderExecutionMode | undefined {
+  switch (value) {
+    case undefined:
+      return defaultMode;
+    case "standalone":
+    case "platform":
+      return value;
+    default:
+      throw new Error(`Invalid --provider-mode value: ${value}`);
   }
 }
 

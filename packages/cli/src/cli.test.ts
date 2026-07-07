@@ -40,6 +40,7 @@ test("doctor prints runtime json", async () => {
   expect(code).toBe(0);
   const json = JSON.parse(output);
   expect(json.runtime).toBe("bun");
+  expect(json.provider_mode).toBe("standalone");
   expect(typeof json.npx).toBe("boolean");
   expect(typeof json.providers.minimax_music).toBe("boolean");
   expect(json.providers.iconify).toBe(true);
@@ -47,6 +48,47 @@ test("doctor prints runtime json", async () => {
   expect(json.bundle.hyperframes_resources).toBe(true);
   expect(json.bundle.koubo_clip_skill).toBe(true);
   expect(json.bundle.skill_path.endsWith("skills/koubo-clip")).toBe(true);
+});
+
+test("doctor reports platform provider mode as host managed without secrets", async () => {
+  const oldMiniMax = process.env.MINIMAX_API_KEY;
+  process.env.MINIMAX_API_KEY = "secret-platform-value";
+  try {
+    let output = "";
+    const code = await main(["doctor", "--provider-mode", "platform"], { stdout: (text) => (output = text) });
+    expect(code).toBe(0);
+    expect(output.includes("secret-platform-value")).toBe(false);
+    const json = JSON.parse(output);
+    expect(json.provider_mode).toBe("platform");
+    expect(json.providers.minimax_music).toBe("host-managed");
+    expect(json.providers.cloudflare_whisper).toBe("host-managed");
+    expect(json.providers.music_library_dir).toBe("disabled");
+    expect(json.providers.iconify).toBe("host-managed");
+  } finally {
+    if (oldMiniMax === undefined) delete process.env.MINIMAX_API_KEY;
+    else process.env.MINIMAX_API_KEY = oldMiniMax;
+  }
+});
+
+test("platform doctor does not load provider keys from local env files", async () => {
+  const previousCwd = process.cwd();
+  const old = process.env.MINIMAX_API_KEY;
+  delete process.env.MINIMAX_API_KEY;
+  const dir = mkdtempSync(join(tmpdir(), "koubo-platform-env-"));
+  writeFileSync(join(dir, ".env"), "MINIMAX_API_KEY=secret-platform-local-value\n");
+  process.chdir(dir);
+  try {
+    let output = "";
+    const code = await main(["doctor", "--provider-mode", "platform"], { stdout: (text) => (output = text) });
+    expect(code).toBe(0);
+    expect(process.env.MINIMAX_API_KEY).toBe(undefined);
+    expect(output.includes("secret-platform-local-value")).toBe(false);
+    expect(JSON.parse(output).providers.minimax_music).toBe("host-managed");
+  } finally {
+    process.chdir(previousCwd);
+    if (old === undefined) delete process.env.MINIMAX_API_KEY;
+    else process.env.MINIMAX_API_KEY = old;
+  }
 });
 
 test("loads local env without printing secrets", async () => {
@@ -66,6 +108,30 @@ test("loads local env without printing secrets", async () => {
     process.chdir(previousCwd);
     if (old === undefined) delete process.env.MINIMAX_API_KEY;
     else process.env.MINIMAX_API_KEY = old;
+  }
+});
+
+test("platform project metadata prevents provider env loading without a repeated flag", async () => {
+  const previousCwd = process.cwd();
+  const old = process.env.LORDICON_API_KEY;
+  delete process.env.LORDICON_API_KEY;
+  const dir = mkdtempSync(join(tmpdir(), "koubo-platform-project-env-"));
+  const project = join(dir, "project");
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(dir, ".env"), "LORDICON_API_KEY=secret-platform-project-value\n");
+  writeFileSync(join(project, "project.json"), JSON.stringify({ provider_execution_mode: "platform", created_at: "2026-01-01T00:00:00.000Z" }));
+  process.chdir(dir);
+  try {
+    let output = "";
+    const code = await main(["project", "element-catalog", project], { stdout: (text) => (output = text) });
+    expect(code).toBe(0);
+    expect(process.env.LORDICON_API_KEY).toBe(undefined);
+    expect(output.includes("secret-platform-project-value")).toBe(false);
+    expect(JSON.parse(output).ok).toBe(true);
+  } finally {
+    process.chdir(previousCwd);
+    if (old === undefined) delete process.env.LORDICON_API_KEY;
+    else process.env.LORDICON_API_KEY = old;
   }
 });
 

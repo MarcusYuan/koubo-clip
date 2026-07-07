@@ -4,7 +4,7 @@ export type MusicCatalogProvider = {
   id: "minimax" | "freesound" | "pixabay";
   kind: "ai_generated" | "network_stock";
   available: boolean;
-  status: "available" | "missing_key" | "experimental";
+  status: "available" | "missing_key" | "experimental" | "host-managed" | "disabled";
   env?: string;
   models?: string[];
   note: string;
@@ -50,6 +50,41 @@ export function buildMusicCatalog(): MusicCatalogArtifact {
         available: true,
         status: "experimental",
         note: "No-key web retrieval for Pixabay Music; experimental and may be blocked by Cloudflare. Pixabay API keys do not unlock music search.",
+      },
+    ],
+  };
+}
+
+export function buildPlatformMusicCatalog(): MusicCatalogArtifact {
+  return {
+    version: "1.0",
+    library: {
+      library_dir: "host-managed",
+      exists: false,
+      tracks: [],
+      track_count: 0,
+    },
+    providers: [
+      {
+        id: "minimax",
+        kind: "ai_generated",
+        available: false,
+        status: "host-managed",
+        note: "Platform music capability owns generation, credentials, quota, audit, and provenance",
+      },
+      {
+        id: "freesound",
+        kind: "network_stock",
+        available: false,
+        status: "host-managed",
+        note: "Platform connector owns search, download, license review, audit, and provenance",
+      },
+      {
+        id: "pixabay",
+        kind: "network_stock",
+        available: false,
+        status: "host-managed",
+        note: "Platform connector owns search, download, license review, audit, and provenance",
       },
     ],
   };

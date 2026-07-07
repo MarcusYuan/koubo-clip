@@ -29,6 +29,8 @@ Use this file when deciding whether to add source highlights, icons, animated ic
 - Generated images: use only when deterministic sources do not fit or the user needs original concept art.
 - No insert: choose this when the added content would only decorate and not help the viewer job.
 
+Provider execution depends on project mode. In `standalone` mode the CLI may search/download supported visual providers. In `platform` mode the skill still states the same visual need, but the host/platform tool must fulfill it first and write normalized candidates plus project-local/static exports; the CLI only imports and validates those landed artifacts.
+
 ## Proposal Surface
 
 Before confirmation, explain:

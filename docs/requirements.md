@@ -29,7 +29,14 @@ koubo-clip 通过分阶段 CLI 加 agent 工作流，把一个或多个本地口
 
 ## V0 范围
 
-首版实现面向本地 Codex/Claude 风格 CLI 使用。Hermes TaskWorkspace 集成是后续目标；v0 合同应保持与 workspace refs 兼容的思路，但不要求 Hermes runtime、tenant IDs 或平台工具。
+首版实现面向本地 Codex/Claude 风格 CLI 使用。完整 Hermes TaskWorkspace runtime、tenant IDs 和平台工具调用不是 v0 硬依赖；但 provider execution mode 合同现在就定义，确保未来接入 Hermes / TaskWorkspace / LocalAgent 员工能力时不会绕过 workspace refs、凭证、额度、审计和 provider provenance。
+
+koubo-clip 支持两个互斥 provider execution mode。一个 project 只能使用一个 mode，创建或摄入时确定；后续命令不得混用。
+
+- `standalone`: 本地 CLI/agent 使用。koubo-clip 可以使用用户本机已配置的 ASR、music、visual acquisition 等 provider，但 provider 结果必须先落成 project-local artifacts。
+- `platform`: Hermes / TaskWorkspace / LocalAgent / 员工能力「口播快剪」使用。平台 Capability、ConnectorTool、MCP 或 agent tool 负责 ASR、生图、生音乐、音乐获取、视觉素材搜索、UI 组件下载和授权；koubo-clip 只负责请求校验、已落地 artifact 摄入、确定性媒体处理、render 和 inspect。
+
+provider execution mode 是任务边界，不是每个命令临时选择的开关，也不是 `enrichment-plan.profile`。需要切换 mode 时应创建新的 project，而不是在同一个 project 中混用 provider 来源。
 
 V0 只发布一个 skill：`koubo-clip`。只有当命令和 artifact 合同稳定后，才拆分 `koubo-clip-cli` 或 `koubo-clip-media`。
 
@@ -80,7 +87,7 @@ project create
 
 ## ASR 合同
 
-V0 默认使用线上 Cloudflare Whisper adapter；本地 `whisper-cli` 只作为缺少线上配置时的兜底，或由 agent 显式指定用于离线测试。ASR 由开关控制：
+在 `standalone` mode 下，V0 默认使用线上 Cloudflare Whisper adapter；本地 `whisper-cli` 只作为缺少线上配置时的兜底，或由 agent 显式指定用于离线测试。ASR 由开关控制：
 
 ```bash
 koubo-clip project explore <project> --asr auto
@@ -105,6 +112,8 @@ koubo-clip project explore <project> --asr auto --asr-provider whisper-cli
 ```
 
 `transcript.json` 必须声明 timings 是 `word`、`segment` 还是 `text-only`。Text-only transcripts 可以用于总结素材，但不能用于精确剪辑。中文 word-level 输出不能被当成精确 timing，除非 validation 证明它对该文件可靠。
+
+在 `platform` mode 下，ASR 是平台 capability。`project explore --asr auto` 不应主动调用 Cloudflare Whisper 或 `whisper-cli`；缺少 `transcript.json` 时应返回明确 blocker，要求 host/platform 先提供符合 schema 的 `transcript.json`，或显式使用 `--asr external/off` 配合已落地 transcript。
 
 ## 清理检测
 
@@ -206,7 +215,7 @@ V0 enrichment 从完整可创建元素体系开始：
 - `project element-catalog` 必须额外返回 `purpose_recommendations`，按 `source_mode × presentation_intent` 给 agent 一个用途驱动的候选集。首版 intent 为 `internal_tutorial`、`product_demo`、`course_lesson`、`knowledge_explainer` 和 `short_form`。
 - Enrichment 不是“迁移来的元素全用”，也不是“默认不用”。Agent 应先理解用户希望视频素材变成什么，再从 purpose recommendations 中选择最小有效元素集合，并把它们放进 focus-candidates / focus-grounding / review contract。
 - 是否生图不由 `source_mode` 粗暴决定。Agent 应先写明每段的 `business_role`、`viewer_job` 和 `visual_gap`：可从源画面指给观众看的内容优先用 `source_ui_component`；源画面不可见的抽象概念、B-roll、品牌记忆点才用 `generated_asset`；没有 viewer job 的装饰应标记 `none`。
-- 需要图标、动态图标、UI 组件、贴纸、模板或图片时，主路径是 internet-first visual acquisition：agent 通过 host MCP、API 或平台工具在互联网上语义检索现成素材，并在 proposal/review 中说明候选、来源、用途和风险。确认后，CLI 通过 `visual-search` / `visual-acquire` 把可下载或 handoff 的素材固化为 project-local assets。不要把“先建立长期本地 UI 素材库”作为前提。
+- 需要图标、动态图标、UI 组件、贴纸、模板或图片时，主路径是 internet-first visual acquisition：agent 通过 host MCP、API 或平台工具在互联网上语义检索现成素材，并在 proposal/review 中说明候选、来源、用途和风险。确认后，在 `standalone` mode 下 CLI 可以通过 `visual-search` / `visual-acquire` 把可下载或 handoff 的素材固化为 project-local assets；在 `platform` mode 下平台工具先完成 provider 调用和授权，再把候选 metadata 或本地导出写入 TaskWorkspace/project，CLI 只导入和校验。不要把“先建立长期本地 UI 素材库”作为前提。
 - 首批外部来源按能力分层：UI 组件优先 shadcn MCP 和 21st.dev HTTP MCP；通用图标优先 Iconify API；动态图标优先 Lordicon official API；Lottie/dotLottie runtime 优先 LottieFiles dotLottie；Rive 和完整 React design systems 后置。选择依据是是否流行、活跃、官方支持 MCP/registry/API，以及是否能给出可审查 metadata。
 - 本地 `assets/*` 只表示当前 project 的已确认渲染输入，不是跨 agent、跨项目复用的全局缓存。每次新任务应根据用户目标重新语义检索；如果互联网检索失败，应报告 blocker 或换 provider，而不是退回手写低质 UI。
 - 互联网搜索和 provider 调用发生在 acquisition / host-agent 阶段；render 阶段仍只消费当前 project 已落地或 host workspace 可稳定引用的 assets，保证这一次输出可检查、可追踪。`visual_asset` 是 v1.2 的一等 element type；legacy `generated_asset` 继续兼容，但新图标/Lottie/UI/template 素材应优先用 `visual_asset` 引用。
@@ -216,7 +225,7 @@ V0 enrichment 从完整可创建元素体系开始：
 - 可选用户提供或 agent-generated local images。
 - 可选通过 Music Acquisition 获得的 background music，并使用 speech-safe mixing。
 
-Generated images 和原创 B-roll 仍是 agent/platform 职责；icons、animated icons、Lottie、UI/template snapshots、贴纸、确定性图片或 B-roll 则优先通过 Visual Acquisition 获取或导入。只有找不到确定性素材或用户目标需要原创概念图时才使用 image generation。Music 进入 koubo-clip 的一等 acquisition 流程：CLI 可以扫描本地曲库、下载网络素材或调用 MiniMax 生成音乐，但 final render 只消费 project-local files；provider URL、API key 和临时下载链接不能成为最终 asset refs。Flowcharts、data cards、subtitles、software screenshots 和 deterministic text cards 应由 CLI 或 agent 以 HTML/SVG/source crops 生成，不应走 image models。
+Generated images 和原创 B-roll 仍是 agent/platform 职责；icons、animated icons、Lottie、UI/template snapshots、贴纸、确定性图片或 B-roll 则优先通过 Visual Acquisition 获取或导入。只有找不到确定性素材或用户目标需要原创概念图时才使用 image generation。Music 在 `standalone` mode 下进入 koubo-clip acquisition 流程：CLI 可以扫描本地曲库、下载网络素材或调用 MiniMax 生成音乐；在 `platform` mode 下，skill 产出 music request，平台工具生成或获取音乐并落地，CLI 只导入、校验和 review。final render 只消费 project-local files 或未来 stable workspace refs；provider URL、API key、本机绝对路径、MCP 原始结果和临时下载链接不能成为最终 asset refs。Flowcharts、data cards、subtitles、software screenshots 和 deterministic text cards 应由 CLI 或 agent 以 HTML/SVG/source crops 生成，不应走 image models。
 
 Visual Acquisition 也是一等 acquisition 流程。支持的首批 CLI 命令是：
 
