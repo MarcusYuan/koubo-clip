@@ -185,7 +185,7 @@ ${projectCommands.map((item) => `  koubo-clip project ${item}`).join("\n")}`;
 
 function loadLocalEnv() {
   loadEnvFile(join(process.cwd(), ".env"));
-  loadEnvFile(join(homedir(), ".koubo-clip", ".env"));
+  loadEnvFile(join(process.env.HOME ?? homedir(), ".koubo-clip", ".env"));
 }
 
 function loadEnvFile(path: string) {
