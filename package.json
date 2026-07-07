@@ -1,0 +1,54 @@
+{
+  "name": "koubo-clip",
+  "description": "Agent-driven local talking-head video cleanup and enrichment CLI.",
+  "version": "0.0.1",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "koubo-clip": "bin/koubo-clip"
+  },
+  "files": [
+    "bin/koubo-clip",
+    "packages/cli/src",
+    "!packages/cli/src/**/*.test.ts",
+    "packages/cli/vendor/hyperframes",
+    "!packages/cli/vendor/hyperframes/**/*.test.*",
+    "!packages/cli/vendor/hyperframes/resources/**/SKILL.md",
+    "!packages/cli/vendor/hyperframes/resources/**/agents/**",
+    "skills/koubo-clip",
+    "skills.sh.json",
+    "README.md",
+    "README-CN.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "docs/*.md",
+    "docs/assets/readme-cn-workflow.png"
+  ],
+  "scripts": {
+    "koubo-clip": "bun packages/cli/src/cli.ts",
+    "pack:dry": "npm pack --dry-run",
+    "package:internal": "bash scripts/package-internal.sh",
+    "typecheck": "bunx tsc --noEmit",
+    "test": "bun test packages/cli/src"
+  },
+  "engines": {
+    "node": ">=22",
+    "bun": ">=1.2"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "keywords": [
+    "agent-skills",
+    "video",
+    "ffmpeg",
+    "talking-head",
+    "codex",
+    "claude",
+    "hermes"
+  ],
+  "dependencies": {
+    "gsap": "^3.15.0"
+  }
+}

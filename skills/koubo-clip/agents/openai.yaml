@@ -1,0 +1,4 @@
+interface:
+  display_name: "koubo-clip"
+  short_description: "Clean talking-head videos with the koubo-clip CLI"
+  default_prompt: "Use koubo-clip to explore, review, render, and inspect talking-head video cleanup projects."

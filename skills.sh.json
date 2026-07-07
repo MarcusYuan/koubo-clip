@@ -1,0 +1,11 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "notGrouped": "bottom",
+  "groupings": [
+    {
+      "title": "Video",
+      "description": "Agent workflow for local talking-head video cleanup, captions, visual enrichment, music, rendering, and inspection.",
+      "skills": ["koubo-clip"]
+    }
+  ]
+}
