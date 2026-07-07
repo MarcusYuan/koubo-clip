@@ -50,7 +50,7 @@ koubo-clip is not a full NLE or a black-box AI video generator. It is not design
 
 ## Workflow
 
-![koubo-clip workflow](docs/assets/readme-cn-workflow.png)
+![koubo-clip workflow](docs/assets/readme-en-workflow.png)
 
 A typical flow:
 
