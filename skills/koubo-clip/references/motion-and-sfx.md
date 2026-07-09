@@ -13,9 +13,11 @@ Use this file when a plan includes motion, click cues, transition, or SFX.
 ## SFX Rules
 
 - SFX should sync to a visible or spoken event.
+- Tie each SFX to a real UI action, spoken payoff, transition, or notification moment.
 - Use click/pop sparingly and at low volume.
 - SFX without a reason should be removed.
 - SFX in screen recordings should support a UI action, not decorate every beat.
+- Do not use SFX as filler for an empty asset plan; no SFX is valid when it better serves clarity or authenticity.
 
 ## Music
 

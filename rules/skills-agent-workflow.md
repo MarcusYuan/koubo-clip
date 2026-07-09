@@ -67,10 +67,13 @@
 - 把 transcript 和 candidate files 当作 review surfaces，不是隐藏 internals。
 - `project explore` 后，总结 `material-report.md`，并询问用户希望素材变成什么。
 - `project review` 后，先写 `production-proposal.json` 并运行 `project proposal`。展示的确认单必须同时覆盖剪辑、字幕、UI 动效、图片/生图、音乐、SFX、风险和默认/可选方案。
+- `production-proposal.json` 必须包含 2-3 个 option。每个 option 要说明适合的发布目标、为什么适合当前素材、剪辑策略、字幕策略、视觉策略、图片/生图意图、音乐策略、SFX 策略、风险和确认项。
+- 用户确认前，proposal 只能写素材意图：intent、query、provider preference、license/cost/source risk 和 reason。不要写最终 `asset_id`、local path、provider URL、download URL、绝对路径或 raw MCP payload。
 - 用户回复 `OK` 时使用 `recommended_option_id`；用户回复 option id 时使用对应 option；用户自然语言修改时先更新 proposal 或把修改反映到后续 artifacts。
 - render 前展示 review package：original subtitles、proposed cuts、timestamps、reasons 和 unresolved risks，并把这些信息纳入 production proposal。
 - 把自然语言 review feedback 转换成 `edit-plan.json`；除非用户愿意，不要要求用户编辑 JSON。
 - 用户确认 production proposal 前，不要写 `edit-plan.json`、`focus-candidates.json`、`music-request.json`、`asset-manifest.json` 或 `enrichment-plan.json`，也不要生图、获取音乐或 render。
+- 用户确认 production proposal 前，也不要写 `visual-request.json`。确认后才把选中 option 转成 `edit-plan`、`focus-*`、`visual-request`、`music-request`、`asset-manifest` 和 `enrichment-plan`。
 - 如果请求 enrichment，先推断一个主要 `presentation_intent`：`internal_tutorial`、`product_demo`、`course_lesson`、`knowledge_explainer` 或 `short_form`。然后运行或读取 `project element-catalog`，优先从 `purpose_recommendations.<source_mode>.<presentation_intent>` 展示元素候选；只有用途不清楚时才退回 `recommendations.<source_mode>`。用户的原始业务关键词只是线索，不是最终 selector。
 - 对每个候选增强点，先写 `business_role`、`viewer_job`、`visual_gap` 和 `recommended_treatment`。`source_mode` 只约束遮挡和安全区，不能单独决定是否生图。
 - `recommended_treatment` 只能表达为：`source_ui_component`、`generated_asset`、`text_or_caption`、`sfx_or_music` 或 `none`。没有明确 viewer job 的增强点应为 `none`，不要为了“丰富”而添加。
@@ -86,6 +89,7 @@
 - 对 screen recordings，默认使用 transparent guidance；除非用户目标证明有必要，不添加 generated images 或 music。
 - 如果当前 host 没有生图能力，skill 必须诚实标记 missing asset、请求用户提供图片，或只在测试中使用明确标记的 deterministic placeholder；不要声称完成了 AI 生图。
 - Platform mode 下如果 host 没有对应平台工具，skill 必须报告 blocker，而不是退回 CLI provider 或把 provider URL/API/MCP 原始结果写进 artifacts。
+- 如果 proposal 选择 BGM、SFX、icons、Lottie、UI handoff、图片、B-roll 或生图，后续必须出现对应 request/review/manifest/enrichment/QA artifact。选择不加素材时，也必须说明为什么素材不会帮助 viewer job；不要把空素材计划说成已准备完成。
 - 只为 viewer job 添加 visual content：定位段落、引导注意力、解释 sequence、总结 spoken point，或为可发布短视频增加 pacing relief。Decorative elements 是失败计划。
 - AI 可以自主选择 HyperFrames elements，但选择必须服务用户用途：内部教程优先透明引导和 SFX；产品演示优先 UI focus/path/callout；课程讲解优先 chapter/flowchart/data；知识解释优先 key point/quote/data/concept visual；短视频包装才优先 hook、转场、强字幕、图片和配乐。
 - 只有当 plan 引用真实本地 `asset_id` 时才使用 `visual_asset`、legacy `generated_asset` 或兼容 `kind:"image"`。常见图标/动态图标/UI/template/B-roll/image 优先用 `visual_asset`；原创 AI 生图仍可用 legacy `generated_asset` 或 manifest `source:"agent_generated"`。只有当 background music 是已批准 publishing goal 且已经通过 `music-review` 的一部分时才使用 `music[]`。否则两者都留空。

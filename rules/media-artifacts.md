@@ -82,7 +82,7 @@ koubo-clips/<slug>/
 - `analysis.json` 包含机器检测出的 silence、pause、filler、false-start 和 repeat candidates，带 source IDs。
 - `review-package.md` 是 human-readable pre-render review surface。
 - `review-package.json` 包含 original subtitle ranges、proposed cuts、reasons、confidence、unresolved risks 和 source identity。
-- `production-proposal.json` 是用户确认前的制作方案合同，由 skill/agent 写入。它包含 source mode、presentation intent、目标摘要、素材摘要、默认 option，以及每个 option 的剪辑、字幕、UI 动效、图片/生图、音乐、SFX 和确认事项。
+- `production-proposal.json` 是用户确认前的制作方案合同，由 skill/agent 写入。它包含 source mode、presentation intent、目标摘要、素材摘要、默认 option，以及 2-3 个 option。每个 option 说明适合的发布目标、为什么适合当前素材、剪辑、字幕、UI 动效、图片/生图、音乐、SFX、风险和确认事项。它只能写素材 intent、query、provider preference、license/cost/source risk 和 reason，不能写最终 `asset_id`、local path、provider URL、download URL、绝对路径或 raw MCP payload。
 - `production-proposal.md` 是 CLI 从 proposal 物化出的 human-readable confirmation surface。它用于用户回复 `OK` 或 option id，不是 render source of truth。
 - `focus-candidates.md` 是 semantic focus planning 的 human-readable candidate surface。
 - `focus-candidates.json` 记录 normalized semantic intent、candidate element type、viewer job、风险和所需证据。
@@ -135,7 +135,8 @@ koubo-clips/<slug>/
 - CLI 的检查状态只表示 `sampled`、`warning` 或 `blocker`；视觉审美、是否达到用户目标和是否需要重做由 skill/agent 根据 inspection frames 判断。
 - `project focus-candidates`、`project focus-frames`、`project focus-grounding` 和 `project focus-review` 应暴露对应的 candidate、frame、evidence 和 proposed element paths，让 agents 可以从 candidate 回溯到证据，再回到 final plan。
 - `project proposal` 只校验和物化 `production-proposal`，不能生成 `edit-plan`、`focus-*`、`music-*`、`asset-manifest`、`enrichment-plan` 或 render artifacts。
-- `production-proposal` 可以引用 `review-package` 中的 cleanup candidate IDs，但不能包含未确认的 asset path、provider URL、绝对路径、`..`、无证据坐标或最终 output timeline。
+- `production-proposal` 可以引用 `review-package` 中的 cleanup candidate IDs，但不能包含未确认的 asset id/path、provider URL、download URL、绝对路径、`..`、raw MCP payload、无证据坐标或最终 output timeline。
+- 如果 proposal 选择 BGM、SFX、icons、Lottie、UI handoff、图片、B-roll 或生图，确认后的执行阶段必须有对应 request/review/manifest/enrichment/QA artifact。选择不加素材时必须说明原因，不能把空素材计划当作已完成。
 - `element_usage[]` 应暴露 adapter family、render strategy 和 screen safety，让 review 能区分 native composition、CLI overlay、caption component、anchored chip 和 SFX mix。
 - 对 screen recordings，任何 `target_rect` 或 `anchor_point` 都必须能从 `focus-grounding.json` 追溯到 `focus-frames.json` 里的 frame evidence；没有证据的坐标无效。
 - Music 是可选的；存在时不能压过 speech。

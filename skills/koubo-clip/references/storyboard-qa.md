@@ -11,6 +11,12 @@ Use this file before render and after inspect.
 
 Do not create a separate inspection plan that can drift from render behavior.
 
+## Proposal Consistency
+
+If the confirmed proposal selected BGM, SFX, icons, Lottie/dotLottie, UI handoff, image, B-roll, or generated-image work, the execution stage must include the matching request/review/manifest/enrichment artifacts and QA checks before render.
+
+If the confirmed proposal selected no assets, the proposal or review surface must explain why. Do not report "assets ready" for an empty plan.
+
 ## Before Render
 
 Run `project enrich-plan` and show `qa_checks[]`:

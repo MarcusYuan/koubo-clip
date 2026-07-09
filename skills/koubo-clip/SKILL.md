@@ -47,6 +47,8 @@ Read only the references needed for the current stage:
 5. Read `material-report.md`. If the target is unclear, ask what the material should become before planning edits.
 6. Run `koubo-clip project review <project> --provider-mode <mode>`.
 7. Write `production-proposal.json` from `material-report.md`, `review-package.md/json`, the user goal, optional `element-catalog`, and optional music/visual source facts.
+   - Include 2-3 options. Each option must state the publishing goal it fits, why it fits this source material, cleanup strategy, subtitle strategy, visual strategy, image/generated-image intent, music strategy, SFX strategy, risks, and confirmation items.
+   - Before confirmation, write asset intent only: intent, query, provider preference, license/cost/source risk, and reason. Do not write final `asset_id`, local path, provider URL, download URL, absolute path, or raw MCP payload.
 8. Run `koubo-clip project proposal <project> --provider-mode <mode>` and show `production-proposal.md`: default option, alternatives, proposed cuts, subtitles, visual direction, images, music, SFX, reasons, risks, and what needs confirmation.
 9. If the user replies `OK`, use `recommended_option_id`; if they reply with an option id, use that option. If they ask for changes, update the proposal or reflect the change in later artifacts.
 10. Convert the confirmed cleanup choice into `edit-plan.json`; do not ask users to edit JSON unless they want to.
@@ -69,6 +71,8 @@ Read only the references needed for the current stage:
 - Never treat text-only transcripts as precise cut timing.
 - Treat unvalidated Chinese word-level timing as segment timing; do not use it for frame-precise cuts.
 - `production-proposal.json` is a confirmation surface, not the execution source of truth.
+- Before user confirmation, do not write `edit-plan.json`, `focus-candidates.json`, `visual-request.json`, `music-request.json`, `asset-manifest.json`, or `enrichment-plan.json`; do not acquire assets, generate media, or render.
+- Empty or no-asset plans must explain why no assets help the viewer job; never claim assets are ready when the request/review/manifest/enrichment artifacts do not exist.
 - `enrichment-plan.json` uses output-timeline seconds after cleanup, not raw source timestamps.
 - Select visuals by viewer job and evidence, not by fixed business keywords.
 - For screen recordings, use transparent guidance, real frame evidence, and normalized coordinates. Add `params.coordinate_source_frame` for every `target_rect` or `anchor_point`.

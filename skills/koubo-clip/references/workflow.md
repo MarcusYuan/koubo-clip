@@ -41,6 +41,28 @@ Use this file for the normal project flow. The CLI is the execution surface; thi
 
 The proposal can describe desired images, music, UI motion, SFX, and visual assets, but it must not pretend those files already exist. Final asset ids and output timeline coordinates belong in the execution artifacts after confirmation.
 
+## Production Proposal Contract
+
+`production-proposal.json` is the confirmation surface. It is not the render plan.
+
+- Write 2-3 options, not a single plan.
+- For each option, cover: publishing goal, why it fits this material, cleanup strategy, subtitle strategy, visual strategy, image/generated-image intent, music strategy, SFX strategy, risks, and confirmation items.
+- Before confirmation, write only asset intent: intent, query, provider preference, license/cost/source risk, and reason.
+- Before confirmation, do not write final `asset_id`, local path, provider URL, download URL, absolute path, raw MCP payload, `edit-plan.json`, `focus-candidates.json`, `visual-request.json`, `music-request.json`, `asset-manifest.json`, `enrichment-plan.json`, or render artifacts.
+- If an option uses no assets, state why the source, captions, or cleanup already serve the viewer job.
+
+## Example
+
+User goal: "精简这个，突出卖货". Source: screen recording plus product-demo speech.
+
+Proposal options:
+
+- `sales-conversion`: strong sales version. Fast cleanup, denser payoff subtitles, feature icons for call/navigation/payment-like selling points, light short-form music with ducking, and restrained click SFX. Use when the publishing goal is conversion. Risk: icons/music need post-confirm fulfillment and license review.
+- `authentic-review`: realistic seeding version. Keep more natural speech, use anchor captions plus a few key-point lower thirds, no music by default, and only source UI highlights. Use when credibility matters more than packaging. Reason for no extra assets: decoration would reduce trust and can hide UI.
+- `tutorial-demo`: tutorial explainer version. Organize around steps, use transparent UI focus/callouts, step labels, and maybe one navigation/function icon. Use when the viewer must learn the workflow. Risk: screen coordinates need `focus-frames` and `focus-grounding`.
+
+After the user confirms an option, convert it into execution artifacts: `edit-plan.json` from review candidate ids; `focus-candidates.json`, `focus-frames.json`, `focus-grounding.json`, and `focus-review.json` for UI moments; `visual-request.json` for approved icons/Lottie/UI/image/B-roll intents; `music-request.json` for approved BGM; `asset-manifest.json` only for landed assets; and `enrichment-plan.json` using output-timeline timings.
+
 ## Platform Blockers
 
 If the CLI returns `PROVIDER_MODE_MISMATCH`, keep the project mode and rerun with the matching `--provider-mode`, or create a new project. If it returns `PLATFORM_PROVIDER_BLOCKED`, ask the host/platform capability to fulfill the request and write the required artifact; do not retry by switching to standalone or by passing provider URLs, API keys, raw MCP payloads, or absolute local paths into render artifacts.

@@ -20,6 +20,20 @@ Use this file when deciding whether to add source highlights, icons, animated ic
    - `talking_head_avatar`: full packaging, cards, images, and low music are acceptable when they serve the publishing goal.
    - `mixed`: use the strictest rule for the visible moment.
 
+## Active Planning Checklist
+
+When the user asks for broad goals such as "sell harder", "make it clear", or "short video", proactively consider:
+
+- caption emphasis
+- lower-third or key-point label
+- source UI highlight, crop, callout, or step label
+- icon or animated icon
+- Lottie or dotLottie motion
+- shadcn or 21st UI static handoff
+- product image, B-roll, or generated image
+
+Choose only treatments that serve a viewer job. If none help, choose no insert and write the reason, such as "source UI is already clear", "asset would hide the screen", or "the goal is authenticity".
+
 ## Source Priority
 
 - Common semantic icons such as alarm, phone, navigation, message, bluetooth, battery, call, or checkmark: use Iconify or Lordicon first.
@@ -40,3 +54,4 @@ Before confirmation, explain:
 - which provider or host tool will be used
 - license, cost, source, or attribution risk
 - whether grounding evidence is needed
+- only intent/query/provider preference; no final asset id, local path, provider URL, download URL, absolute path, or raw MCP payload

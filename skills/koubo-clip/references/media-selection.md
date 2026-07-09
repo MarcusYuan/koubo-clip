@@ -6,6 +6,7 @@ Use this file when choosing music, SFX, internet visual assets, generated images
 
 - Screen recordings default to no music unless the goal is packaged short-form output.
 - Talking-head or knowledge packaging can use low, ducked music.
+- In `production-proposal.json`, describe music intent only: mood, source preference, target duration, volume/fade/ducking intent, license/cost/source risk, and reason. Do not write final `asset_id`, provider URL, download URL, local path, or raw provider payload before confirmation.
 - Always write the need clearly in `music-request.json`: source intent, mood, target duration, volume, fade, ducking, and why it helps the viewer.
 - In `standalone` mode, use `project music-catalog`, `project music-acquire`, and `project music-review`.
 - In `platform` mode, ask the host/platform music capability to generate, search, license, or import the track first. Then run CLI music commands only to import, validate, and review landed project-local assets.
@@ -14,6 +15,7 @@ Use this file when choosing music, SFX, internet visual assets, generated images
 
 ## Visual Assets
 
+- In `production-proposal.json`, describe visual asset intent only: viewer job, semantic query, preferred source, license/cost/source risk, and why it helps. Do not write final `asset_id`, local path, provider URL, download URL, absolute path, or raw MCP payload before confirmation.
 - Always write the need clearly in `visual-request.json`: viewer job, semantic query, asset type, preferred sources, timing/zone when known, and why it helps the viewer.
 - In `standalone` mode, use `project visual-search`, `project visual-acquire`, and `project visual-review`.
 - In `platform` mode, ask the host/platform visual/component/image/MCP tools to search, authorize, download, export, or generate first. They must write normalized `visual-candidates.json` plus project-local files or stable workspace refs before CLI import/review.
@@ -34,3 +36,7 @@ Do not use generated images for subtitles, flowcharts, software screenshots, dat
 ## User Assets
 
 If the user provides files, import them into the project, record local paths in `asset-manifest.json`, and still include them in QA checks.
+
+## No Asset Plan
+
+If the confirmed direction uses no music, SFX, icons, Lottie, UI handoff, images, B-roll, or generated images, state why. Valid reasons include source UI readability, authenticity, user-provided material already covering the point, or decoration risk. Do not claim asset preparation is complete when request/review/manifest artifacts are absent.
