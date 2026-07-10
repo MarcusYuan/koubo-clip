@@ -215,6 +215,37 @@ export type FocusCandidatesArtifact = {
   candidates: FocusCandidate[];
 };
 
+export type SourceFrameRequestItem = {
+  id: string;
+  source_id: string;
+  time_seconds: number;
+  segment_id?: string;
+  transcript_quote: string;
+  reason: string;
+};
+
+export type SourceFrameRequestArtifact = {
+  version: "1.0";
+  frames: SourceFrameRequestItem[];
+};
+
+export type SourceFrame = SourceFrameRequestItem & {
+  index: number;
+  path: string;
+  mime_type: "image/jpeg";
+  width: number;
+  height: number;
+  size_bytes: number;
+  sha256: string;
+};
+
+export type SourceFramesArtifact = {
+  version: "1.0";
+  frames: SourceFrame[];
+  frame_count: number;
+  total_size_bytes: number;
+};
+
 export type FocusFrame = {
   id: string;
   candidate_id: string;
@@ -514,6 +545,8 @@ export const projectArtifacts = {
   productionProposalMarkdown: "production-proposal.md",
   editPlan: "edit-plan.json",
   edl: "edl.json",
+  sourceFrameRequest: "source-frame-request.json",
+  sourceFrames: "source-frames.json",
   focusCandidates: "focus-candidates.json",
   focusCandidatesMarkdown: "focus-candidates.md",
   focusFrames: "focus-frames.json",
@@ -835,6 +868,17 @@ export function parseVisualReview(value: unknown): VisualReviewArtifact {
     items,
     warnings: optionalStringArray(obj.warnings, "warnings"),
   };
+}
+
+export function parseSourceFrameRequest(value: unknown): SourceFrameRequestArtifact {
+  const obj = strictRecord(value, "source frame request", ["version", "frames"]);
+  const version = string(obj.version, "version");
+  if (version !== "1.0") throw new Error('source frame request version must be "1.0"');
+  const values = array(obj.frames, "frames");
+  if (values.length < 1 || values.length > 20) throw new Error("source frame request frames must contain between 1 and 20 items");
+  const frames = values.map((item, index) => sourceFrameRequestItem(item, `frames[${index}]`));
+  unique(frames.map((frame) => frame.id), "source frame request id");
+  return { version, frames };
 }
 
 export function parseFocusCandidates(value: unknown): FocusCandidatesArtifact {
@@ -1201,6 +1245,18 @@ function focusCandidate(value: unknown, name: string): FocusCandidate {
     sfx_id: obj.sfx_id === undefined ? undefined : string(obj.sfx_id, `${name}.sfx_id`),
     reason: string(obj.reason, `${name}.reason`),
     params: obj.params === undefined ? undefined : elementParams(obj.params, `${name}.params`),
+  };
+}
+
+function sourceFrameRequestItem(value: unknown, name: string): SourceFrameRequestItem {
+  const obj = strictRecord(value, name, ["id", "source_id", "time_seconds", "segment_id", "transcript_quote", "reason"]);
+  return {
+    id: opaqueIdentifier(obj.id, `${name}.id`),
+    source_id: opaqueIdentifier(obj.source_id, `${name}.source_id`),
+    time_seconds: nonNegativeNumber(obj.time_seconds, `${name}.time_seconds`),
+    segment_id: obj.segment_id === undefined ? undefined : opaqueIdentifier(obj.segment_id, `${name}.segment_id`),
+    transcript_quote: nonBlankString(obj.transcript_quote, `${name}.transcript_quote`),
+    reason: nonBlankString(obj.reason, `${name}.reason`),
   };
 }
 
@@ -1640,6 +1696,15 @@ function record(value: unknown, name: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function strictRecord(value: unknown, name: string, allowedKeys: readonly string[]): Record<string, unknown> {
+  const obj = record(value, name);
+  const allowed = new Set(allowedKeys);
+  for (const key of Object.keys(obj)) {
+    if (!allowed.has(key)) throw new Error(`${name}.${key} is not allowed`);
+  }
+  return obj;
+}
+
 function array(value: unknown, name: string): unknown[] {
   if (!Array.isArray(value)) throw new Error(`${name} must be an array`);
   return value;
@@ -1648,6 +1713,21 @@ function array(value: unknown, name: string): unknown[] {
 function string(value: unknown, name: string): string {
   if (typeof value !== "string" || value.length === 0) throw new Error(`${name} must be a non-empty string`);
   return value;
+}
+
+function nonBlankString(value: unknown, name: string): string {
+  const text = string(value, name);
+  if (text.trim().length === 0) throw new Error(`${name} must not be blank`);
+  return text;
+}
+
+function opaqueIdentifier(value: unknown, name: string): string {
+  const text = nonBlankString(value, name);
+  const candidate = text.trim();
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(candidate) || candidate.includes("/") || candidate.includes("\\")) {
+    throw new Error(`${name} must be an opaque identifier, not a path or URL`);
+  }
+  return text;
 }
 
 function urlString(value: unknown, name: string): string {

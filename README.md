@@ -58,6 +58,7 @@ A typical flow:
 raw talking-head footage
   -> project create
   -> explore: transcription, media probing, material analysis
+  -> source-frames: sample semantic evidence on the source timeline
   -> review: cleanup candidates and risk review
   -> proposal: cuts, captions, visuals, music, and SFX plan
   -> user confirmation
@@ -67,7 +68,7 @@ raw talking-head footage
   -> inspect: frame sampling and artifact checks
 ```
 
-Before confirmation, koubo-clip only presents a plan: what to cut, why it should be cut, how captions should work, where images/icons/UI components/motion are needed, whether music or SFX are useful, and which API or network actions are required. After confirmation, it acquires assets, generates music when requested, writes execution artifacts, and renders.
+Before the proposal, the agent may select up to 20 source times from the transcript and material report, and the CLI creates project-local JPEGs for a vision-capable host to understand the original footage. These read-only source frames do not imply user approval. Before confirmation, koubo-clip does not create the edit plan, focus/visual/music execution artifacts, or a render. A standalone workflow without vision may explicitly mark the omission and continue transcript-only; missing platform vision is a host-workflow blocker. The frame-extraction command itself never calls a vision model or provider.
 
 The render step only consumes files or stable references already landed in the current project directory. Provider URLs, temporary download links, and API keys are not valid final render inputs.
 
@@ -113,6 +114,7 @@ For manual troubleshooting, the first steps can be run directly:
 ```bash
 koubo-clip project create ./raw.mp4
 koubo-clip project explore koubo-clips/raw --asr auto
+koubo-clip project source-frames koubo-clips/raw
 koubo-clip project review koubo-clips/raw
 ```
 
@@ -300,8 +302,11 @@ The first half is generated directly by the CLI:
 ```bash
 bun run koubo-clip -- project create /path/to/video.mp4
 bun run koubo-clip -- project explore koubo-clips/video --asr auto
+bun run koubo-clip -- project source-frames koubo-clips/video
 bun run koubo-clip -- project review koubo-clips/video
 ```
+
+`project source-frames` reads an agent-authored `source-frame-request.json` and creates read-only source evidence at source-local times. The CLI does not choose the timestamps or make visual judgments.
 
 The following commands read artifacts already written by the agent or user. They do not make creative decisions automatically:
 
@@ -353,6 +358,8 @@ bun run koubo-clip -- project focus-review <project>
 Common files in the project directory:
 
 - `material-report.md`
+- `source-frame-request.json` / `source-frames.json`
+- `.source-frames/`
 - `review-package.md` / `review-package.json`
 - `production-proposal.md` / `production-proposal.json`
 - `edit-plan.json`

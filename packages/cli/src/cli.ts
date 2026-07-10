@@ -11,6 +11,7 @@ import {
   elementCatalogProject,
   enrichPlanProject,
   exploreProject,
+  sourceFramesProject,
   focusCandidatesProject,
   focusFramesProject,
   focusGroundingProject,
@@ -43,6 +44,7 @@ Usage:
   koubo-clip skills install --target codex|claude|hermes [--dest <dir>] [--force]
   koubo-clip project create <video...> [--provider-mode standalone|platform]
   koubo-clip project explore <project> [--provider-mode standalone|platform] [--asr auto|off|external] [--asr-provider cloudflare-whisper|whisper-cli]
+  koubo-clip project source-frames <project> [--provider-mode standalone|platform] [--json]
   koubo-clip project review <project>
   koubo-clip project proposal <project>
   koubo-clip project element-catalog <project>
@@ -65,6 +67,7 @@ Usage:
 const projectCommands = [
   "create <video...> [--provider-mode standalone|platform]",
   "explore <project> [--provider-mode standalone|platform] [--asr auto|off|external] [--asr-provider cloudflare-whisper|whisper-cli]",
+  "source-frames <project> [--provider-mode standalone|platform] [--json]",
   "review <project> [--provider-mode standalone|platform]",
   "proposal <project> [--provider-mode standalone|platform]",
   "element-catalog <project> [--provider-mode standalone|platform]",
@@ -265,6 +268,7 @@ async function runProjectCommand(argv: string[]) {
   const mode = providerMode(flags["provider-mode"]);
   if (subcommand === "create") return createProject(rest, { projectPath: flags.project, providerMode: mode });
   if (subcommand === "explore") return await exploreProject(required(rest[0], "project path"), { asr: asrMode(flags.asr), asrProvider: asrProvider(flags["asr-provider"]), providerMode: mode });
+  if (subcommand === "source-frames") return sourceFramesProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "review") return reviewProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "proposal") return proposalProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "element-catalog") return elementCatalogProject(required(rest[0], "project path"), { providerMode: mode });

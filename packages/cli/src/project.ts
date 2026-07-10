@@ -1,7 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { Buffer } from "node:buffer";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, extname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import * as nodeFs from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import * as nodePath from "node:path";
+import { basename, extname, join, relative, resolve, sep } from "node:path";
 import {
   type AnalysisArtifact,
   type AnalysisCandidate,
@@ -26,6 +29,9 @@ import {
   type ProductionProposalOption,
   type ProjectMetadataArtifact,
   type ProviderExecutionMode,
+  type SourceFrame,
+  type SourceFrameRequestArtifact,
+  type SourceFramesArtifact,
   type SourcesManifest,
   type TranscriptArtifact,
   type VisualAcquisitionArtifact,
@@ -46,6 +52,7 @@ import {
   parseProductionProposal,
   parseProjectMetadata,
   parseReviewPackage,
+  parseSourceFrameRequest,
   parseSourcesManifest,
   parseTranscript,
   parseVisualAcquisition,
@@ -235,6 +242,15 @@ export type ProjectFocusFramesData = {
   focus_frames_path: string;
   frame_count: number;
   frames: FocusFrame[];
+};
+
+export type ProjectSourceFramesData = {
+  project_path: string;
+  source_frame_request_path: string;
+  source_frames_path: string;
+  frame_count: number;
+  total_size_bytes: number;
+  warnings: string[];
 };
 
 export type ProjectFocusGroundingData = {
@@ -443,6 +459,23 @@ export type AsrProvider = "cloudflare-whisper" | "whisper-cli";
 export type ProviderModeOption = { providerMode?: ProviderExecutionMode };
 
 const CUT_PADDING_SECONDS = 0.05;
+const fsRuntime = nodeFs as unknown as { accessSync(path: string, mode?: number): void; constants: { R_OK: number }; realpathSync(path: string): string };
+const pathRuntime = nodePath as unknown as { isAbsolute(path: string): boolean };
+const MAX_SOURCE_FRAME_BYTES = 1_500_000;
+const MAX_SOURCE_FRAME_BATCH_BYTES = 30_000_000;
+const SOURCE_FRAME_ATTEMPTS = [
+  { maxEdge: 1280, quality: 4 },
+  { maxEdge: 1280, quality: 6 },
+  { maxEdge: 960, quality: 6 },
+] as const;
+
+export function validateSourceFrameByteLimits(
+  frameSizes: readonly number[],
+  limits = { maxFrameBytes: MAX_SOURCE_FRAME_BYTES, maxBatchBytes: MAX_SOURCE_FRAME_BATCH_BYTES },
+): void {
+  if (frameSizes.some((size) => size > limits.maxFrameBytes)) throw sourceFrameError("SOURCE_FRAME_IMAGE_TOO_LARGE", "source frame image exceeds byte limit");
+  if (frameSizes.reduce((sum, size) => sum + size, 0) > limits.maxBatchBytes) throw sourceFrameError("SOURCE_FRAME_BATCH_TOO_LARGE", "source frame batch exceeds byte limit");
+}
 
 export function createProject(
   inputPaths: string[],
@@ -691,6 +724,38 @@ export function focusFramesProject(projectPath: string, options: ProviderModeOpt
     });
   } catch (error) {
     return fail("project.focus-frames", "PROJECT_FOCUS_FRAMES_FAILED", error);
+  }
+}
+
+export function sourceFramesProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.source-frames", ProjectSourceFramesData> {
+  try {
+    resolveProjectProviderMode(projectPath, options.providerMode);
+    rmSync(join(projectPath, projectArtifacts.sourceFrames), { force: true });
+    rmSync(join(projectPath, ".source-frames"), { recursive: true, force: true });
+
+    const request = readSourceFrameRequest(projectPath);
+    const manifest = readSourcesForSourceFrames(projectPath);
+    const warnings = sourceFrameDuplicateWarnings(request);
+    const frames = extractSourceFrames(projectPath, request, manifest);
+    validateSourceFrameByteLimits(frames.map((frame) => frame.size_bytes));
+    const totalSizeBytes = frames.reduce((sum, frame) => sum + frame.size_bytes, 0);
+    writeJson(join(projectPath, projectArtifacts.sourceFrames), {
+      version: "1.0",
+      frames,
+      frame_count: frames.length,
+      total_size_bytes: totalSizeBytes,
+    } satisfies SourceFramesArtifact);
+    return ok("project.source-frames", {
+      project_path: projectPath,
+      source_frame_request_path: projectArtifacts.sourceFrameRequest,
+      source_frames_path: projectArtifacts.sourceFrames,
+      frame_count: frames.length,
+      total_size_bytes: totalSizeBytes,
+      warnings,
+    });
+  } catch (error) {
+    if (isSourceFrameError(error) || isProviderModeError(error)) return fail("project.source-frames", "PROJECT_SOURCE_FRAMES_FAILED", error);
+    return fail("project.source-frames", "PROJECT_SOURCE_FRAMES_FAILED", new Error("source frames command failed"));
   }
 }
 
@@ -1128,6 +1193,178 @@ function validateFocusCandidates(candidates: FocusCandidatesArtifact, duration: 
   return warnings;
 }
 
+function readSourceFrameRequest(projectPath: string): SourceFrameRequestArtifact {
+  const requestPath = join(projectPath, projectArtifacts.sourceFrameRequest);
+  if (!existsSync(requestPath)) throw sourceFrameError("SOURCE_FRAME_REQUEST_MISSING", `${projectArtifacts.sourceFrameRequest} is missing`);
+  try {
+    return parseSourceFrameRequest(JSON.parse(readFileSync(requestPath, "utf8")));
+  } catch {
+    throw sourceFrameError("SOURCE_FRAME_REQUEST_INVALID", `${projectArtifacts.sourceFrameRequest} is invalid`);
+  }
+}
+
+function readSourcesForSourceFrames(projectPath: string): SourcesManifest {
+  try {
+    return parseSourcesManifest(JSON.parse(readFileSync(join(projectPath, projectArtifacts.sources), "utf8")));
+  } catch {
+    throw sourceFrameError("SOURCE_FRAME_SOURCE_NOT_FOUND", `${projectArtifacts.sources} is missing or invalid`);
+  }
+}
+
+function sourceFrameDuplicateWarnings(request: SourceFrameRequestArtifact): string[] {
+  const firstByTime = new Map<string, string>();
+  const warnings: string[] = [];
+  for (const frame of request.frames) {
+    const key = `${frame.source_id}\0${String(frame.time_seconds)}`;
+    const firstId = firstByTime.get(key);
+    if (firstId) warnings.push(`SOURCE_FRAME_DUPLICATE_TIME: ${frame.id} duplicates ${firstId} at ${frame.source_id}@${String(frame.time_seconds)}s`);
+    else firstByTime.set(key, frame.id);
+  }
+  return warnings;
+}
+
+function extractSourceFrames(projectPath: string, request: SourceFrameRequestArtifact, manifest: SourcesManifest): SourceFrame[] {
+  const sourceById = new Map(manifest.sources.map((source) => [source.source_id, source]));
+  const sourcePaths = new Map<string, string>();
+  const dir = join(projectPath, ".source-frames");
+  mkdirSync(dir, { recursive: true });
+  return request.frames.map((frame, index) => {
+    const source = sourceById.get(frame.source_id);
+    if (!source) throw sourceFrameError("SOURCE_FRAME_SOURCE_NOT_FOUND", `source frame ${frame.id} references unknown source_id ${frame.source_id}`);
+    if (frame.time_seconds >= source.duration_seconds) {
+      throw sourceFrameError("SOURCE_FRAME_TIME_OUT_OF_RANGE", `source frame ${frame.id} time is outside source ${frame.source_id}`);
+    }
+    let sourcePath = sourcePaths.get(source.source_id);
+    if (!sourcePath) {
+      sourcePath = readableProjectSource(projectPath, source.source_id, source.project_path);
+      sourcePaths.set(source.source_id, sourcePath);
+    }
+    const relativePath = `.source-frames/frame-${String(index + 1).padStart(4, "0")}.jpg`;
+    const targetPath = join(projectPath, ".source-frames", `frame-${String(index + 1).padStart(4, "0")}.jpg`);
+    const image = extractSourceFrameImage(sourcePath, frame.time_seconds, targetPath, frame.id);
+    return {
+      ...frame,
+      index,
+      path: relativePath,
+      mime_type: "image/jpeg",
+      ...image,
+    };
+  });
+}
+
+function readableProjectSource(projectPath: string, sourceId: string, projectRelativePath: string): string {
+  if (
+    /^[a-z][a-z0-9+.-]*:/i.test(projectRelativePath)
+    || /^[a-z]:[\\/]/i.test(projectRelativePath)
+    || /^[\\/]/.test(projectRelativePath)
+    || projectRelativePath.split(/[\\/]+/).includes("..")
+  ) {
+    throw sourceFrameError("SOURCE_FRAME_SOURCE_NOT_FOUND", `source ${sourceId} has an unsafe project path`);
+  }
+  try {
+    const projectRoot = fsRuntime.realpathSync(projectPath);
+    const sourcePath = fsRuntime.realpathSync(join(projectPath, projectRelativePath));
+    const fromRoot = relative(projectRoot, sourcePath);
+    if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || pathRuntime.isAbsolute(fromRoot)) throw new Error("outside project");
+    if (!statSync(sourcePath).isFile()) throw new Error("not a file");
+    fsRuntime.accessSync(sourcePath, fsRuntime.constants.R_OK);
+    return sourcePath;
+  } catch {
+    throw sourceFrameError("SOURCE_FRAME_SOURCE_NOT_FOUND", `source ${sourceId} is not a readable project-local file`);
+  }
+}
+
+function extractSourceFrameImage(sourcePath: string, timeSeconds: number, targetPath: string, frameId: string): Pick<SourceFrame, "width" | "height" | "size_bytes" | "sha256"> {
+  for (const [attemptIndex, attempt] of SOURCE_FRAME_ATTEMPTS.entries()) {
+    rmSync(targetPath, { force: true });
+    const result = extractJpegFrame(sourcePath, sourceFrameSeekText(timeSeconds), targetPath, attempt);
+    if (result.status !== 0 || !existsSync(targetPath)) {
+      rmSync(targetPath, { force: true });
+      throw sourceFrameError("SOURCE_FRAME_FFMPEG_FAILED", `source frame ${frameId} extraction failed`);
+    }
+    let image: { width: number; height: number; size_bytes: number; sha256: string };
+    try {
+      const { width, height } = probeSourceFrame(targetPath, attempt.maxEdge);
+      const stat = statSync(targetPath);
+      if (!stat.isFile()) throw new Error("not a file");
+      image = {
+        width,
+        height,
+        size_bytes: stat.size,
+        sha256: createHash("sha256").update(readFileSync(targetPath)).digest("hex"),
+      };
+    } catch {
+      rmSync(targetPath, { force: true });
+      throw sourceFrameError("SOURCE_FRAME_IMAGE_INVALID", `source frame ${frameId} image is invalid`);
+    }
+    if (image.size_bytes <= MAX_SOURCE_FRAME_BYTES) return image;
+    rmSync(targetPath, { force: true });
+    if (attemptIndex === SOURCE_FRAME_ATTEMPTS.length - 1) {
+      throw sourceFrameError("SOURCE_FRAME_IMAGE_TOO_LARGE", `source frame ${frameId} image exceeds byte limit`);
+    }
+  }
+  throw sourceFrameError("SOURCE_FRAME_IMAGE_TOO_LARGE", `source frame ${frameId} image exceeds byte limit`);
+}
+
+function extractJpegFrame(sourcePath: string, seekText: string, targetPath: string, options: { quality: number; maxEdge?: number }) {
+  return spawnSync(
+    "ffmpeg",
+    [
+      "-y",
+      "-ss",
+      seekText,
+      "-i",
+      sourcePath,
+      "-frames:v",
+      "1",
+      ...(options.maxEdge ? ["-vf", `scale='min(iw,${options.maxEdge})':'min(ih,${options.maxEdge})':force_original_aspect_ratio=decrease`] : []),
+      "-q:v",
+      String(options.quality),
+      targetPath,
+    ],
+    { encoding: "utf8" },
+  );
+}
+
+function sourceFrameSeekText(timeSeconds: number): string {
+  const text = String(timeSeconds);
+  const scientific = /^(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/.exec(text);
+  if (!scientific) return text;
+  const whole = scientific[1]!;
+  const fraction = scientific[2] ?? "";
+  const digits = whole + fraction;
+  const decimalIndex = whole.length + Number(scientific[3]);
+  if (decimalIndex <= 0) return `0.${"0".repeat(-decimalIndex)}${digits}`;
+  if (decimalIndex >= digits.length) return `${digits}${"0".repeat(decimalIndex - digits.length)}`;
+  return `${digits.slice(0, decimalIndex)}.${digits.slice(decimalIndex)}`;
+}
+
+function probeSourceFrame(path: string, maxEdge: number): { width: number; height: number } {
+  const result = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json", path], { encoding: "utf8" });
+  if (result.status !== 0) throw new Error("ffprobe failed");
+  const value = JSON.parse(result.stdout) as { streams?: Array<{ codec_name?: unknown; width?: unknown; height?: unknown }> };
+  const stream = value.streams?.[0];
+  if (stream?.codec_name !== "mjpeg" || !Number.isInteger(stream.width) || !Number.isInteger(stream.height)) throw new Error("invalid jpeg stream");
+  const width = stream.width as number;
+  const height = stream.height as number;
+  if (width <= 0 || height <= 0 || Math.max(width, height) > maxEdge) throw new Error("invalid jpeg dimensions");
+  return { width, height };
+}
+
+function sourceFrameError(code: string, message: string): Error & { code: string } {
+  const error = new Error(message) as Error & { code: string };
+  error.code = code;
+  return error;
+}
+
+function isSourceFrameError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string" && (error as { code: string }).code.startsWith("SOURCE_FRAME_"));
+}
+
+function isProviderModeError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "PROVIDER_MODE_MISMATCH");
+}
+
 function extractFocusFrames(projectPath: string, candidates: FocusCandidatesArtifact, edl: EdlArtifact): FocusFrame[] {
   if (!commandExists("ffmpeg")) throw new Error("ffmpeg not found for focus frames");
   const timeline = buildOutputTimeline(edl);
@@ -1140,7 +1377,7 @@ function extractFocusFrames(projectPath: string, candidates: FocusCandidatesArti
       const id = `${candidate.id}-source-${index + 1}`;
       const relativePath = join(".focus", "frames", `${safeFileName(id)}.jpg`);
       const framePath = join(projectPath, relativePath);
-      const result = spawnSync("ffmpeg", ["-y", "-ss", formatSeconds(mapped.source_time), "-i", mapped.source_path, "-frames:v", "1", "-q:v", "3", framePath], { encoding: "utf8" });
+      const result = extractJpegFrame(mapped.source_path, formatSeconds(mapped.source_time), framePath, { quality: 3 });
       if (result.status !== 0) throw new Error(`ffmpeg focus frame failed for ${candidate.id}: ${result.stderr || result.stdout}`);
       frames.push({
         id,

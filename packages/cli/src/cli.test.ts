@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "./cli";
+import { createProject } from "./project";
 
 test("prints help", async () => {
   let output = "";
@@ -11,6 +13,7 @@ test("prints help", async () => {
   expect(output).toContain("koubo-clip doctor");
   expect(output).toContain("skills path");
   expect(output).toContain("skills install --target codex|claude|hermes");
+  expect(output).toContain("project source-frames <project>");
   expect(output).toContain("project proposal");
   expect(output).toContain("project music-catalog");
   expect(output).toContain("project visual-catalog");
@@ -23,6 +26,7 @@ test("prints project help before requiring a project path", async () => {
   const code = await main(["project", "element-catalog", "--help"], { stdout: (text) => (output = text), stderr: (text) => (error = text) });
   expect(code).toBe(0);
   expect(error).toBe("");
+  expect(output).toContain("koubo-clip project source-frames <project>");
   expect(output).toContain("koubo-clip project element-catalog <project>");
   expect(output).toContain("koubo-clip project inspect <project>");
 });
@@ -224,3 +228,50 @@ test("project command errors stay json", async () => {
   expect(code).toBe(1);
   expect(JSON.parse(error).error.code).toBe("PROJECT_COMMAND_FAILED");
 });
+
+test("source-frames reports a portable missing request error", async () => {
+  const project = join(mkdtempSync(join(tmpdir(), "koubo-cli-source-frames-missing-")), "project");
+  mkdirSync(project);
+  let error = "";
+  const code = await main(["project", "source-frames", project, "--json"], { stderr: (text) => (error = text) });
+  expect(code).toBe(1);
+  const json = JSON.parse(error);
+  expect(json.command).toBe("project.source-frames");
+  expect(json.error.code).toBe("SOURCE_FRAME_REQUEST_MISSING");
+  expect(json.error.message.includes(project)).toBe(false);
+});
+
+test("source-frames prints the stable success json shape", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-cli-source-frames-"));
+  const source = join(dir, "source.mp4");
+  const project = join(dir, "project");
+  makeSourceFrameVideo(source);
+  const created = createProject([source], { projectPath: project });
+  if (!created.ok) throw new Error(created.error.message);
+  writeFileSync(
+    join(project, "source-frame-request.json"),
+    JSON.stringify({
+      version: "1.0",
+      frames: [{ id: "source-frame-001", source_id: "src-001", time_seconds: 0.25, transcript_quote: "demo frame", reason: "verify CLI output" }],
+    }),
+  );
+
+  let output = "";
+  const code = await main(["project", "source-frames", project, "--json"], { stdout: (text) => (output = text) });
+  expect(code).toBe(0);
+  const json = JSON.parse(output);
+  expect(json.command).toBe("project.source-frames");
+  expect(json.data.project_path).toBe(project);
+  expect(json.data.source_frame_request_path).toBe("source-frame-request.json");
+  expect(json.data.source_frames_path).toBe("source-frames.json");
+  expect(json.data.frame_count).toBe(1);
+  expect(json.data.total_size_bytes > 0).toBe(true);
+  expect(json.data.warnings).toEqual([]);
+});
+
+function makeSourceFrameVideo(path: string): void {
+  const result = spawnSync("ffmpeg", ["-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10", "-t", "1", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", path], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+}

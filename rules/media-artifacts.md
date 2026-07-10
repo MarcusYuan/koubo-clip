@@ -16,6 +16,10 @@ koubo-clips/<slug>/
     001-original.<ext>
     002-original.<ext>
   material-report.md
+  source-frame-request.json
+  source-frames.json
+  .source-frames/
+    frame-0001.jpg
   transcript.json
   transcript.md
   analysis.json
@@ -80,13 +84,15 @@ koubo-clips/<slug>/
 - `transcript.json` 是 machine-readable transcript，包含 source IDs、source-local timings 和明确 timing granularity。
 - `transcript.md` 是 agent/human review surface。
 - `analysis.json` 包含机器检测出的 silence、pause、filler、false-start 和 repeat candidates，带 source IDs。
+- `source-frame-request.json` 是 skill/agent 在 ASR/explore 后根据 transcript、material report 和 source metadata 写入的源画面观察请求。它包含 1–20 个按原顺序处理的 source-local 时间点；CLI 不做语义选点。
+- `source-frames.json` 是 CLI 生成的源画面证据 manifest，按 request 顺序记录从 0 开始的 index、request identity、source_id、source-local time、project-relative JPEG path、尺寸、byte size 和 SHA-256，并汇总 frame count 和总 byte size；实际图片保存在 `.source-frames/frame-0001.jpg` 等稳定顺序路径。
 - `review-package.md` 是 human-readable pre-render review surface。
 - `review-package.json` 包含 original subtitle ranges、proposed cuts、reasons、confidence、unresolved risks 和 source identity。
 - `production-proposal.json` 是用户确认前的制作方案合同，由 skill/agent 写入。它包含 source mode、presentation intent、目标摘要、素材摘要、默认 option，以及 2-3 个 option。每个 option 说明适合的发布目标、为什么适合当前素材、剪辑、字幕、UI 动效、图片/生图、音乐、SFX、风险和确认事项。它只能写素材 intent、query、provider preference、license/cost/source risk 和 reason，不能写最终 `asset_id`、local path、provider URL、download URL、绝对路径或 raw MCP payload。
 - `production-proposal.md` 是 CLI 从 proposal 物化出的 human-readable confirmation surface。它用于用户回复 `OK` 或 option id，不是 render source of truth。
 - `focus-candidates.md` 是 semantic focus planning 的 human-readable candidate surface。
 - `focus-candidates.json` 记录 normalized semantic intent、candidate element type、viewer job、风险和所需证据。
-- `focus-frames.json` 记录用于 grounding 的 source frame 或 inspection frame，包含 source_id、timecode 和 frame path；实际截图保存在 `.focus/frames/*.jpg`。
+- `focus-frames.json` 记录确认方案后的 grounding evidence：candidate timing 来自 cleaned output timeline，经 EDL 映射后抽取 source-local frame，manifest 记录 source timeline evidence；实际截图保存在 `.focus/frames/*.jpg`。它不能替代确认前的 `source-frames.json`。
 - `focus-grounding.json` 绑定 candidate id、frame id、confidence、coordinate-bearing fields 和 frame evidence。
 - `focus-review.md` 是 enrichment review surface，描述保留、拒绝和仍需确认的 grounded choices。
 - `focus-review.json` 保存对应的 machine-readable review decisions 和 unresolved risks。
@@ -110,7 +116,7 @@ koubo-clips/<slug>/
 - `.hyperframes/recut/public/index.html` 是生成的 single HyperFrames composition。`public/compositions/` 包含从 vendored HyperFrames registry 安装的 block/component 文件；`public/cards/*.html` 是 v1.1 兼容 card fragments，不是任意 agent-authored HTML。
 - `.hyperframes/recut/public/index.html` 可以加载 CLI-owned catalog 声明的白名单 CDN runtime dependencies。每个 external dependency 必须有 domain、package、version 或明确 versionless exception，并进入 `storyboard.json` / inspect / report。
 - `renders/final.mp4` 是启用 enrichment 时的 enriched deliverable。
-- `.inspection/card-*.jpg`、`.inspection/element-*.jpg` 和同类多帧截图包含 final render 后由 `storyboard.qa_checks[]` 派生的检查帧。
+- `.inspection/card-*.jpg`、`.inspection/element-*.jpg` 和同类多帧截图包含 render 后基于 final output timeline、由 `storyboard.qa_checks[]` 派生的检查帧。
 - `report.md` 总结移除了什么、保留了什么、每个 QA check 的 expected/status/frame paths，以及仍需人工关注什么。
 
 ## 检查规则
@@ -120,6 +126,10 @@ koubo-clips/<slug>/
 - `transcript.json` 必须声明 timings 是 `word`、`segment` 还是 `text-only`。
 - Text-only transcripts 必须无法通过 precise-cut validation。
 - Source media 永不被覆盖。
+- Source-frame request 只能引用 `sources.json` 中的 source，并满足 `0 <= time_seconds < source.duration_seconds`。Source path 必须是 project-relative、真实可读的 project-local file；拒绝 URL、绝对路径、`..` 和解析到 project 外部的 symlink。
+- `source-frame-request.json` 和 `source-frames.json` 只接受合同声明的结构化字段。`id`、`source_id` 和可选 `segment_id` 是 opaque identifiers，不得包含 URL scheme、`/`、`\` 或 Windows drive/path 形态；未知字段不能夹带额外 path/URL/provider/token metadata，manifest 的 artifact path 必须是 project-relative。`transcript_quote` 和 `reason` 只做 trim 后非空校验，不扫描文本内容，正常台词或理由可以包含 URL 或路径文本。Warnings、errors 和日志不得泄漏 source 绝对路径、provider key 或 raw provider payload；命令 JSON 结果中的既有 `data.project_path` 是唯一兼容例外。
+- Source-frame V0 使用 delete-first，不使用 atomic staging 或 request hash。正常可写 filesystem 上先使旧 manifest 失效、成功时最后写新 manifest；host 只可在最近一次 `project source-frames` 成功后将其视为 authoritative。Cleanup 因 filesystem 权限失败时旧文件可能物理残留，但命令必须返回 `PROJECT_SOURCE_FRAMES_FAILED`，host 必须忽略该残留 manifest。
+- Source frames 是确认前的只读素材理解证据，不依赖 EDL，不触发 edit plan、focus、asset acquisition、enrichment 或 render。CLI 不执行视觉语义分析。
 - EDL ranges 必须引用已有 source、位于该 source duration 内，并且在 output order 中不能错误重叠。
 - Rendered duration 应在小容差内匹配 EDL。
 - 除非明确关闭，captions 是期望存在的。
@@ -128,6 +138,7 @@ koubo-clips/<slug>/
 - Text/image cards 和 registry elements 必须保持 caption readability，并停留在受支持 template zones 内。
 - Screen-recording enrichment 必须保留 source UI readability；默认使用 transparent overlays。
 - Screen-recording focus planning 必须先通过 `focus-candidates`、`focus-frames` 和 `focus-grounding`，再进入 `enrich-plan`；坐标没有 frame evidence 就算无效。
+- Source frames、focus frames 和 inspection frames 必须保持 timeline/阶段分离：分别使用 source-local time、由 cleaned output timing 经 EDL 映射得到的 source evidence、以及 final output timeline。
 - `project enrich-plan` 和 `project inspect` 应暴露 `element_usage[]`；`project inspect` 应暴露 `inspection_frames[]`，让 agents 可以验证 visual readability，而不是猜。
 - `project enrich-plan` 应暴露 `qa_checks[]`，让 agents 在 render 前检查每个加入点的 asset/provenance、timing、coordinate evidence、music/SFX 风险和 expected viewer job。
 - `storyboard.json.qa_checks[]` 是 render 后检查的事实来源。不要新增或手写独立 `inspection-plan.json`。

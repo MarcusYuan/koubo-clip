@@ -779,6 +779,87 @@ test("focus frame parser accepts project-relative inspection frames", () => {
   expect(frames.frames[0]?.path).toBe(".inspection/focus/frame-1.jpg");
 });
 
+test("source frame request parser accepts 1 to 20 ordered frames and URL text", () => {
+  const parseSourceFrameRequest = requiredArtifactParser("parseSourceFrameRequest");
+  const one = parseSourceFrameRequest({
+    version: "1.0",
+    frames: [
+      {
+        id: "source-frame-001",
+        source_id: "src-1",
+        time_seconds: 1.25,
+        segment_id: "segment-1",
+        transcript_quote: "  mailto:person@example.com, https://example.com/help, and /Users/private/source.mp4  ",
+        reason: "  data:text/plain,x, https:example.com, ../outside, and C:\\secret  ",
+      },
+    ],
+  });
+  expect(one.frames[0]?.segment_id).toBe("segment-1");
+  expect(one.frames[0]?.transcript_quote).toBe("  mailto:person@example.com, https://example.com/help, and /Users/private/source.mp4  ");
+  expect(one.frames[0]?.reason).toBe("  data:text/plain,x, https:example.com, ../outside, and C:\\secret  ");
+
+  const twenty = parseSourceFrameRequest({
+    version: "1.0",
+    frames: Array.from({ length: 20 }, (_, index) => ({
+      id: `source-frame-${index + 1}`,
+      source_id: "src-1",
+      time_seconds: index,
+      transcript_quote: `quote ${index}`,
+      reason: `reason ${index}`,
+    })),
+  });
+  expect(twenty.frames.map((frame: { id: string }) => frame.id)).toEqual(Array.from({ length: 20 }, (_, index) => `source-frame-${index + 1}`));
+});
+
+test("source frame request parser rejects invalid counts and duplicate ids", () => {
+  const parseSourceFrameRequest = requiredArtifactParser("parseSourceFrameRequest");
+  const frame = { id: "source-frame-1", source_id: "src-1", time_seconds: 0, transcript_quote: "quote", reason: "reason" };
+  expect(() => parseSourceFrameRequest({ version: "1.0", frames: [] })).toThrow("between 1 and 20");
+  expect(() => parseSourceFrameRequest({ version: "1.0", frames: Array.from({ length: 21 }, (_, index) => ({ ...frame, id: `frame-${index}` })) })).toThrow(
+    "between 1 and 20",
+  );
+  expect(() => parseSourceFrameRequest({ version: "1.0", frames: [frame, frame] })).toThrow("duplicate source frame request id");
+});
+
+test("source frame request parser rejects unknown structured fields", () => {
+  const parseSourceFrameRequest = requiredArtifactParser("parseSourceFrameRequest");
+  const frame = { id: "source-frame-1", source_id: "src-1", time_seconds: 0, transcript_quote: "quote", reason: "reason" };
+  expect(() => parseSourceFrameRequest({ version: "1.0", frames: [frame], provider: "local" })).toThrow("provider is not allowed");
+  for (const key of ["path", "url", "absolute_path", "provider", "token"]) {
+    expect(() => parseSourceFrameRequest({ version: "1.0", frames: [{ ...frame, [key]: "forbidden" }] })).toThrow(`${key} is not allowed`);
+  }
+});
+
+test("source frame request parser rejects blank strings and invalid times", () => {
+  const parseSourceFrameRequest = requiredArtifactParser("parseSourceFrameRequest");
+  const frame = { id: "source-frame-1", source_id: "src-1", time_seconds: 0, segment_id: "segment-1", transcript_quote: "quote", reason: "reason" };
+  for (const key of ["id", "source_id", "segment_id", "transcript_quote", "reason"]) {
+    expect(() => parseSourceFrameRequest({ version: "1.0", frames: [{ ...frame, [key]: "   " }] })).toThrow("must not be blank");
+  }
+  expect(() => parseSourceFrameRequest({ version: "1.0", frames: [{ ...frame, time_seconds: -1 }] })).toThrow("non-negative number");
+  expect(() => parseSourceFrameRequest({ version: "1.0", frames: [{ ...frame, time_seconds: Number.NaN }] })).toThrow("non-negative number");
+});
+
+test("source frame request parser rejects path-like identifiers", () => {
+  const parseSourceFrameRequest = requiredArtifactParser("parseSourceFrameRequest");
+  const frame = { id: "source-frame-1", source_id: "src-1", time_seconds: 0, segment_id: "segment-1", transcript_quote: "quote", reason: "reason" };
+  for (const [key, value] of [
+    ["id", "/Users/private/source.mp4"],
+    ["source_id", "../outside"],
+    ["segment_id", "https://bad.example"],
+    ["id", "C:\\secret"],
+    ["id", "mailto:private@example.com"],
+    ["source_id", "data:text/plain,secret"],
+    ["segment_id", "https:example.com"],
+    ["id", "  mailto:private@example.com"],
+    ["source_id", "data:text/plain,secret  "],
+    ["segment_id", "  https:example.com  "],
+    ["source_id", "  ../outside  "],
+  ]) {
+    expect(() => parseSourceFrameRequest({ version: "1.0", frames: [{ ...frame, [key]: value }] })).toThrow("opaque identifier");
+  }
+});
+
 test("focus frame parser rejects duplicate ids and unsafe frame paths", () => {
   const parseFocusCandidates = requiredArtifactParser("parseFocusCandidates");
   const parseFocusFrames = requiredArtifactParser("parseFocusFrames");

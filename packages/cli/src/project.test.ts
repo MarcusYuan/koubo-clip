@@ -1,11 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import * as nodeFs from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import * as nodePath from "node:path";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { parseAssetManifest, parseEnrichmentPlan, parseProjectMetadata } from "./artifacts";
 import * as projectApi from "./project";
-import { buildEnrichmentStoryboard, commandExists, createProject, elementCatalogProject, enrichPlanProject, exploreProject, inspectProject, musicAcquireProject, musicCatalogProject, musicReviewProject, normalizeCloudflareWhisperResult, normalizeWhisperJson, proposalProject, renderProject, reviewProject, visualAcquireProject, visualCatalogProject, visualReviewProject, visualSearchProject } from "./project";
+import { buildEnrichmentStoryboard, commandExists, createProject, elementCatalogProject, enrichPlanProject, exploreProject, inspectProject, musicAcquireProject, musicCatalogProject, musicReviewProject, normalizeCloudflareWhisperResult, normalizeWhisperJson, proposalProject, renderProject, reviewProject, sourceFramesProject, validateSourceFrameByteLimits, visualAcquireProject, visualCatalogProject, visualReviewProject, visualSearchProject } from "./project";
 
 test("creates, explores, and reviews a source-aware project", async () => {
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-"));
@@ -1572,6 +1575,193 @@ test("renders v1.2 vendored HyperFrames elements when explicitly enabled", () =>
   expect(inspected.data.inspection_frames.some((frame) => frame.includes("element-lower"))).toBe(true);
 });
 
+test("extracts ordered source-local semantic frames without an EDL", () => {
+  const { project } = readyProject(2);
+  rmSync(join(project, "edl.json"), { force: true });
+  writeSourceFrameRequest(project, [
+    sourceFrameRequest("frame-a", 0.4),
+    sourceFrameRequest("frame-b", 0.4),
+    sourceFrameRequest("frame-c", 1.2),
+  ]);
+
+  const result = sourceFramesProject(project);
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error(result.error.message);
+  expect(existsSync(join(project, "edl.json"))).toBe(false);
+  expect(result.data.source_frame_request_path).toBe("source-frame-request.json");
+  expect(result.data.source_frames_path).toBe("source-frames.json");
+  expect(result.data.warnings).toEqual(["SOURCE_FRAME_DUPLICATE_TIME: frame-b duplicates frame-a at src-001@0.4s"]);
+
+  const manifest = JSON.parse(readFileSync(join(project, "source-frames.json"), "utf8")) as {
+    frames: Array<{ id: string; index: number; time_seconds: number; path: string; mime_type: string; width: number; height: number; size_bytes: number; sha256: string }>;
+    frame_count: number;
+    total_size_bytes: number;
+  };
+  expect(manifest.frames.map((frame) => frame.id)).toEqual(["frame-a", "frame-b", "frame-c"]);
+  expect(manifest.frames.map((frame) => frame.index)).toEqual([0, 1, 2]);
+  expect(manifest.frames.map((frame) => frame.time_seconds)).toEqual([0.4, 0.4, 1.2]);
+  expect(manifest.frames.map((frame) => frame.path)).toEqual([
+    ".source-frames/frame-0001.jpg",
+    ".source-frames/frame-0002.jpg",
+    ".source-frames/frame-0003.jpg",
+  ]);
+  for (const frame of manifest.frames) {
+    const framePath = join(project, frame.path);
+    const probed = probeJpeg(framePath);
+    expect(frame.mime_type).toBe("image/jpeg");
+    expect(probed.codec_name).toBe("mjpeg");
+    expect(frame.width).toBe(probed.width);
+    expect(frame.height).toBe(probed.height);
+    expect(frame.width <= 160 && frame.height <= 90).toBe(true);
+    expect(Math.abs(frame.width / frame.height - 16 / 9) < 0.02).toBe(true);
+    expect(frame.size_bytes).toBe(statSync(framePath).size);
+    expect(frame.sha256).toBe(createHash("sha256").update(readFileSync(framePath)).digest("hex"));
+  }
+  expect(manifest.frame_count).toBe(3);
+  expect(manifest.total_size_bytes).toBe(manifest.frames.reduce((sum, frame) => sum + frame.size_bytes, 0));
+  const { project_path: _projectPath, ...portableData } = result.data;
+  expect(JSON.stringify(portableData).includes(project)).toBe(false);
+  expect(JSON.stringify(manifest).includes(project)).toBe(false);
+});
+
+test("source frames preserve request seek precision", () => {
+  const { project } = readyProject(1);
+  const fsRuntime = nodeFs as unknown as { chmodSync(path: string, mode: number): void };
+  const bin = mkdtempSync(join(tmpdir(), "koubo-source-frame-seek-"));
+  const capturedSeek = join(bin, "captured-seek.txt");
+  writeExecutable(
+    bin,
+    "ffmpeg",
+    `#!/bin/sh\nprev=\nfor arg\ndo\n  if [ \"$prev\" = \"-ss\" ]; then printf '%s\\n' \"$arg\" >> ${JSON.stringify(capturedSeek)}; fi\n  prev=$arg\n  last=$arg\ndone\nprintf bad > \"$last\"\n`,
+    fsRuntime,
+  );
+  writeExecutable(bin, "ffprobe", "#!/bin/sh\nprintf '%s\\n' '{\"streams\":[{\"codec_name\":\"mjpeg\",\"width\":160,\"height\":90}]}'\n", fsRuntime);
+  writeSourceFrameRequest(project, [sourceFrameRequest("precise", 0.9999), sourceFrameRequest("tiny", 1e-7), sourceFrameRequest("tiny-fraction", 1.23e-7)]);
+
+  const result = runSourceFramesInChild(project, bin);
+  expect(result.ok).toBe(true);
+  expect(readFileSync(capturedSeek, "utf8")).toBe("0.9999\n0.0000001\n0.000000123\n");
+});
+
+test("source frame request errors do not echo path-like identifiers", () => {
+  const { project } = readyProject(1);
+  const privatePath = "/Users/example/private/source.mp4";
+  writeSourceFrameRequest(project, [sourceFrameRequest(privatePath, 0.2)]);
+  const result = sourceFramesProject(project);
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("expected invalid request failure");
+  expect(result.error.code).toBe("SOURCE_FRAME_REQUEST_INVALID");
+  expect(JSON.stringify(result.error).includes(privatePath)).toBe(false);
+  expect(JSON.stringify(result.error).includes(project)).toBe(false);
+});
+
+test("source frame reruns clean managed files and invalidate old manifests before request failures", () => {
+  const { project } = readyProject(2);
+  writeSourceFrameRequest(project, [sourceFrameRequest("frame-a", 0.2), sourceFrameRequest("frame-b", 0.7), sourceFrameRequest("frame-c", 1.2)]);
+  expect(sourceFramesProject(project).ok).toBe(true);
+  writeSourceFrameRequest(project, [sourceFrameRequest("frame-only", 0.5)]);
+  expect(sourceFramesProject(project).ok).toBe(true);
+  expect(existsSync(join(project, ".source-frames", "frame-0001.jpg"))).toBe(true);
+  expect(existsSync(join(project, ".source-frames", "frame-0002.jpg"))).toBe(false);
+  expect(existsSync(join(project, ".source-frames", "frame-0003.jpg"))).toBe(false);
+
+  writeFileSync(join(project, "source-frame-request.json"), "{");
+  const invalid = sourceFramesProject(project);
+  expect(invalid.ok).toBe(false);
+  if (invalid.ok) throw new Error("expected invalid request failure");
+  expect(invalid.error.code).toBe("SOURCE_FRAME_REQUEST_INVALID");
+  expect(existsSync(join(project, "source-frames.json"))).toBe(false);
+
+  rmSync(join(project, "source-frame-request.json"), { force: true });
+  const missing = sourceFramesProject(project);
+  expect(missing.ok).toBe(false);
+  if (missing.ok) throw new Error("expected missing request failure");
+  expect(missing.error.code).toBe("SOURCE_FRAME_REQUEST_MISSING");
+  expect(existsSync(join(project, "source-frames.json"))).toBe(false);
+});
+
+test("source frame cleanup failures leave old manifests non-authoritative", () => {
+  const { project } = readyProject(1);
+  writeSourceFrameRequest(project, [sourceFrameRequest("frame-a", 0.2)]);
+  expect(sourceFramesProject(project).ok).toBe(true);
+  const manifestPath = join(project, "source-frames.json");
+  expect(existsSync(manifestPath)).toBe(true);
+  const fsRuntime = nodeFs as unknown as { chmodSync(path: string, mode: number): void; statSync(path: string): { mode: number } };
+  const originalMode = fsRuntime.statSync(project).mode & 0o777;
+  try {
+    fsRuntime.chmodSync(project, 0o555);
+    const result = sourceFramesProject(project);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected cleanup failure");
+    expect(result.error.code).toBe("PROJECT_SOURCE_FRAMES_FAILED");
+    expect(result.error.message).toBe("source frames command failed");
+  } finally {
+    fsRuntime.chmodSync(project, originalMode || 0o755);
+  }
+  expect(existsSync(manifestPath)).toBe(true);
+});
+
+test("source frames reject unknown, endpoint, unsafe, and escaping sources with stable errors", () => {
+  const unknown = readyProject(2).project;
+  writeSourceFrameRequest(unknown, [{ ...sourceFrameRequest("unknown", 0.2), source_id: "src-404" }]);
+  expectSourceFrameFailure(unknown, "SOURCE_FRAME_SOURCE_NOT_FOUND");
+
+  const endpoint = readyProject(2).project;
+  const endpointManifest = JSON.parse(readFileSync(join(endpoint, "sources.json"), "utf8")) as { sources: Array<{ duration_seconds: number }> };
+  writeSourceFrameRequest(endpoint, [sourceFrameRequest("endpoint", endpointManifest.sources[0]!.duration_seconds)]);
+  expectSourceFrameFailure(endpoint, "SOURCE_FRAME_TIME_OUT_OF_RANGE");
+
+  const unsafe = readyProject(2).project;
+  const unsafeManifest = JSON.parse(readFileSync(join(unsafe, "sources.json"), "utf8")) as { sources: Array<{ project_path: string }> };
+  unsafeManifest.sources[0]!.project_path = "../raw.mp4";
+  writeFileSync(join(unsafe, "sources.json"), JSON.stringify(unsafeManifest));
+  writeSourceFrameRequest(unsafe, [sourceFrameRequest("unsafe", 0.2)]);
+  expectSourceFrameFailure(unsafe, "SOURCE_FRAME_SOURCE_NOT_FOUND");
+
+  const escapingReady = readyProject(2);
+  const escapingManifest = JSON.parse(readFileSync(join(escapingReady.project, "sources.json"), "utf8")) as { sources: Array<{ project_path: string }> };
+  const projectSource = join(escapingReady.project, escapingManifest.sources[0]!.project_path);
+  unlinkSync(projectSource);
+  const fsRuntime = nodeFs as unknown as { symlinkSync(target: string, path: string): void };
+  fsRuntime.symlinkSync(escapingReady.source, projectSource);
+  writeSourceFrameRequest(escapingReady.project, [sourceFrameRequest("escaping", 0.2)]);
+  expectSourceFrameFailure(escapingReady.project, "SOURCE_FRAME_SOURCE_NOT_FOUND");
+
+  const unreadableReady = readyProject(2);
+  const unreadableManifest = JSON.parse(readFileSync(join(unreadableReady.project, "sources.json"), "utf8")) as { sources: Array<{ project_path: string }> };
+  const unreadableSource = join(unreadableReady.project, unreadableManifest.sources[0]!.project_path);
+  const chmodFs = nodeFs as unknown as { chmodSync(path: string, mode: number): void };
+  try {
+    chmodFs.chmodSync(unreadableSource, 0o000);
+    writeSourceFrameRequest(unreadableReady.project, [sourceFrameRequest("unreadable", 0.2)]);
+    expectSourceFrameFailure(unreadableReady.project, "SOURCE_FRAME_SOURCE_NOT_FOUND");
+  } finally {
+    chmodFs.chmodSync(unreadableSource, 0o644);
+  }
+});
+
+test("source frame byte limits report image before batch overflow", () => {
+  expectSourceFrameLimitCode([11], { maxFrameBytes: 10, maxBatchBytes: 100 }, "SOURCE_FRAME_IMAGE_TOO_LARGE");
+  expectSourceFrameLimitCode([6, 6], { maxFrameBytes: 10, maxBatchBytes: 10 }, "SOURCE_FRAME_BATCH_TOO_LARGE");
+});
+
+test("source frames sanitize ffmpeg and image validation failures", () => {
+  const fsRuntime = nodeFs as unknown as { chmodSync(path: string, mode: number): void };
+  const ffmpegFailure = readyProject(2).project;
+  const failBin = mkdtempSync(join(tmpdir(), "koubo-source-frame-fail-"));
+  writeExecutable(failBin, "ffmpeg", "#!/bin/sh\nexit 1\n", fsRuntime);
+  writeExecutable(failBin, "ffprobe", "#!/bin/sh\nprintf '%s\\n' '{\"streams\":[]}'\n", fsRuntime);
+  writeSourceFrameRequest(ffmpegFailure, [sourceFrameRequest("ffmpeg-failure", 0.2)]);
+  expectChildSourceFrameFailure(ffmpegFailure, failBin, "SOURCE_FRAME_FFMPEG_FAILED");
+
+  const invalidImage = readyProject(2).project;
+  const invalidBin = mkdtempSync(join(tmpdir(), "koubo-source-frame-invalid-"));
+  writeExecutable(invalidBin, "ffmpeg", "#!/bin/sh\nfor last\ndo\n  :\ndone\nprintf bad > \"$last\"\n", fsRuntime);
+  writeExecutable(invalidBin, "ffprobe", "#!/bin/sh\nprintf '%s\\n' '{\"streams\":[{\"codec_name\":\"h264\",\"width\":160,\"height\":90}]}'\n", fsRuntime);
+  writeSourceFrameRequest(invalidImage, [sourceFrameRequest("invalid-image", 0.2)]);
+  expectChildSourceFrameFailure(invalidImage, invalidBin, "SOURCE_FRAME_IMAGE_INVALID");
+});
+
 test("completes focus flow from candidates to proposed elements and enrich plan validation", () => {
   if (!commandExists("ffmpeg")) return;
   const focusCandidatesProject = requiredProjectCommand("focusCandidatesProject");
@@ -1678,6 +1868,73 @@ test("completes focus flow from candidates to proposed elements and enrich plan 
   expect(enriched.data.element_usage[1]?.target_rect).toEqual({ x: 0.42, y: 0.32, width: 0.14, height: 0.09 });
   expect(enriched.data.warnings.some((warning) => warning.includes("coordinate_source_frame"))).toBe(false);
 });
+
+function sourceFrameRequest(id: string, timeSeconds: number) {
+  return {
+    id,
+    source_id: "src-001",
+    time_seconds: timeSeconds,
+    transcript_quote: `quote for ${id}`,
+    reason: `inspect ${id}`,
+  };
+}
+
+function writeSourceFrameRequest(project: string, frames: Array<ReturnType<typeof sourceFrameRequest>>): void {
+  writeFileSync(join(project, "source-frame-request.json"), JSON.stringify({ version: "1.0", frames }));
+}
+
+function expectSourceFrameFailure(project: string, code: string): void {
+  const result = sourceFramesProject(project);
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error(`expected ${code}`);
+  expect(result.error.code).toBe(code);
+  expect(result.error.message.includes(project)).toBe(false);
+  expect(existsSync(join(project, "source-frames.json"))).toBe(false);
+}
+
+function expectSourceFrameLimitCode(sizes: number[], limits: { maxFrameBytes: number; maxBatchBytes: number }, code: string): void {
+  try {
+    validateSourceFrameByteLimits(sizes, limits);
+    throw new Error(`expected ${code}`);
+  } catch (error) {
+    expect((error as { code?: string }).code).toBe(code);
+  }
+}
+
+function probeJpeg(path: string): { codec_name: string; width: number; height: number } {
+  const result = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json", path], { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+  return (JSON.parse(result.stdout) as { streams: Array<{ codec_name: string; width: number; height: number }> }).streams[0]!;
+}
+
+function expectChildSourceFrameFailure(project: string, bin: string, code: string): void {
+  const result = runSourceFramesInChild(project, bin);
+  expect(result.ok).toBe(false);
+  expect(result.error?.code).toBe(code);
+  expect(Boolean(result.error?.message.includes(project))).toBe(false);
+  expect(existsSync(join(project, "source-frames.json"))).toBe(false);
+}
+
+function runSourceFramesInChild(project: string, bin: string): { ok: boolean; error?: { code: string; message: string } } {
+  const modulePath = join(process.cwd(), "packages", "cli", "src", "project.ts");
+  const pathRuntime = nodePath as unknown as { delimiter: string };
+  const child = spawnSync(
+    process.execPath,
+    ["-e", `import { sourceFramesProject } from ${JSON.stringify(modulePath)}; console.log(JSON.stringify(sourceFramesProject(${JSON.stringify(project)})));`],
+    {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}${pathRuntime.delimiter}${process.env.PATH ?? ""}` },
+    } as unknown as { encoding?: string },
+  );
+  if (child.status !== 0) throw new Error(child.stderr || child.stdout);
+  return JSON.parse(child.stdout.trim()) as { ok: boolean; error?: { code: string; message: string } };
+}
+
+function writeExecutable(dir: string, name: string, content: string, fsRuntime: { chmodSync(path: string, mode: number): void }): void {
+  const path = join(dir, name);
+  writeFileSync(path, content);
+  fsRuntime.chmodSync(path, 0o755);
+}
 
 function projectWithAnalysis(timing: "word" | "segment" | "text-only", language: string | undefined): string {
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-unsafe-"));

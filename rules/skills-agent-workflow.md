@@ -20,6 +20,8 @@
 - 用户提供 raw talking-head footage 时，在询问最终目标前运行 material exploration。
 - 运行 staged CLI workflow 或 host-equivalent tools。
 - Review transcript 和 cleanup candidates。
+- ASR/explore 后，基于 transcript、material report 和 source metadata 选择最多 20 个有明确观察目的的 source-local 时间点，写 `source-frame-request.json` 并运行 `project source-frames`。不要为了凑数量选择重复画面；CLI 不负责语义选点。
+- 如果 host 有 vision capability，结合 source frames 和 ASR 事实描述原素材画面；不要把观察推断成用户已经确认的制作方案。Standalone 无 vision 时可以 transcript-only 继续，但必须标记未进行源画面语义检查；platform 缺 vision 时由 host workflow 报 blocker，不能把它误报为 CLI 抽帧失败。
 - 基于 material-report、review-package、用户目标和 element/music 能力生成 `production-proposal.json`，运行 `project proposal`，向用户展示默认方案和可选方案。
 - 决定哪些不确定的 repeats、false starts 和 filler segments 要删除。
 - 当 edit decision 会实质改变含义时，向用户确认。
@@ -65,15 +67,15 @@
 - 第一阶段先确定 provider execution mode；如果 project metadata 已存在，以 metadata 为准。
 - 只有在 quick drafts 或用户明确要求速度时，才使用 one-shot `generate`。
 - 把 transcript 和 candidate files 当作 review surfaces，不是隐藏 internals。
-- `project explore` 后，总结 `material-report.md`，并询问用户希望素材变成什么。
+- `project explore` 后总结 `material-report.md`；在询问业务方向或写 production proposal 前，优先完成 source-frame 语义检查。`source-frame-request.json` 直接使用 source-local time，不依赖 EDL；`source-frames.json` 是只读素材证据，不是 focus grounding 或 inspection artifact。
 - `project review` 后，先写 `production-proposal.json` 并运行 `project proposal`。展示的确认单必须同时覆盖剪辑、字幕、UI 动效、图片/生图、音乐、SFX、风险和默认/可选方案。
 - `production-proposal.json` 必须包含 2-3 个 option。每个 option 要说明适合的发布目标、为什么适合当前素材、剪辑策略、字幕策略、视觉策略、图片/生图意图、音乐策略、SFX 策略、风险和确认项。
 - 用户确认前，proposal 只能写素材意图：intent、query、provider preference、license/cost/source risk 和 reason。不要写最终 `asset_id`、local path、provider URL、download URL、绝对路径或 raw MCP payload。
 - 用户回复 `OK` 时使用 `recommended_option_id`；用户回复 option id 时使用对应 option；用户自然语言修改时先更新 proposal 或把修改反映到后续 artifacts。
 - render 前展示 review package：original subtitles、proposed cuts、timestamps、reasons 和 unresolved risks，并把这些信息纳入 production proposal。
 - 把自然语言 review feedback 转换成 `edit-plan.json`；除非用户愿意，不要要求用户编辑 JSON。
-- 用户确认 production proposal 前，不要写 `edit-plan.json`、`focus-candidates.json`、`music-request.json`、`asset-manifest.json` 或 `enrichment-plan.json`，也不要生图、获取音乐或 render。
-- 用户确认 production proposal 前，也不要写 `visual-request.json`。确认后才把选中 option 转成 `edit-plan`、`focus-*`、`visual-request`、`music-request`、`asset-manifest` 和 `enrichment-plan`。
+- 用户确认 production proposal 前，`source-frame-request.json`、`source-frames.json` 和 `.source-frames/*.jpg` 是唯一允许生成的媒体证据例外；除此之外不要写 `edit-plan.json`、`focus-candidates.json`、`focus-*`、`music-request.json`、`asset-manifest.json` 或 `enrichment-plan.json`，也不要生图、获取音乐或 render。
+- 用户确认 production proposal 前，也不要写 `visual-request.json`。确认后才把选中 option 转成 `edit-plan`、`focus-*`、`visual-request`、`music-request`、`asset-manifest` 和 `enrichment-plan`；确认前 source frames 只用于理解原素材，不表示用户批准。
 - 如果请求 enrichment，先推断一个主要 `presentation_intent`：`internal_tutorial`、`product_demo`、`course_lesson`、`knowledge_explainer` 或 `short_form`。然后运行或读取 `project element-catalog`，优先从 `purpose_recommendations.<source_mode>.<presentation_intent>` 展示元素候选；只有用途不清楚时才退回 `recommendations.<source_mode>`。用户的原始业务关键词只是线索，不是最终 selector。
 - 对每个候选增强点，先写 `business_role`、`viewer_job`、`visual_gap` 和 `recommended_treatment`。`source_mode` 只约束遮挡和安全区，不能单独决定是否生图。
 - `recommended_treatment` 只能表达为：`source_ui_component`、`generated_asset`、`text_or_caption`、`sfx_or_music` 或 `none`。没有明确 viewer job 的增强点应为 `none`，不要为了“丰富”而添加。
@@ -93,7 +95,7 @@
 - 只为 viewer job 添加 visual content：定位段落、引导注意力、解释 sequence、总结 spoken point，或为可发布短视频增加 pacing relief。Decorative elements 是失败计划。
 - AI 可以自主选择 HyperFrames elements，但选择必须服务用户用途：内部教程优先透明引导和 SFX；产品演示优先 UI focus/path/callout；课程讲解优先 chapter/flowchart/data；知识解释优先 key point/quote/data/concept visual；短视频包装才优先 hook、转场、强字幕、图片和配乐。
 - 只有当 plan 引用真实本地 `asset_id` 时才使用 `visual_asset`、legacy `generated_asset` 或兼容 `kind:"image"`。常见图标/动态图标/UI/template/B-roll/image 优先用 `visual_asset`；原创 AI 生图仍可用 legacy `generated_asset` 或 manifest `source:"agent_generated"`。只有当 background music 是已批准 publishing goal 且已经通过 `music-review` 的一部分时才使用 `music[]`。否则两者都留空。
-- 对 screen recordings，如果 cue 指向 UI，要从实际 screenshots 或 inspection frames 推导 normalized `target_rect` 或 `anchor_point`，并在 `params.coordinate_source_frame` 写明来源帧，同时把这一帧写入 `focus-frames` 和 `focus-grounding`。没有视觉证据时不要写坐标。
+- 对 screen recordings，如果 cue 指向 UI，要从 `project focus-frames` 生成的实际 source-local evidence 推导 normalized `target_rect` 或 `anchor_point`，并在 `params.coordinate_source_frame` 写明来源帧，同时把这一帧写入 `focus-grounding`。Render 后的 inspection frames 只用于 final output QA；没有 focus evidence 时不要写坐标。
 - 显式 v1.2 elements 要满足 CLI adapter 要求：lower-third/social/notification/code 等 semantic blocks 填 `params.title`、`params.subtitle`、`params.detail`、`params.code` 或 `params.username`；screen focus 填 `target_rect`；anchored chip/callout 填 `anchor_point`。
 - 不要手写 `storyboard.json`、registry files 或 card HTML 作为事实来源。CLI 从 `enrichment-plan.json` 物化 storyboard、安装 vendored registry elements，并生成兼容 card fragments。
 - 不要手写检查清单。`storyboard.json.qa_checks[]` 是合成清单和验收清单的共同来源；render 前看 `project enrich-plan.qa_checks[]`，render 后看 `project inspect.inspection_checks[]`。

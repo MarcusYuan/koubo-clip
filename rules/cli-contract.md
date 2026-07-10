@@ -14,6 +14,7 @@
 - Standalone 默认线上 ASR adapter：Cloudflare Whisper；显式离线兜底：`whisper-cli`。
 - Transcript ingestion 和 normalization，不受 transcription backend 影响。
 - Transcript timing-granularity labeling：`word`、`segment` 或 `text-only`。
+- `source-frame-request.json` strict validation、project-local source containment、确定性 JPEG 抽取和 `source-frames.json` 物化。
 - Silence、pause、filler、false-start 和 repeat-candidate detection。
 - 给 agent review 使用的 machine-readable candidate output。
 - Review package generation，包含 original transcript、proposed cuts、timestamps 和 strategy reasons。
@@ -50,11 +51,13 @@ koubo-clip project create <video> --provider-mode platform
 - `project music-acquire` 不调用 MiniMax、Freesound、Pixabay；只导入或校验平台已落地音乐 asset。
 - `project visual-search` / `project visual-acquire` 不调用 Iconify、Lordicon、URL download、MCP 或 host handoff provider；只读取平台已写入候选、本地 handoff 文件或 project-local asset。
 - `project render` 和 `project inspect` 继续不联网、不读取 provider key，只消费已校验 artifacts。
+- `project source-frames` 在两种 mode 下都只执行 project-local request validation 和 FFmpeg/ffprobe 抽帧；不调用 vision/provider，不读取 key，也不因 host 缺少 vision capability 而失败。
 - `doctor` 报告当前 provider execution mode；外部 provider 在 platform mode 下显示为 host-managed 或 disabled，不提示配置 key。
 
 ## CLI 不负责
 
 - 用户对话、定位或 creative briefing。
+- 从 transcript 中选择 source-frame 时间点，或对抽取的 JPEG 做视觉语义分析。
 - 读取、运行或解释 agent skill。CLI 不依赖 `skills/koubo-clip` 或任何上游 `SKILL.md` 才能执行。
 - 在 confidence 低时判断哪个 repeated take 更好。
 - 由 agent platform 处理的 image generation 或复杂 B-roll creative generation providers。
@@ -71,6 +74,7 @@ koubo-clip project create <video> --provider-mode platform
 koubo-clip doctor
 koubo-clip project create <video>
 koubo-clip project explore <project> --asr auto
+koubo-clip project source-frames <project>
 koubo-clip project review <project>
 koubo-clip project proposal <project>
 koubo-clip project element-catalog <project>
@@ -90,7 +94,19 @@ koubo-clip project inspect <project>
 koubo-clip generate <video>
 ```
 
-Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`project proposal` 校验 `production-proposal.json` 并生成用户确认 markdown，但不生成执行 artifacts；`project element-catalog` 返回完整 vendored HyperFrames 元素目录；`project focus-candidates` 校验 normalized semantic intents、candidate element types 和所需证据；`project focus-frames` 返回 frame evidence 列表；`project focus-grounding` 返回 coordinates 与 evidence 的绑定校验结果；`project focus-review` 返回 `proposed_elements[]`；`project enrich-plan` 返回 `source_mode`、`element_usage[]`、`qa_checks[]` 和 `warnings[]`；`project inspect` 在已知时返回 `source_mode`、`element_usage[]`、`inspection_checks[]`，并为 visual cards/elements 返回兼容的 `inspection_frames[]`。
+Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`project source-frames` 校验 `source-frame-request.json`，按 request 顺序抽取 source-local JPEG 并返回 manifest path、数量、总 byte size 和稳定 warnings；`project proposal` 校验 `production-proposal.json` 并生成用户确认 markdown，但不生成执行 artifacts；`project element-catalog` 返回完整 vendored HyperFrames 元素目录；`project focus-candidates` 校验 normalized semantic intents、candidate element types 和所需证据；`project focus-frames` 把 cleaned output-timeline candidate timing 经 EDL 映射为 source-local frame evidence；`project focus-grounding` 返回 coordinates 与 evidence 的绑定校验结果；`project focus-review` 返回 `proposed_elements[]`；`project enrich-plan` 返回 `source_mode`、`element_usage[]`、`qa_checks[]` 和 `warnings[]`；`project inspect` 在已知时返回 `source_mode`、`element_usage[]`、`inspection_checks[]`，并为 visual cards/elements 返回基于 final output timeline 的兼容 `inspection_frames[]`。
+
+## Source Frames 合同
+
+- Request 根对象只允许 `version`、`frames`；每项要求 `id`、`source_id`、`time_seconds`、`transcript_quote` 和 `reason`，只允许额外提供可选 `segment_id`。要求 version `1.0`、1–20 项、唯一 id、trim 后非空字符串和有限非负时间；未知字段无效。`id`、`source_id` 和可选 `segment_id` 是 opaque identifiers，不得包含 URL scheme、`/`、`\` 或 Windows drive/path 形态；`transcript_quote` 和 `reason` 仍只做 trim 后非空校验，允许 URL 或路径文本。
+- Source existence 和时间边界在命令层校验：source 必须存在于 `sources.json`，且 `0 <= time_seconds < source.duration_seconds`。
+- Source path 按字符串安全、realpath containment、regular file 和 read access 的顺序校验。URL、绝对路径、`..`、缺失/不可读文件和解析到 project 外部的 symlink 都被拒绝。
+- 图片按固定三档编码：最长边 1280/`q:v 4`、最长边 1280/`q:v 6`、最长边 960/`q:v 6`；不放大小图。只有有效 JPEG 超过单图上限时才进入下一档。
+- ffprobe 必须确认首个视频流是 `mjpeg` 且尺寸为正并不超过当前档位。单图最多 `1_500_000` bytes，批次最多 `30_000_000` bytes；manifest 记录 size 和 SHA-256。
+- V0 使用 delete-first，不引入 atomic staging 或 request hash。在正常可写 filesystem 上，重跑先使旧 manifest 失效并清理本命令管理的 `.source-frames/`，全部 request 成功且 batch size 合规后才最后写 `source-frames.json`。Host 只可在最近一次 `project source-frames` 返回成功后把 manifest 视为 authoritative。Cleanup 本身因 filesystem 权限失败时旧文件可能物理残留，但命令返回 `PROJECT_SOURCE_FRAMES_FAILED`，host 必须忽略该残留 manifest。
+- 完全重复的 `source_id + time_seconds` 不去重，仍按 request 顺序抽取；warning 固定为 `SOURCE_FRAME_DUPLICATE_TIME: <currentId> duplicates <firstId> at <sourceId>@<time_seconds>s`，同一 key 始终引用首次出现的 id。
+- Request 和 manifest 只接受合同声明的结构化字段，未知字段不能夹带额外 path/URL/provider/token metadata；artifact paths 使用 POSIX project-relative path。`transcript_quote` 和 `reason` 只做 trim 后非空校验，不扫描其文本内容，正常台词或理由可以包含 URL。Warnings、errors 和日志不得泄漏 project/source 绝对路径、provider key 或 raw provider payload。命令结果的 `data.project_path` 是保留现有 CLI 兼容性的唯一例外。
+- Source frames 在 ASR/explore 后、制作方案前生成，只是只读素材理解证据。它们不读取 EDL、不做 output-timeline 映射，也不替代确认后的 focus evidence 或 render 后 inspection frames。
 
 `project element-catalog` 的每个元素应包含 CLI-owned adapter profile，并返回按 source mode 分组的 `recommendations`，以及按 `source_mode × presentation_intent` 分组的 `purpose_recommendations`。Skills 应优先使用 purpose recommendations；只有当用户用途不清楚时才退回 source-mode recommendations，不能在完整 catalog 中盲选。
 
@@ -103,6 +119,7 @@ Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`p
 - CLI 可以产出 candidates；但不能假装不确定的 semantic edits 是确定的。
 - 用户的原始业务关键词不是 contract key；CLI 和 skills 必须先归一化成固定 semantic intent，再进入 element selection 和 grounding。
 - `production-proposal.json` 是确认层，不是 render source of truth。它可以引用 `review-package` candidate IDs 和 source facts，但不能包含无证据坐标、未确认 asset path、provider URL、最终 output timeline，且不能替代 `edit-plan`、`focus-*`、`music-*`、`asset-manifest` 或 `enrichment-plan`。
+- Source frames 是用户确认前 hard rule 的唯一媒体产物例外；该例外不允许提前生成 edit plan、focus artifacts、visual/music requests、assets、enrichment 或 render artifacts。
 - Text-only transcripts 不能用于 precise cuts。
 - Chinese word-level ASR 必须视为不可信，直到 validation 证明该文件 timing 精确。
 - 可 render 的 EDL 必须先校验再 render。
@@ -130,10 +147,19 @@ Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`p
 
 ## Blocker Codes
 
-Provider mode 相关失败应使用结构化 blocker，至少包含 `code`、`message`、`provider_execution_mode`、`stage`、`artifact` 和可执行 remediation。最小稳定 codes：
+CLI failures 应使用稳定 code。Provider mode 相关 blocker 至少包含 `code`、`message`、`provider_execution_mode`、`stage`、`artifact` 和可执行 remediation。最小稳定 codes：
 
 - `PROVIDER_MODE_MISMATCH`: command 或 artifact 与 project mode 冲突。
 - `PLATFORM_PROVIDER_BLOCKED`: platform mode 需要 host/platform fulfillment，CLI 不会触发外部 provider。用 `stage` 区分 `asr`、`music-acquire`、`music-review`、`visual-search` 或 `visual-acquire`，并用 `artifact` 指向缺失或未 fulfill 的 artifact。
 - `UNSAFE_ASSET_REF`: URL、absolute path、Windows drive path、`..` 或非 project-local path 被用作 render asset ref。
 - `RAW_PROVIDER_RESULT_REJECTED`: raw MCP/provider payload 被写入 artifact，而不是归一化 candidate 或 landed-asset metadata。
 - `PROVENANCE_MISSING`: landed asset 缺少最小审计 metadata，例如 provider/source label、license/usage note、hash、type 或 acquired_at。
+- `SOURCE_FRAME_REQUEST_MISSING`: `source-frame-request.json` 不存在。
+- `SOURCE_FRAME_REQUEST_INVALID`: request 无法读取、无法 parse 或 strict validation 失败。
+- `SOURCE_FRAME_SOURCE_NOT_FOUND`: source manifest/source id/path 无效，或 source 不是可读的 project-local regular file。
+- `SOURCE_FRAME_TIME_OUT_OF_RANGE`: request time 达到或超过 source duration。
+- `SOURCE_FRAME_FFMPEG_FAILED`: FFmpeg 无法执行、返回失败或未产生输出。
+- `SOURCE_FRAME_IMAGE_INVALID`: ffprobe、JPEG codec、尺寸、stat 或 hash 校验失败。
+- `SOURCE_FRAME_IMAGE_TOO_LARGE`: 最后一档 JPEG 仍超过单图上限。
+- `SOURCE_FRAME_BATCH_TOO_LARGE`: 合规 JPEG 总量超过批次上限。
+- `PROJECT_SOURCE_FRAMES_FAILED`: cleanup、directory preparation 或 manifest write 等未预期命令失败；message 固定为 `source frames command failed`，不得传播包含真实路径的底层错误。
