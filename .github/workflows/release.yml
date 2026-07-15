@@ -158,7 +158,16 @@ jobs:
           EXPECTED_SOURCE_REVISION: ${{ github.sha }}
         run: |
           mkdir -p dist/registry
-          npm pack "koubo-clip@${VERSION}" --pack-destination dist/registry --registry=https://registry.npmjs.org/
+          for attempt in {1..12}; do
+            if npm pack "koubo-clip@${VERSION}" --pack-destination dist/registry --registry=https://registry.npmjs.org/; then
+              break
+            fi
+            if [ "$attempt" = 12 ]; then
+              echo "koubo-clip@${VERSION} was not visible from the npm registry after 12 attempts" >&2
+              exit 1
+            fi
+            sleep 5
+          done
           bun run verify:package:npm "dist/registry/koubo-clip-${VERSION}.tgz"
           node <<'NODE'
           const fs = require("fs");
