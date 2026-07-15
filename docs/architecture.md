@@ -254,8 +254,10 @@ vendored 元素进入 renderer 前会经过轻量 adapter 分层。Adapter 从 r
 
 1. 公开 npm package `koubo-clip`，暴露 `koubo-clip` 命令。
 2. 随 npm package 分发 CLI source、`packages/cli/vendor/hyperframes/` sidecar resources 和 `skills/koubo-clip/`。
-3. 可选内部 tarball，包含当前平台的 `bin/koubo-clip` 二进制、`resources/hyperframes/` 和同一份 bundled skill。
-4. `skills.sh.json` 用于让 skills.sh 识别和展示仓库内的 `koubo-clip` skill。
+3. npm 正式发布使用 canonical staging：先让 npm packlist 物化最终文件树，再从该树生成 delivery manifest 和唯一 tarball；发布、GitHub Release 与安装态验收消费同一 tarball，不从源码 checkout 二次打包。
+4. `delivery-manifest.json` v2 的 `delivery_digest` 聚合 CLI、official Skill、renderer resources、runtime compatibility、schema、capabilities 和 exact dependencies，作为跨 Hermes/LocalAgent 的完整交付身份；component digests 仍用于定位具体损坏面。
+5. 可选内部 tarball，包含当前平台的 `bin/koubo-clip` 二进制、`resources/hyperframes/` 和同一份 bundled skill。
+6. `skills.sh.json` 用于让 skills.sh 识别和展示仓库内的 `koubo-clip` skill。
 
 普通用户应安装 CLI 和唯一对外 skill，配置 providers，并通过 agent 运行工作流。他们不应需要 clone 源码仓库，也不应加载 `packages/cli/vendor/hyperframes/*` 中的上游资源目录。
 

@@ -38,3 +38,13 @@ jobs:
       - run: bun ./bin/koubo-clip --help
 
       - run: npm pack --dry-run
+
+      - name: Build canonical npm package
+        env:
+          KOUBO_CLIP_SOURCE_REVISION: ${{ github.sha }}
+        run: bun run package:npm dist/koubo-clip-ci.tgz
+
+      - name: Verify installed canonical npm package
+        env:
+          EXPECTED_SOURCE_REVISION: ${{ github.sha }}
+        run: bun run verify:package:npm dist/koubo-clip-ci.tgz

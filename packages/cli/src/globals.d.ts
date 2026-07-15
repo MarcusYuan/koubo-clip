@@ -39,7 +39,7 @@ declare module "node:child_process" {
   export function spawnSync(
     command: string,
     args?: string[],
-    options?: { stdio?: "ignore"; encoding?: string; cwd?: string; timeout?: number },
+    options?: { stdio?: "ignore"; encoding?: string; cwd?: string; timeout?: number; env?: Record<string, string | undefined>; maxBuffer?: number },
   ): { status: number | null; stdout: string; stderr: string };
 }
 

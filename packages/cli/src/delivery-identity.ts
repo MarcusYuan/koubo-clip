@@ -24,8 +24,7 @@ export class DeliveryIdentityError extends Error {
   }
 }
 
-export type DeliveryManifestV1 = {
-  schema_version: "1.0";
+type DeliveryManifestBase = {
   cli_version: string;
   source_revision: string;
   distribution_kind: string;
@@ -37,6 +36,17 @@ export type DeliveryManifestV1 = {
   capability_ids: string[];
   runtime_dependencies: string[];
 };
+
+export type DeliveryManifestV1 = DeliveryManifestBase & {
+  schema_version: "1.0";
+};
+
+export type DeliveryManifestV2 = DeliveryManifestBase & {
+  schema_version: "2.0";
+  delivery_digest: DeliveryDigest;
+};
+
+export type DeliveryManifest = DeliveryManifestV1 | DeliveryManifestV2;
 
 export type DeliveryDigestSource = {
   /** Absolute filesystem root. Relative roots are rejected so results never depend on cwd. */
@@ -57,18 +67,18 @@ export type DeliveryFileSetDigest = {
 export type DeliveryComponentDigestInput = DeliveryDigestSource | readonly DeliveryDigestSource[];
 
 export type RuntimeCompatibilityInput = Pick<
-  DeliveryManifestV1,
+  DeliveryManifestBase,
   "renderer_resources_digest" | "schema_versions" | "capability_ids" | "runtime_dependencies"
 >;
 
 export type DeliveryManifestPayloadDigests = Pick<
-  DeliveryManifestV1,
+  DeliveryManifestBase,
   "cli_payload_digest" | "renderer_resources_digest" | "official_skill_digest"
 >;
 
 export type DeliveryManifestExpectedIdentity = Partial<
   Pick<
-    DeliveryManifestV1,
+    DeliveryManifestBase,
     "cli_version" | "source_revision" | "distribution_kind" | "schema_versions" | "capability_ids" | "runtime_dependencies"
   >
 >;
@@ -95,6 +105,8 @@ const DELIVERY_MANIFEST_KEYS = [
   "capability_ids",
   "runtime_dependencies",
 ] as const;
+
+const DELIVERY_MANIFEST_V2_KEYS = [...DELIVERY_MANIFEST_KEYS, "delivery_digest"] as const;
 
 /**
  * Hash a logical file set as sorted POSIX path + NUL + decimal byte length +
@@ -171,12 +183,30 @@ export function computeRuntimeCompatibilityDigest(input: RuntimeCompatibilityInp
   return asDigest(sha256(canonical));
 }
 
-export function parseDeliveryManifest(value: unknown): DeliveryManifestV1 {
-  const manifest = strictRecord(value, "delivery manifest", DELIVERY_MANIFEST_KEYS);
-  if (manifest.schema_version !== "1.0") invalid("delivery manifest schema_version must be 1.0");
+export function computeDeliveryDigest(input: DeliveryManifestBase & { schema_version: "2.0" }): DeliveryDigest {
+  const canonical = JSON.stringify({
+    schema_version: input.schema_version,
+    cli_version: parseText(input.cli_version, "cli_version"),
+    source_revision: parseText(input.source_revision, "source_revision"),
+    distribution_kind: parseText(input.distribution_kind, "distribution_kind"),
+    cli_payload_digest: parseDigest(input.cli_payload_digest, "cli_payload_digest", "DELIVERY_MANIFEST_INVALID"),
+    renderer_resources_digest: parseDigest(input.renderer_resources_digest, "renderer_resources_digest", "DELIVERY_MANIFEST_INVALID"),
+    official_skill_digest: parseDigest(input.official_skill_digest, "official_skill_digest", "DELIVERY_MANIFEST_INVALID"),
+    runtime_compatibility_digest: parseDigest(input.runtime_compatibility_digest, "runtime_compatibility_digest", "DELIVERY_MANIFEST_INVALID"),
+    schema_versions: Object.fromEntries(Object.entries(parseStringRecord(input.schema_versions, "schema_versions", "DELIVERY_MANIFEST_INVALID")).sort(([left], [right]) => compareUtf8(left, right))),
+    capability_ids: [...parseUniqueStrings(input.capability_ids, "capability_ids", "DELIVERY_MANIFEST_INVALID")].sort(compareUtf8),
+    runtime_dependencies: [...parseUniqueStrings(input.runtime_dependencies, "runtime_dependencies", "DELIVERY_MANIFEST_INVALID")].sort(compareUtf8),
+  });
+  return asDigest(sha256(canonical));
+}
 
-  return {
-    schema_version: "1.0",
+export function parseDeliveryManifest(value: unknown): DeliveryManifest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid("delivery manifest must be an object");
+  const schemaVersion = (value as Record<string, unknown>).schema_version;
+  if (schemaVersion !== "1.0" && schemaVersion !== "2.0") invalid("delivery manifest schema_version must be 1.0 or 2.0");
+  const manifest = strictRecord(value, "delivery manifest", schemaVersion === "2.0" ? DELIVERY_MANIFEST_V2_KEYS : DELIVERY_MANIFEST_KEYS);
+
+  const base = {
     cli_version: parseText(manifest.cli_version, "cli_version"),
     source_revision: parseText(manifest.source_revision, "source_revision"),
     distribution_kind: parseText(manifest.distribution_kind, "distribution_kind"),
@@ -200,6 +230,12 @@ export function parseDeliveryManifest(value: unknown): DeliveryManifestV1 {
       "DELIVERY_MANIFEST_INVALID",
     ),
   };
+  if (schemaVersion === "1.0") return { schema_version: "1.0", ...base };
+  return {
+    schema_version: "2.0",
+    ...base,
+    delivery_digest: parseDigest(manifest.delivery_digest, "delivery_digest", "DELIVERY_MANIFEST_INVALID"),
+  };
 }
 
 export function verifyDeliveryDigest(expected: DeliveryDigest, actual: DeliveryDigest, field = "delivery digest"): void {
@@ -217,7 +253,7 @@ export function verifyDeliveryManifest(
   value: unknown,
   actualDigests: DeliveryManifestPayloadDigests,
   expectedIdentity: DeliveryManifestExpectedIdentity = {},
-): DeliveryManifestV1 {
+): DeliveryManifest {
   const manifest = parseDeliveryManifest(value);
   verifyDeliveryDigest(manifest.cli_payload_digest, actualDigests.cli_payload_digest, "cli_payload_digest");
   verifyDeliveryDigest(
@@ -231,6 +267,9 @@ export function verifyDeliveryManifest(
     computeRuntimeCompatibilityDigest(manifest),
     "runtime_compatibility_digest",
   );
+  if (manifest.schema_version === "2.0") {
+    verifyDeliveryDigest(manifest.delivery_digest, computeDeliveryDigest(manifest), "delivery_digest");
+  }
   verifyExpectedIdentity(manifest, expectedIdentity);
   return manifest;
 }
@@ -381,7 +420,7 @@ function parseUniqueStrings(value: unknown, label: string, code: DeliveryIdentit
   return result;
 }
 
-function verifyExpectedIdentity(manifest: DeliveryManifestV1, expected: DeliveryManifestExpectedIdentity): void {
+function verifyExpectedIdentity(manifest: DeliveryManifest, expected: DeliveryManifestExpectedIdentity): void {
   for (const field of ["cli_version", "source_revision", "distribution_kind"] as const) {
     if (expected[field] !== undefined && expected[field] !== manifest[field]) {
       fail("DELIVERY_DIGEST_MISMATCH", `${field} does not match expected delivery identity`);

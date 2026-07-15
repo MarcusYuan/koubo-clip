@@ -46,7 +46,8 @@ npm publish --dry-run --registry=https://registry.npmjs.org/
 
 - npm dry-run 不会自动修正 `package.json`。
 - npm tarball 包含 `bin/koubo-clip`、CLI source、`skills/koubo-clip`、README、LICENSE 和 third-party notices。
-- 平台 CLI 构建产物可以运行 `koubo-clip --help`。
+- canonical npm tarball 必须先按 npm 最终 packlist 物化文件树，再对该文件树生成 delivery manifest。
+- 必须从 canonical tarball 安装到空目录后运行 `delivery verify`、`skills verify` 和真实 render-contract render/inspect smoke；源码目录校验不能替代安装态验收。
 
 ## 测试版发布触发
 
@@ -66,7 +67,7 @@ v0.0.1-rc.1
 - npm 发布到 `https://registry.npmjs.org/`，但不能使用 `latest` dist-tag。
 - `-beta.N` 使用 npm dist-tag `beta`。
 - `-rc.N` 使用 npm dist-tag `rc`。
-- GitHub Release 上传 Windows、Linux、macOS CLI artifacts，供用户下载测试。
+- GitHub Release 上传与 npm publish 完全相同的 canonical portable npm tarball及其外层摘要 metadata。
 
 ## 正式发布触发
 
@@ -83,7 +84,7 @@ v0.1.0
 - tag 去掉 `v` 后必须等于 `package.json` version。
 - 先通过 typecheck、tests、npm dry-run 和平台 CLI smoke check。
 - GitHub Release 不能标记为 prerelease。
-- GitHub Release 上传 Windows、Linux、macOS CLI artifacts。
+- GitHub Release 上传与 npm publish 完全相同的 canonical portable npm tarball及其外层摘要 metadata。
 - npm 发布到 `https://registry.npmjs.org/`，dist-tag 为 `latest`。
 - npm CI 发布优先使用 trusted publishing / OIDC，不把长期 npm token 写进仓库。
 
@@ -117,8 +118,10 @@ npm publish --access public --registry=https://registry.npmjs.org/
 
 ## Delivery identity
 
-- npm 和 internal package 必须包含同一 `delivery-manifest.json`，并通过 `koubo-clip delivery verify --json`。
-- Manifest 固定 CLI payload、renderer resources、official Skill、runtime compatibility digest、schema versions、capability IDs 和 exact dependencies。
+- npm 和 internal package 都必须包含由各自最终分发文件树生成的 `delivery-manifest.json`，并通过 `koubo-clip delivery verify --json`；不同布局允许 component digest 不同，但必须由同一 schema 和生成器定义。
+- Manifest 固定 CLI payload、renderer resources、official Skill、runtime compatibility digest、schema versions、capability IDs 和 exact dependencies；schema v2 的 `delivery_digest` 是这些身份字段的 canonical aggregate，可供 Hermes 与 LocalAgent 比较完整交付身份。
+- npm publish 必须消费已经完成安装态验收的 exact canonical tarball，禁止在 publish job 从 checkout 隐式重新打包。
+- publish 后必须从 registry 下载相同版本并再次执行安装态 delivery/Skill/render-contract/render/inspect 验收；registry tarball 外层 SHA-256 必须等于 canonical tarball。
 - `gsap` 固定 `3.15.0`，`hyperframes` 固定 `0.7.36`；strict runtime 禁止联网下载 renderer。
 - `skills install` 必须在复制前验证 bundled Skill，在 staging 后和 atomic replace 后再次验证 installed Skill。
 - Release 外层另生成 artifact SHA-256；外层 digest 不替代 delivery manifest 内部身份。

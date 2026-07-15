@@ -353,7 +353,7 @@ function softwareCapabilities(): CapabilitiesArtifact {
       "INSPECTION_ACCEPTANCE_FAILED",
     ],
     capability_ids: ["detached_source.v1", "external_frame_evidence.v1", "portable_edl.v1", "render_contract.export.v1", "render_contract.consume_strict.v1", "source_binding.v1"],
-    delivery: { manifest_schema_version: "1.0", cli_version: cliVersion(), runtime_dependencies: ["gsap@3.15.0", "hyperframes@0.7.36"] },
+    delivery: { manifest_schema_version: "2.0", aggregate_delivery_digest: true, cli_version: cliVersion(), runtime_dependencies: ["gsap@3.15.0", "hyperframes@0.7.36"] },
     render_contract: { schema_version: "1.0", exact_runtime_compatibility: true, immutable_directory_bundle: true },
   };
 }

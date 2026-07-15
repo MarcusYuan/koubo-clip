@@ -7,14 +7,14 @@ import {
   computeRendererResourcesDigest,
   parseDeliveryManifest,
   verifyDeliveryManifest,
-  type DeliveryManifestV1,
+  type DeliveryManifest,
 } from "./delivery-identity";
 
 export function installedDeliveryManifestPath(): string {
   return join(resolveDistributionRoot(), "delivery-manifest.json");
 }
 
-export function readInstalledDeliveryManifest(): DeliveryManifestV1 {
+export function readInstalledDeliveryManifest(): DeliveryManifest {
   const path = installedDeliveryManifestPath();
   if (!existsSync(path)) throw Object.assign(new Error("delivery-manifest.json is missing from the installed Koubo Clip distribution"), { code: "DELIVERY_MANIFEST_INVALID" });
   return parseDeliveryManifest(JSON.parse(readFileSync(path, "utf8")));
@@ -29,12 +29,12 @@ export function computeInstalledDeliveryDigests(skillRoot = resolveKouboClipSkil
   };
 }
 
-export function verifyInstalledDelivery(): DeliveryManifestV1 {
+export function verifyInstalledDelivery(): DeliveryManifest {
   const manifest = readInstalledDeliveryManifest();
   return verifyDeliveryManifest(manifest, computeInstalledDeliveryDigests(), { cli_version: cliVersion() });
 }
 
-export function verifyInstalledSkill(path: string): { manifest: DeliveryManifestV1; path: string; digest: string } {
+export function verifyInstalledSkill(path: string): { manifest: DeliveryManifest; path: string; digest: string } {
   const manifest = readInstalledDeliveryManifest();
   const digest = computeOfficialSkillDigest({ root: path }).digest;
   if (digest !== manifest.official_skill_digest) throw Object.assign(new Error("installed Skill digest does not match this Koubo Clip delivery"), { code: "DELIVERY_DIGEST_MISMATCH" });

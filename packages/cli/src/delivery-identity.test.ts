@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   DeliveryIdentityError,
   computeCliPayloadDigest,
+  computeDeliveryDigest,
   computeDeliveryFileSetDigest,
   computeOfficialSkillDigest,
   computeRendererResourcesDigest,
@@ -14,6 +15,7 @@ import {
   type DeliveryDigest,
   type DeliveryIdentityErrorCode,
   type DeliveryManifestV1,
+  type DeliveryManifestV2,
 } from "./delivery-identity";
 
 test("delivery digest is sorted by POSIX path and ignores filesystem mtime", () => {
@@ -89,6 +91,24 @@ test("strict delivery manifest parser rejects unknown fields and malformed diges
   expectDeliveryError(
     () => parseDeliveryManifest({ ...manifest, cli_payload_digest: "sha256:not-a-digest" }),
     "DELIVERY_MANIFEST_INVALID",
+  );
+});
+
+test("delivery manifest v2 binds every released component to one aggregate digest", () => {
+  const manifest = manifestV2Fixture();
+  expect(parseDeliveryManifest(manifest)).toEqual(manifest);
+  expect(computeDeliveryDigest(manifest)).toBe(manifest.delivery_digest);
+  expectDeliveryError(
+    () =>
+      verifyDeliveryManifest(
+        { ...manifest, official_skill_digest: digest("9") },
+        {
+          cli_payload_digest: manifest.cli_payload_digest,
+          renderer_resources_digest: manifest.renderer_resources_digest,
+          official_skill_digest: digest("9"),
+        },
+      ),
+    "DELIVERY_DIGEST_MISMATCH",
   );
 });
 
@@ -169,6 +189,12 @@ function manifestFixture(overrides: Partial<DeliveryManifestV1> = {}): DeliveryM
           }),
         }),
   };
+}
+
+function manifestV2Fixture(): DeliveryManifestV2 {
+  const v1 = manifestFixture();
+  const base = { ...v1, schema_version: "2.0" as const };
+  return { ...base, delivery_digest: computeDeliveryDigest(base) };
 }
 
 function fixtureRoot(label: string): string {

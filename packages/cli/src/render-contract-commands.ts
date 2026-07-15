@@ -317,9 +317,19 @@ function readContract(bundleDir: string): RenderContractV1 {
 }
 
 function liveRuntimeIdentity(): JsonObject {
+  const delivery = verifyInstalledDelivery();
   const resources = computeRendererResourcesDigest({ root: resolveHyperframesRoot() }).digest;
   const runtime = computeRuntimeCompatibilityDigest({ renderer_resources_digest: resources, schema_versions: SCHEMA_VERSIONS, capability_ids: [...CAPABILITY_IDS], runtime_dependencies: [...RUNTIME_DEPENDENCIES] });
-  return json({ cli_version: cliVersion(), runtime_compatibility_digest: runtime, renderer_resources_digest: resources, required_capability_ids: [...CAPABILITY_IDS], hyperframes_version: "0.7.36", gsap_version: "3.15.0" });
+  return json({
+    cli_version: cliVersion(),
+    delivery_manifest_schema_version: delivery.schema_version,
+    ...(delivery.schema_version === "2.0" ? { delivery_digest: delivery.delivery_digest } : {}),
+    runtime_compatibility_digest: runtime,
+    renderer_resources_digest: resources,
+    required_capability_ids: [...CAPABILITY_IDS],
+    hyperframes_version: "0.7.36",
+    gsap_version: "3.15.0",
+  });
 }
 
 function assertRuntimeCompatible(contract: RenderContractV1): void {
@@ -328,6 +338,7 @@ function assertRuntimeCompatible(contract: RenderContractV1): void {
   const actual = contract.payload.runtime as Record<string, unknown>;
   if (actual.runtime_compatibility_digest !== expected.runtime_compatibility_digest) throw coded("CONTRACT_RUNTIME_MISMATCH", "runtime compatibility digest does not match installed Koubo Clip delivery");
   if (actual.renderer_resources_digest !== expected.renderer_resources_digest) throw coded("CONTRACT_RUNTIME_MISMATCH", "renderer resources digest does not match installed Koubo Clip delivery");
+  if (actual.delivery_digest !== undefined && actual.delivery_digest !== expected.delivery_digest) throw coded("CONTRACT_RUNTIME_MISMATCH", "complete delivery digest does not match installed Koubo Clip delivery");
   const required = Array.isArray(actual.required_capability_ids) ? actual.required_capability_ids : [];
   if (required.some((capability) => typeof capability !== "string" || !CAPABILITY_IDS.includes(capability as typeof CAPABILITY_IDS[number]))) throw coded("CONTRACT_CAPABILITY_MISSING", "contract requires an unavailable capability");
   if (actual.hyperframes_version !== "0.7.36" || actual.gsap_version !== "3.15.0") throw coded("CONTRACT_RUNTIME_MISMATCH", "contract runtime dependency versions do not match");

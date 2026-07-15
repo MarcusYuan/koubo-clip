@@ -1,6 +1,6 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { computeCliPayloadDigest, computeOfficialSkillDigest, computeRendererResourcesDigest, computeRuntimeCompatibilityDigest } from "../packages/cli/src/delivery-identity";
+import { computeCliPayloadDigest, computeDeliveryDigest, computeOfficialSkillDigest, computeRendererResourcesDigest, computeRuntimeCompatibilityDigest } from "../packages/cli/src/delivery-identity";
 import { cliPayloadFiles } from "../packages/cli/src/delivery-runtime";
 
 const root = resolve(process.argv[2] ?? ".");
@@ -14,8 +14,8 @@ const schemaVersions = { "sources.json": "2.0", "source-materialization.json": "
 const capabilityIds = ["detached_source.v1", "external_frame_evidence.v1", "portable_edl.v1", "render_contract.export.v1", "render_contract.consume_strict.v1", "source_binding.v1"];
 const runtimeDependencies = ["gsap@3.15.0", "hyperframes@0.7.36"];
 const rendererResourcesDigest = computeRendererResourcesDigest({ root: existsSync(rendererRoot) ? rendererRoot : sourceRendererRoot }).digest;
-const manifest = {
-  schema_version: "1.0",
+const baseManifest = {
+  schema_version: "2.0" as const,
   cli_version: version,
   source_revision: sourceRevision,
   distribution_kind: distributionKind,
@@ -27,4 +27,5 @@ const manifest = {
   capability_ids: capabilityIds,
   runtime_dependencies: runtimeDependencies,
 };
+const manifest = { ...baseManifest, delivery_digest: computeDeliveryDigest(baseManifest) };
 writeFileSync(join(root, "delivery-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);

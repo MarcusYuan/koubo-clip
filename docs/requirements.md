@@ -437,4 +437,4 @@ koubo-clips/<slug>/
 - `render-contract export` 生成不可覆盖的目录合同包。合同 digest 仅覆盖 canonical payload；bundle 只含实际引用的 content-addressed 非源素材。
 - Strict consumer 只读取合同、bundle assets 和显式 source binding。它不得读取 authoring transcript、analysis、edit-plan 或 enrichment-plan，不得重规划、补默认值或修复项目。
 - Hash/size 必须 exact；source probe duration tolerance 为 0.05 秒；输出 duration tolerance 为 `max(0.05, 2/fps)`。Mismatch 一律 fail closed。
-- CLI delivery 必须公开 CLI version、payload/resources/Skill digest、schema versions、capability IDs 和 exact GSAP/HyperFrames versions，并能在 export、verify、bind、render 前验证兼容性。
+- CLI delivery 必须公开 CLI version、payload/resources/Skill digest、schema versions、capability IDs 和 exact GSAP/HyperFrames versions，并能在 export、verify、bind、render 前验证兼容性。正式 npm delivery 的 manifest 必须从 npm packlist 物化后的最终文件树生成；CI 验收、npm publish 和 GitHub Release 必须复用同一个 canonical tarball，不能从源码 checkout 再次打包。正式版本只有在空目录安装该 tarball 后独立通过 Skill、delivery、contract export、strict render 和 inspect 验收才可发布。

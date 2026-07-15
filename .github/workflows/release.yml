@@ -70,21 +70,29 @@ jobs:
 
       - run: bun ./bin/koubo-clip --help
 
-      - run: npm pack --dry-run
+      - name: Build canonical npm package
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          KOUBO_CLIP_SOURCE_REVISION: ${{ github.sha }}
+        run: bun run package:npm "dist/koubo-clip-${VERSION}.tgz"
 
-  package:
+      - name: Verify installed canonical npm package
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          EXPECTED_SOURCE_REVISION: ${{ github.sha }}
+        run: bun run verify:package:npm "dist/koubo-clip-${VERSION}.tgz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koubo-clip-${{ steps.meta.outputs.version }}-canonical-npm
+          path: |
+            dist/koubo-clip-${{ steps.meta.outputs.version }}.tgz
+            dist/koubo-clip-${{ steps.meta.outputs.version }}.tgz.json
+            dist/koubo-clip-${{ steps.meta.outputs.version }}.tgz.acceptance.json
+
+  release:
     needs: validate
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            artifact: linux
-          - os: macos-latest
-            artifact: macos
-          - os: windows-latest
-            artifact: windows
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -95,50 +103,19 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org/
 
-      - run: bun install --frozen-lockfile
-
-      - run: bun ./bin/koubo-clip --help
-
-      - name: Pack CLI
-        shell: bash
-        env:
-          VERSION: ${{ needs.validate.outputs.version }}
-          PLATFORM: ${{ matrix.artifact }}
-        run: |
-          mkdir -p dist
-          npm pack --json > dist/pack.json
-          node <<'NODE'
-          const fs = require("fs");
-          const path = require("path");
-          const pack = JSON.parse(fs.readFileSync("dist/pack.json", "utf8"))[0];
-          const target = path.join("dist", `koubo-clip-${process.env.VERSION}-${process.env.PLATFORM}.tgz`);
-          fs.renameSync(pack.filename, target);
-          NODE
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: koubo-clip-${{ needs.validate.outputs.version }}-${{ matrix.artifact }}
-          path: dist/koubo-clip-${{ needs.validate.outputs.version }}-${{ matrix.artifact }}.tgz
-
-  release:
-    needs:
-      - validate
-      - package
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org/
-
       - run: npm install -g npm@^11.5.1
 
       - uses: actions/download-artifact@v4
         with:
+          name: koubo-clip-${{ needs.validate.outputs.version }}-canonical-npm
           path: dist
-          merge-multiple: true
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - run: bun install --frozen-lockfile
 
       - id: npm_auth
         env:
@@ -167,13 +144,31 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TAG: ${{ needs.validate.outputs.npm_tag }}
-        run: npm publish --access public --tag "$NPM_TAG" --provenance
+        run: npm publish "./dist/koubo-clip-${{ needs.validate.outputs.version }}.tgz" --access public --tag "$NPM_TAG" --provenance
 
       - name: Publish npm with trusted publishing
         if: steps.npm_status.outputs.exists != 'true' && (steps.npm_auth.outputs.mode == 'trusted' || steps.publish_with_token.outcome == 'failure')
         env:
           NPM_TAG: ${{ needs.validate.outputs.npm_tag }}
-        run: npm publish --access public --tag "$NPM_TAG"
+        run: npm publish "./dist/koubo-clip-${{ needs.validate.outputs.version }}.tgz" --access public --tag "$NPM_TAG"
+
+      - name: Verify registry-installed package
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          EXPECTED_SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          mkdir -p dist/registry
+          npm pack "koubo-clip@${VERSION}" --pack-destination dist/registry --registry=https://registry.npmjs.org/
+          bun run verify:package:npm "dist/registry/koubo-clip-${VERSION}.tgz"
+          node <<'NODE'
+          const fs = require("fs");
+          const crypto = require("crypto");
+          const version = process.env.VERSION;
+          const digest = path => crypto.createHash("sha256").update(fs.readFileSync(path)).digest("hex");
+          const canonical = digest(`dist/koubo-clip-${version}.tgz`);
+          const registry = digest(`dist/registry/koubo-clip-${version}.tgz`);
+          if (canonical !== registry) throw new Error(`registry tarball digest mismatch: ${canonical} != ${registry}`);
+          NODE
 
       - name: Create GitHub Release
         env:
@@ -185,11 +180,11 @@ jobs:
         run: |
           notes="npm: koubo-clip@${VERSION} (${NPM_TAG})"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/*.tgz --clobber
+            gh release upload "$TAG" "dist/koubo-clip-${VERSION}.tgz" "dist/koubo-clip-${VERSION}.tgz.json" "dist/koubo-clip-${VERSION}.tgz.acceptance.json" --clobber
           else
             args=(--title "koubo-clip ${VERSION}" --notes "$notes" --verify-tag)
             if [ "$PRERELEASE" = "true" ]; then
               args+=(--prerelease)
             fi
-            gh release create "$TAG" dist/*.tgz "${args[@]}"
+            gh release create "$TAG" "dist/koubo-clip-${VERSION}.tgz" "dist/koubo-clip-${VERSION}.tgz.json" "dist/koubo-clip-${VERSION}.tgz.acceptance.json" "${args[@]}"
           fi
