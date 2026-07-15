@@ -430,7 +430,7 @@ Common files in the project directory:
 ## Project Status
 
 - Use `koubo-clip --version` as the installed version source; the README does not hard-code it.
-- Current package status: published to npm; the current release line includes detached authoring and strict render-contract execution.
+- Current package status: published to npm; the current stable release line includes detached authoring and strict render-contract execution.
 - Current recommended development mode: use Bun from the source repository.
 - npm package: `koubo-clip`.
 - Visual assets, music, and some provider capabilities depend on network access, API keys, user assets, or host MCP handoff.
