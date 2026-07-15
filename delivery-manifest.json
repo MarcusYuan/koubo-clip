@@ -1,9 +1,9 @@
 {
   "schema_version": "1.0",
-  "cli_version": "0.0.3",
-  "source_revision": "35ce59561a5b04bf8fd6c8b86a0a337b85a728a4",
+  "cli_version": "0.0.4",
+  "source_revision": "ca46940646b348ca811f14cda2ee0f6ef83f7a84",
   "distribution_kind": "source",
-  "cli_payload_digest": "sha256:17ed6eac9efdd530a326f6705dae3f22c919bb7d91142eadfbc2468380dece3d",
+  "cli_payload_digest": "sha256:438d77fc9573c4f98b6e1e5dfc0fee6c1872e09685da2ac918023be0a217ec4c",
   "renderer_resources_digest": "sha256:51d07c4346916bba3cad591e0ad99c8adf04377bd4f8ee6c23e796a33da7e346",
   "official_skill_digest": "sha256:15fda327ab0a44a666d35aabcb08add583c432f453ac42476d07512997cd81dd",
   "runtime_compatibility_digest": "sha256:11018ea1e26a43b235a272ad2e8d82c3c1daf4759fdb97d7a100e08186752a12",

@@ -430,7 +430,7 @@ bun run koubo-clip -- project focus-review <project>
 ## 项目状态
 
 - 当前安装版本以 `koubo-clip --version` 为准，不在 README 硬编码。
-- 当前包状态：已发布到 npm；当前稳定发布线已包含 detached authoring 和 strict render-contract execution。
+- 当前包状态：已发布到 npm，稳定发布线包含 detached authoring 和 strict render-contract execution。
 - 当前推荐开发方式：源码仓库中使用 Bun。
 - npm package：`koubo-clip`。
 - 视觉素材、音乐和部分 provider 能力依赖网络、API key、用户资产或 host MCP handoff。
