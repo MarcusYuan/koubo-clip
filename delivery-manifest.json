@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "cli_version": "0.0.2",
-  "source_revision": "346358c6c266e991ac031618f8a5694accfd73c6",
+  "source_revision": "b6a3cf0f17b3c38fd10eb0f42e1db97161b99050",
   "distribution_kind": "source",
   "cli_payload_digest": "sha256:2ed05aef9ec1e771a0ebf73eb1a34b199dc1aaf5a61320314a3a567843683c91",
   "renderer_resources_digest": "sha256:51d07c4346916bba3cad591e0ad99c8adf04377bd4f8ee6c23e796a33da7e346",
