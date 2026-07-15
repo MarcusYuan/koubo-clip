@@ -127,3 +127,10 @@
 - JSON 是机器合同；Markdown 是可重建 human view。不要用 Markdown 是否存在或内容变化判断业务状态。
 - MP4、storyboard 或 report 存在都不能证明完成。只有 current `render-result.json` 指定的 canonical output hash/probe 匹配、current `inspection.json` 绑定同一 render fingerprint 且没有 blocker 时才能声称完成。
 - 失败后保留 partial artifacts，并报告 manifest-committed 最后成功 checkpoint；不要把它描述为旧 bytes 的物理 rollback。
+
+## Detached authoring boundary
+
+- Skill 可以写 agent-owned proposal、edit-plan、request、selection 和 enrichment intent，但只能调用 CLI compiler/export 生成 EDL、captions、resolved storyboard 和 render contract。
+- Detached flow 先读 capabilities/status，再写 authoring artifacts；external evidence 必须通过 CLI `--import` 摄入。
+- Skill 不解释或复制 contract schema，不计算 contract digest，不修改 bundle，不在 strict render machine 上运行。
+- Strict execution 出错时报告 mismatch/blocker；不得重新分析视频、补默认 edit plan、改 transcript、重选素材或“修复” authoring project。

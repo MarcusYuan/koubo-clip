@@ -49,6 +49,23 @@ export function resolveKouboClipSkillRoot(): string {
   );
 }
 
+export function resolveDistributionRoot(): string {
+  return firstExisting(
+    [process.env.KOUBO_CLIP_DISTRIBUTION_ROOT, binaryRoot, sourceRoot],
+    (path) => existsSync(join(path, "delivery-manifest.json")) || existsSync(join(path, "package.json")),
+  );
+}
+
+export function resolveHyperframesBinary(): string {
+  if (process.env.KOUBO_CLIP_HYPERFRAMES_BIN) return process.env.KOUBO_CLIP_HYPERFRAMES_BIN;
+  const candidates = [
+    join(sourceRoot, "node_modules", ".bin", "hyperframes"),
+    join(binaryRoot, "runtime", "bin", "hyperframes"),
+    join(process.cwd(), "node_modules", ".bin", "hyperframes"),
+  ];
+  return candidates.find((path) => existsSync(path)) ?? "hyperframes";
+}
+
 export function bundleInfo() {
   const skillPath = resolveKouboClipSkillRoot();
   const hyperframesRoot = resolveHyperframesRoot();

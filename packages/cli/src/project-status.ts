@@ -22,6 +22,7 @@ import {
   parseRenderResult,
   parseReviewPackage,
   parseSourceFrameRequest,
+  parseSourceMaterialization,
   parseSourcesManifest,
   parseTranscript,
   parseVisualAcquisition,
@@ -62,6 +63,8 @@ import {
   renderResultFingerprintProjection,
   visualAcquisitionFingerprintProjection,
 } from "./project-lineage";
+import { sourceIdentityFingerprintProjection } from "./source-identity";
+import { parseRenderContractV1 } from "./render-contract";
 
 type ParsedArtifacts = {
   sources?: SourcesManifest;
@@ -134,6 +137,14 @@ const artifactDefinitions: readonly ArtifactDefinition[] = [
     capture: (value, parsed) => {
       parsed.sources = parseSourcesManifest(value);
     },
+  },
+  {
+    key: "source-materialization",
+    path: projectArtifacts.sourceMaterialization,
+    role: "authoritative_input",
+    schemaVersion: "1.0",
+    format: "json",
+    parse: (value, parsed) => parseSourceMaterialization(value, parsed.sources),
   },
   {
     key: "transcript",
@@ -426,6 +437,14 @@ const artifactDefinitions: readonly ArtifactDefinition[] = [
     parse: genericJsonObject,
   },
   {
+    key: "render-contract",
+    path: projectArtifacts.renderContract,
+    role: "derived",
+    schemaVersion: "1.0",
+    format: "json",
+    parse: (value) => parseRenderContractV1(value),
+  },
+  {
     key: "render-output:clean",
     path: projectArtifacts.cleanRender,
     role: "execution_result",
@@ -581,6 +600,22 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
     next_commands: uniqueStrings(nextStage?.next_commands ?? []),
     blockers: uniqueBlockers(blockers),
     ...(lastSuccessfulCheckpoint(manifest) ? { last_successful_checkpoint: lastSuccessfulCheckpoint(manifest)! } : {}),
+    sources: (parsed.sources?.sources ?? []).map((source) => ({
+      source_id: source.source_id,
+      identity: source.identity ? "available" as const : "legacy" as const,
+      materialization: evaluations.get(`source:${source.source_id}`)?.state === "current" ? "verified" as const : source.project_path ? "invalid" as const : "unbound" as const,
+    })),
+    render_contract: {
+      ready: evaluations.get("edl")?.state === "current" && (!nodes.get("enrichment-plan")?.exists || evaluations.get("enrichment-plan")?.state === "current"),
+      blockers: stages.find((stage) => stage.stage === "contract-export")?.blockers ?? [],
+      ...(evaluations.get("edl")?.fingerprint ? { current_authoring_fingerprint: inputFingerprint([
+        { key: "edl", fingerprint: evaluations.get("edl")!.fingerprint! },
+        ...(evaluations.get("enrichment-plan")?.fingerprint ? [{ key: "enrichment-plan", fingerprint: evaluations.get("enrichment-plan")!.fingerprint! }] : []),
+      ]) } : {}),
+      ...(nodes.get("render-contract")?.exists && nodes.get("render-contract")?.valid
+        ? { current_contract_digest: (readJson(resolve(rootPath, projectArtifacts.renderContract)) as { contract_digest?: string }).contract_digest }
+        : {}),
+    },
   };
 }
 
@@ -639,6 +674,40 @@ function addSourceMembers(
   manifest: ArtifactManifest | undefined,
 ): void {
   for (const source of parsed.sources?.sources ?? []) {
+    if (parsed.sources?.contract_version === "2.0" && source.identity) {
+      const identityKey = `source-identity:${source.source_id}`;
+      nodes.set(identityKey, {
+        key: identityKey,
+        path: `.virtual/source-identity/${source.source_id}`,
+        role: "authoritative_input",
+        schemaVersion: "2.0",
+        exists: true,
+        valid: true,
+        fingerprint: semanticJsonFingerprint(sourceIdentityFingerprintProjection({
+          source_id: source.source_id,
+          order: source.order,
+          original_filename: source.original_filename,
+          local_media_ref: source.local_media_ref ?? "local-ref-not-fingerprinted",
+          identity: source.identity,
+        } as Parameters<typeof sourceIdentityFingerprintProjection>[0])) as ArtifactFingerprint,
+        record: manifest?.artifacts[identityKey],
+      });
+      const materializationPath = resolveManagedPath(rootPath, projectArtifacts.sourceMaterialization);
+      if (materializationPath && existsSync(materializationPath)) {
+        try {
+          const materialization = parseSourceMaterialization(readJson(materializationPath), parsed.sources);
+          const member = materialization.sources.find((item) => item.source_id === source.source_id);
+          if (member) {
+            const mediaKey = `source:${source.source_id}`;
+            const mediaRecord = manifest?.artifacts[mediaKey];
+            nodes.set(mediaKey, readPhysicalNode(rootPath, mediaKey, member.project_path, "authoritative_input", mediaRecord?.schema_version ?? "bytes-v1", mediaRecord));
+          }
+        } catch {
+          // The source-materialization artifact carries the parser failure.
+        }
+      }
+      continue;
+    }
     const key = `source:${source.source_id}`;
     const record = manifest?.artifacts[key];
     nodes.set(key, readPhysicalNode(rootPath, key, source.project_path, "authoritative_input", record?.schema_version ?? "bytes-v1", record));
@@ -1322,10 +1391,17 @@ function buildStages(
     },
     {
       stage: "compile-edl",
-      command: command(rootPath, "render"),
+      command: command(rootPath, "compile-edl"),
       prerequisites: [...(currentEditPlanRequiresProposal ? ["production-proposal"] : []), "edit-plan"],
       outputs: ["edl"],
       acceptsPending: ["edit-plan"],
+    },
+    {
+      stage: "contract-export",
+      command: `koubo-clip render-contract export ${JSON.stringify(rootPath)} --output <bundle-dir>`,
+      prerequisites: ["edl", ...(nodes.get("enrichment-plan")?.exists ? ["enrichment-plan"] : [])],
+      outputs: ["render-contract"],
+      acceptsPending: ["render-contract"],
     },
     {
       stage: "focus-candidates",
@@ -1407,7 +1483,7 @@ function buildStages(
     {
       stage: "render",
       command: command(rootPath, "render"),
-      prerequisites: ["edl", ...(nodes.get("enrichment-plan")?.exists ? ["enrichment-plan"] : [])],
+      prerequisites: ["edl", ...(parsed.sources?.contract_version === "2.0" ? ["source-materialization"] : []), ...(nodes.get("enrichment-plan")?.exists ? ["enrichment-plan"] : [])],
       outputs: ["render-result", ...(renderOutputKey ? [renderOutputKey] : [])],
     },
     {

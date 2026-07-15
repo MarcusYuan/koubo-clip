@@ -39,6 +39,7 @@ import {
   type SourceFrame,
   type SourceFrameRequestArtifact,
   type SourceFramesArtifact,
+  type SourceAsset,
   type SourcesManifest,
   type TranscriptArtifact,
   type VisualAcquisitionArtifact,
@@ -66,6 +67,7 @@ import {
   parseMusicReview,
   parseReviewPackage,
   parseSourceFrameRequest,
+  parseSourceMaterialization,
   parseSourcesManifest,
   parseTranscript,
   parseVisualAcquisition,
@@ -107,7 +109,7 @@ import {
   type Fingerprint,
 } from "./artifact-lifecycle";
 import { resolveExistingProjectPath, resolveProjectOutputPath } from "./project-paths";
-import { cliVersion } from "./bundle-paths";
+import { cliVersion, resolveHyperframesBinary } from "./bundle-paths";
 import {
   assertRenderableHyperframesBlockForCard,
   defaultHyperframesBlockForCard,
@@ -151,6 +153,8 @@ import {
   type PreparedVisualAcquisition,
   type VisualCatalogArtifact,
 } from "./visual/acquire";
+import { sourceIdentityFingerprintProjection as portableSourceIdentityFingerprintProjection } from "./source-identity";
+import { validateEvidenceDirectory } from "./evidence-import";
 
 type StoryboardCard = Omit<EnrichmentCard, "block_id"> & {
   block_id: string;
@@ -169,7 +173,7 @@ type StoryboardElement = EnrichmentElement & {
   asset_path?: string;
 };
 
-type EnrichmentStoryboard = {
+export type EnrichmentStoryboard = {
   version: "1.1";
   canvas: { width: number; height: number; aspect_ratio: "16:9" | "9:16" | "4:5" };
   clean_video: { path: string; duration_seconds: number };
@@ -546,15 +550,17 @@ export function validateSourceFrameByteLimits(
 
 export function createProject(
   inputPaths: string[],
-  options: { projectPath?: string; providerMode?: ProviderExecutionMode } = {},
+  options: { projectPath?: string; providerMode?: ProviderExecutionMode; sourceManifestPath?: string } = {},
 ): CommandResult<"project.create", ProjectCreateData> {
   const startedAt = new Date().toISOString();
   try {
-    if (inputPaths.length === 0) throw new Error("project create requires at least one video");
+    if (inputPaths.length > 0 && options.sourceManifestPath) throw commandError("SOURCE_INPUT_MODE_CONFLICT", "positional videos and --source-manifest are mutually exclusive");
+    if (inputPaths.length === 0 && !options.sourceManifestPath) throw new Error("project create requires at least one video or --source-manifest");
+    if (options.sourceManifestPath && !options.projectPath) throw commandError("SOURCE_MANIFEST_INVALID", "detached project create requires explicit --project");
     const providerMode = options.providerMode ?? "standalone";
-    const projectPath = options.projectPath ?? defaultProjectPath(inputPaths[0]);
+    const projectPath = options.projectPath ?? defaultProjectPath(inputPaths[0]!);
     if (existsSync(projectPath)) throw new Error(`project already exists: ${projectPath}`);
-    mkdirSync(join(projectPath, "source"), { recursive: true });
+    if (!options.sourceManifestPath) mkdirSync(join(projectPath, "source"), { recursive: true });
     mkdirSync(join(projectPath, "assets", "images"), { recursive: true });
     mkdirSync(join(projectPath, "assets", "icons"), { recursive: true });
     mkdirSync(join(projectPath, "assets", "lottie"), { recursive: true });
@@ -563,27 +569,37 @@ export function createProject(
     mkdirSync(join(projectPath, "assets", "overlays"), { recursive: true });
     mkdirSync(join(projectPath, "renders"), { recursive: true });
 
-    const sources = inputPaths.map((inputPath, index) => {
-      if (!existsSync(inputPath)) throw new Error(`source not found: ${inputPath}`);
-      const sourceId = `src-${String(index + 1).padStart(3, "0")}`;
-      const ext = extname(inputPath) || ".mp4";
-      const projectRelativePath = join("source", `${String(index + 1).padStart(3, "0")}-original${ext}`);
-      const destination = join(projectPath, projectRelativePath);
-      copyFileSync(inputPath, destination);
-      const probe = probeMedia(destination);
-      return {
-        source_id: sourceId,
-        order: index,
-        original_filename: basename(inputPath),
-        project_path: projectRelativePath,
-        duration_seconds: probe.duration_seconds,
-        probe,
-      };
-    });
+    const detached = Boolean(options.sourceManifestPath);
+    const materialized: Array<{ source_id: string; project_path: string; sha256: string; size_bytes: number }> = [];
+    const portableManifest = detached
+      ? parseSourcesManifest(readJson(resolve(options.sourceManifestPath!)))
+      : parseSourcesManifest({
+          contract_version: "2.0",
+          sources: inputPaths.map((inputPath, index) => {
+            if (!existsSync(inputPath)) throw new Error(`source not found: ${inputPath}`);
+            const sourceId = `src-${String(index + 1).padStart(3, "0")}`;
+            const ext = extname(inputPath) || ".mp4";
+            const projectRelativePath = join("source", `${String(index + 1).padStart(3, "0")}-original${ext}`);
+            const destination = join(projectPath, projectRelativePath);
+            copyFileSync(inputPath, destination);
+            const identity = probePortableSourceIdentity(destination);
+            materialized.push({ source_id: sourceId, project_path: projectRelativePath, sha256: identity.sha256, size_bytes: identity.size_bytes });
+            return {
+              source_id: sourceId,
+              order: index,
+              original_filename: basename(inputPath),
+              local_media_ref: `local:${sourceId}`,
+              identity,
+            };
+          }),
+        });
+    if (portableManifest.contract_version !== "2.0") throw commandError("SOURCE_MANIFEST_INVALID", "--source-manifest requires sources.json contract_version 2.0");
+    const sources = portableManifest.sources;
 
     const sourcesPath = join(projectPath, projectArtifacts.sources);
     const projectMetadataPath = writeProjectMetadata(projectPath, providerMode);
-    writeJson(sourcesPath, { sources });
+    writeJson(sourcesPath, portableSourcesForWrite(portableManifest));
+    if (materialized.length > 0) writeJson(join(projectPath, projectArtifacts.sourceMaterialization), { contract_version: "1.0", sources: materialized });
     const recordedAt = new Date().toISOString();
     const projectMetadata = parseProjectMetadata(readProjectJson(projectPath, projectArtifacts.project, "project metadata"));
     const sourcesManifest = parseSourcesManifest(readProjectJson(projectPath, projectArtifacts.sources, "sources manifest"));
@@ -592,33 +608,35 @@ export function createProject(
       key: "project",
       path: projectArtifacts.project,
       role: "authoritative_input",
-      schema_version: "1.0",
+      schema_version: projectMetadata.contract_version ?? "legacy",
       authored_by: "cli",
       command: "project.create",
       mode: "produced",
       value: projectMetadataFingerprintProjection(projectMetadata),
       recorded_at: recordedAt,
     });
-    const sourceRecords = sourcesManifest.sources.map((source) =>
-      recordFileArtifact({
-        project_path: projectPath,
-        key: `source:${source.source_id}`,
-        path: source.project_path,
-        role: "authoritative_input",
-        schema_version: "bytes-v1",
-        authored_by: "cli",
-        command: "project.create",
-        mode: "produced",
-        recorded_at: recordedAt,
-      }),
-    );
+    const materialization = materialized.length > 0
+      ? parseSourceMaterialization(readProjectJson(projectPath, projectArtifacts.sourceMaterialization, "source materialization"), sourcesManifest)
+      : undefined;
+    const sourceRecords = sourcesManifest.sources.map((source) => sourceIdentityRecord(projectPath, source, "project.create", recordedAt));
+    const sourceMediaRecords = (materialization?.sources ?? []).map((source) => recordFileArtifact({
+      project_path: projectPath,
+      key: `source:${source.source_id}`,
+      path: source.project_path,
+      role: "authoritative_input",
+      schema_version: "bytes-v1",
+      authored_by: "cli",
+      command: "project.create",
+      mode: "produced",
+      recorded_at: recordedAt,
+    }));
     const sourceReferences = sourceRecords.map(artifactReference);
     const sourcesRecord = recordJsonArtifact({
       project_path: projectPath,
       key: "sources",
       path: projectArtifacts.sources,
       role: "authoritative_input",
-      schema_version: "1.0",
+      schema_version: "2.0",
       authored_by: "cli",
       command: "project.create",
       mode: "produced",
@@ -632,13 +650,25 @@ export function createProject(
       command: "project.create",
       input_fingerprint: inputFingerprint(sourceReferences),
       inputs: sourceReferences,
-      records: [projectRecord, ...sourceRecords, sourcesRecord],
+      records: [projectRecord, ...sourceRecords, ...sourceMediaRecords, sourcesRecord, ...(materialization ? [recordJsonArtifact({
+        project_path: projectPath,
+        key: "source-materialization",
+        path: projectArtifacts.sourceMaterialization,
+        role: "authoritative_input",
+        schema_version: "1.0",
+        authored_by: "cli",
+        command: "project.create",
+        mode: "produced",
+        inputs: sourceReferences,
+        value: materialization,
+        recorded_at: recordedAt,
+      })] : [])],
       started_at: startedAt,
       completed_at: recordedAt,
     });
     return ok("project.create", { project_path: projectPath, project_metadata_path: projectMetadataPath, provider_mode: providerMode, sources_path: sourcesPath, source_count: sources.length });
   } catch (error) {
-    return fail("project.create", "PROJECT_CREATE_FAILED", error);
+    return fail("project.create", errorCode(error, "PROJECT_CREATE_FAILED"), error);
   }
 }
 
@@ -1193,7 +1223,8 @@ export function focusCandidatesProject(projectPath: string, options: ProviderMod
   }
 }
 
-export function focusFramesProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.focus-frames", ProjectFocusFramesData> {
+export function focusFramesProject(projectPath: string, options: ProviderModeOption & { importPath?: string } = {}): CommandResult<"project.focus-frames", ProjectFocusFramesData> {
+  if (options.importPath) return importFocusFrameEvidence(projectPath, options.importPath, options);
   const startedAt = new Date().toISOString();
   let stageInputFingerprint: Fingerprint | undefined;
   let stageInputs: ArtifactFingerprintReference[] | undefined;
@@ -1220,7 +1251,15 @@ export function focusFramesProject(projectPath: string, options: ProviderModeOpt
       fingerprint: candidatesFingerprint,
       schema_version: candidates.version,
     };
-    const timeline = buildOutputTimeline(edl);
+    const materializedSources = readManifest(projectPath);
+    const materializedPathById = new Map(materializedSources.sources.map((source) => [source.source_id, source.project_path]));
+    const timeline = buildOutputTimeline({
+      ...edl,
+      entries: edl.entries.map((entry) => ({
+        ...entry,
+        source_path: entry.source_path || readableProjectSource(projectPath, entry.source_id, materializedPathById.get(entry.source_id) || ""),
+      })),
+    });
     const samples: FocusFrameSample[] = candidates.candidates
       .filter((candidate) => candidate.requires_grounding)
       .flatMap((candidate) =>
@@ -1230,7 +1269,10 @@ export function focusFramesProject(projectPath: string, options: ProviderModeOpt
         }),
       );
     const sourceReferences = [...new Set(samples.map((sample) => sample.mapped.source_id))].map((sourceId) => {
-      const reference = compiledEdl.input_references.find((input) => input.key === `source:${sourceId}`);
+      const mediaRecord = lifecycleManifest.artifacts[`source:${sourceId}`];
+      const reference = mediaRecord
+        ? artifactReference(mediaRecord)
+        : compiledEdl.input_references.find((input) => input.key === `source-identity:${sourceId}`);
       if (!reference) throw new Error(`artifact manifest is missing current source bytes: ${sourceId}`);
       return reference;
     });
@@ -1273,7 +1315,7 @@ export function focusFramesProject(projectPath: string, options: ProviderModeOpt
         { staged_path: stagedFramesPath, target_path: framesPath },
       ],
       () => {
-        const sourceReferenceById = new Map(sourceReferences.map((reference) => [reference.key.slice("source:".length), reference]));
+        const sourceReferenceById = new Map(sourceReferences.map((reference) => [reference.key.replace(/^source(?:-identity)?:/, ""), reference]));
         const frameRecords = frames.map((frame) =>
           recordFileArtifact({
             project_path: projectPath,
@@ -1345,7 +1387,79 @@ export function focusFramesProject(projectPath: string, options: ProviderModeOpt
   }
 }
 
-export function sourceFramesProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.source-frames", ProjectSourceFramesData> {
+function importFocusFrameEvidence(
+  projectPath: string,
+  evidenceDir: string,
+  options: ProviderModeOption,
+): CommandResult<"project.focus-frames", ProjectFocusFramesData> {
+  const startedAt = new Date().toISOString();
+  try {
+    resolveProjectProviderMode(projectPath, options.providerMode);
+    const compiled = compileCurrentEdl(projectPath);
+    const edlReference = artifactReference(compiled.edl_record);
+    const candidates = parseFocusCandidates(readProjectJson(projectPath, projectArtifacts.focusCandidates, "focus candidates"));
+    const lifecycleManifest = requireProjectArtifactManifest(projectPath, "project.focus-frames");
+    const candidatesRecord = requiredArtifactRecord(lifecycleManifest, "focus-candidates");
+    const candidatesFingerprint = semanticJsonFingerprint(candidates);
+    assertArtifactRecordCurrent(projectPath, lifecycleManifest, "focus-candidates", candidatesFingerprint, new Set(), new Set(), "project.focus-frames");
+    if (!referencesEqual(candidatesRecord.inputs, [edlReference])) throw lifecycleCommandError("FOCUS_CANDIDATES_STALE", "focus candidates do not bind the current EDL", "focus-candidates", "Rerun project focus-candidates.", "project.focus-frames");
+    const timeline = buildOutputTimeline(compiled.edl);
+    const samples = candidates.candidates.filter((candidate) => candidate.requires_grounding).flatMap((candidate) =>
+      focusSampleTimes(candidate).map((outputTime, index) => ({ candidate, index, outputTime, mapped: mapOutputTime(timeline, outputTime, candidate.id) })),
+    );
+    const expectedBindings = Object.fromEntries(samples.map(({ candidate, index, outputTime, mapped }) => [
+      `${candidate.id}-source-${index + 1}`,
+      { candidate_id: candidate.id, output_time_seconds: outputTime, source_id: mapped.source_id, source_time_seconds: mapped.source_time },
+    ]));
+    const members = validateEvidenceDirectory(evidenceDir, { expectedBindings });
+    const memberById = new Map(members.map((member) => [member.id, member]));
+    const stagingId = Date.now().toString(36);
+    const stagingDir = resolveProjectOutputPath(projectPath, `.focus-frames-staging-${stagingId}`, "focus frame staging directory");
+    mkdirSync(stagingDir, { recursive: true });
+    const frames = samples.map(({ candidate, index, mapped }): FocusFrame => {
+      const id = `${candidate.id}-source-${index + 1}`;
+      const member = memberById.get(id)!;
+      const fileName = `${safeFileName(id)}.jpg`;
+      copyFileSync(member.absolute_path, join(stagingDir, fileName));
+      return { id, candidate_id: candidate.id, timeline: "source", time_seconds: mapped.source_time, path: `.focus/frames/${fileName}`, source_id: mapped.source_id, width: member.width, height: member.height };
+    });
+    const artifact = parseFocusFrames({ version: "1.0", frames });
+    const stagedFramesPath = resolveProjectOutputPath(projectPath, `.focus-frames-${stagingId}.json`, "focus frames staged manifest");
+    atomicWriteJson(stagedFramesPath, artifact);
+    const sourceReferences = [...new Set(samples.map((sample) => sample.mapped.source_id))].map((sourceId) => artifactReference(requiredArtifactRecord(lifecycleManifest, `source-identity:${sourceId}`)));
+    const stageInputs = [edlReference, artifactReference(candidatesRecord), ...sourceReferences];
+    const framesPath = resolveProjectOutputPath(projectPath, projectArtifacts.focusFrames, "focus frames output");
+    const framesTargetDir = resolveProjectOutputPath(projectPath, join(".focus", "frames"), "focus frame output directory");
+    mkdirSync(dirname(framesTargetDir), { recursive: true });
+    const recordedAt = new Date().toISOString();
+    commitManagedPublications([
+      { staged_path: stagingDir, target_path: framesTargetDir },
+      { staged_path: stagedFramesPath, target_path: framesPath },
+    ], () => {
+      const sourceReferenceById = new Map(sourceReferences.map((reference) => [reference.key.slice("source-identity:".length), reference]));
+      const frameRecords = frames.map((frame) => recordFileArtifact({
+        project_path: projectPath,
+        key: `focus-frame:${frame.id}`,
+        path: frame.path,
+        role: "evidence",
+        schema_version: "image/jpeg",
+        authored_by: "host",
+        command: "project.focus-frames",
+        mode: "validated",
+        inputs: [edlReference, artifactReference(candidatesRecord), sourceReferenceById.get(frame.source_id!)!],
+        recorded_at: recordedAt,
+      }));
+      const framesRecord = recordJsonArtifact({ project_path: projectPath, key: "focus-frames", path: projectArtifacts.focusFrames, role: "evidence", schema_version: artifact.version, authored_by: "cli", command: "project.focus-frames", mode: "produced", inputs: [edlReference, artifactReference(candidatesRecord), ...frameRecords.map(artifactReference)], value: artifact, file_sha256: projectFileBytesFingerprint(projectPath, projectArtifacts.focusFrames, "focus frames"), recorded_at: recordedAt });
+      commitProjectStage({ project_path: projectPath, stage: "project.focus-frames", command: "project.focus-frames", input_fingerprint: inputFingerprint(stageInputs), inputs: stageInputs, records: [...frameRecords, framesRecord], replace_record_prefixes: ["focus-frame:"], started_at: startedAt, completed_at: recordedAt });
+    });
+    return ok("project.focus-frames", { project_path: projectPath, focus_frames_path: framesPath, frame_count: frames.length, frames });
+  } catch (error) {
+    return fail("project.focus-frames", errorCode(error, "PROJECT_FOCUS_FRAMES_FAILED"), error);
+  }
+}
+
+export function sourceFramesProject(projectPath: string, options: ProviderModeOption & { importPath?: string } = {}): CommandResult<"project.source-frames", ProjectSourceFramesData> {
+  if (options.importPath) return importSourceFrameEvidence(projectPath, options.importPath, options);
   const startedAt = new Date().toISOString();
   let stageInputFingerprint: Fingerprint | undefined;
   let stageInputs: ArtifactFingerprintReference[] | undefined;
@@ -1501,6 +1615,113 @@ export function sourceFramesProject(projectPath: string, options: ProviderModeOp
     if (isSourceFrameError(error) || isProviderModeError(error)) return fail("project.source-frames", "PROJECT_SOURCE_FRAMES_FAILED", error);
     return fail("project.source-frames", "PROJECT_SOURCE_FRAMES_FAILED", new Error("source frames command failed"));
   }
+}
+
+function importSourceFrameEvidence(
+  projectPath: string,
+  evidenceDir: string,
+  options: ProviderModeOption,
+): CommandResult<"project.source-frames", ProjectSourceFramesData> {
+  const startedAt = new Date().toISOString();
+  try {
+    resolveProjectProviderMode(projectPath, options.providerMode);
+    const request = readSourceFrameRequest(projectPath);
+    const sources = readManifest(projectPath);
+    const sourceById = new Map(sources.sources.map((source) => [source.source_id, source]));
+    for (const frame of request.frames) {
+      const source = sourceById.get(frame.source_id);
+      if (!source) throw sourceFrameError("SOURCE_FRAME_SOURCE_NOT_FOUND", `source frame ${frame.id} references an unknown source`);
+      if (frame.time_seconds >= source.duration_seconds) throw sourceFrameError("SOURCE_FRAME_TIME_OUT_OF_RANGE", `source frame ${frame.id} time is outside its source`);
+    }
+    const members = validateEvidenceDirectory(evidenceDir, {
+      expectedBindings: Object.fromEntries(request.frames.map((frame) => [frame.id, {
+        source_id: frame.source_id,
+        source_time_seconds: frame.time_seconds,
+        request_id: frame.id,
+      }])),
+    });
+    const memberById = new Map(members.map((member) => [member.id, member]));
+    const stagingId = Date.now().toString(36);
+    const stagingDir = resolveProjectOutputPath(projectPath, `.source-frames-staging-${stagingId}`, "source frame staging directory");
+    const stagedManifestPath = resolveProjectOutputPath(projectPath, `.source-frames-${stagingId}.json`, "source frame staged manifest");
+    mkdirSync(stagingDir, { recursive: true });
+    const frames = request.frames.map((frame, index): SourceFrame => {
+      const member = memberById.get(frame.id)!;
+      const fileName = `frame-${String(index + 1).padStart(4, "0")}.jpg`;
+      copyFileSync(member.absolute_path, join(stagingDir, fileName));
+      return { ...frame, index, path: `.source-frames/${fileName}`, mime_type: "image/jpeg", width: member.width, height: member.height, size_bytes: member.size_bytes, sha256: member.sha256 };
+    });
+    validateSourceFrameByteLimits(frames.map((frame) => frame.size_bytes));
+    const artifact = parseSourceFramesArtifactForImport({
+      version: "1.0",
+      frames,
+      frame_count: frames.length,
+      total_size_bytes: frames.reduce((sum, frame) => sum + frame.size_bytes, 0),
+    });
+    atomicWriteJson(stagedManifestPath, artifact);
+    const lifecycleManifest = requireProjectArtifactManifest(projectPath, "project.source-frames");
+    const sourceReferences = [...new Set(request.frames.map((frame) => frame.source_id))].map((sourceId) => artifactReference(requiredArtifactRecord(lifecycleManifest, `source-identity:${sourceId}`)));
+    const recordedAt = new Date().toISOString();
+    const requestRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "source-frame-request",
+      path: projectArtifacts.sourceFrameRequest,
+      role: "command_request",
+      schema_version: request.version,
+      authored_by: "agent",
+      command: "project.source-frames",
+      mode: "validated",
+      inputs: sourceReferences,
+      value: request,
+      file_sha256: projectFileBytesFingerprint(projectPath, projectArtifacts.sourceFrameRequest, "source frame request"),
+      recorded_at: recordedAt,
+    });
+    const requestReference = artifactReference(requestRecord);
+    const framesTargetPath = resolveProjectOutputPath(projectPath, ".source-frames", "source frame output directory");
+    const manifestTargetPath = resolveProjectOutputPath(projectPath, projectArtifacts.sourceFrames, "source frames output");
+    commitManagedPublications([
+      { staged_path: stagingDir, target_path: framesTargetPath },
+      { staged_path: stagedManifestPath, target_path: manifestTargetPath },
+    ], () => {
+      const frameRecords = frames.map((frame) => recordFileArtifact({
+        project_path: projectPath,
+        key: `source-frame:${frame.id}`,
+        path: frame.path,
+        role: "evidence",
+        schema_version: "image/jpeg",
+        authored_by: "host",
+        command: "project.source-frames",
+        mode: "validated",
+        inputs: [requestReference, sourceReferences.find((reference) => reference.key.endsWith(`:${frame.source_id}`))!],
+        recorded_at: recordedAt,
+      }));
+      const sourceFramesRecord = recordJsonArtifact({
+        project_path: projectPath,
+        key: "source-frames",
+        path: projectArtifacts.sourceFrames,
+        role: "evidence",
+        schema_version: artifact.version,
+        authored_by: "cli",
+        command: "project.source-frames",
+        mode: "produced",
+        inputs: [requestReference, ...frameRecords.map(artifactReference)],
+        value: artifact,
+        file_sha256: projectFileBytesFingerprint(projectPath, projectArtifacts.sourceFrames, "source frames"),
+        recorded_at: recordedAt,
+      });
+      const stageInputs = [requestReference, ...sourceReferences];
+      commitProjectStage({ project_path: projectPath, stage: "project.source-frames", command: "project.source-frames", input_fingerprint: inputFingerprint(stageInputs), inputs: stageInputs, records: [requestRecord, ...frameRecords, sourceFramesRecord], replace_record_prefixes: ["source-frame:"], started_at: startedAt, completed_at: recordedAt });
+    });
+    return ok("project.source-frames", { project_path: projectPath, source_frame_request_path: projectArtifacts.sourceFrameRequest, source_frames_path: projectArtifacts.sourceFrames, frame_count: frames.length, total_size_bytes: artifact.total_size_bytes, warnings: sourceFrameDuplicateWarnings(request) });
+  } catch (error) {
+    return fail("project.source-frames", errorCode(error, "PROJECT_SOURCE_FRAMES_FAILED"), error);
+  }
+}
+
+function parseSourceFramesArtifactForImport(value: SourceFramesArtifact): SourceFramesArtifact {
+  // The same parser contract is exercised by read/status; constructing through
+  // the typed shape here avoids trusting any external manifest fields.
+  return value;
 }
 
 function sourceFrameInputFingerprint(projectPath: string, _sourceId: string, projectRelativePath: string): Fingerprint {
@@ -3450,6 +3671,47 @@ function assertCurrentSourceLineage(
   verified: Set<string>;
 } {
   const verified = new Set<string>();
+  if (sources.contract_version === "2.0") {
+    const sourceRecords = sources.sources.map((source) => {
+      const key = `source-identity:${source.source_id}`;
+      const expected = semanticJsonFingerprint(sourceIdentityProjection(source));
+      const record = assertArtifactRecordCurrent(projectPath, manifest, key, expected, new Set(), verified, stage);
+      assertArtifactRecordContract(record, {
+        path: `.virtual/source-identity/${source.source_id}`,
+        role: "authoritative_input",
+        schema_version: "2.0",
+      }, stage);
+      if (source.project_path) {
+        const mediaKey = `source:${source.source_id}`;
+        const mediaRecord = manifest.artifacts[mediaKey];
+        const currentMediaFingerprint = projectSourceFingerprint(projectPath, source.source_id, source.project_path, stage);
+        if (!mediaRecord || mediaRecord.fingerprint !== currentMediaFingerprint || mediaRecord.path !== source.project_path) {
+          throw lifecycleCommandError(
+            "SOURCE_CONTENT_CHANGED",
+            `source bytes changed after project creation: ${source.source_id}`,
+            mediaKey,
+            "Restore the original project source or create a new project from the replacement media.",
+            stage,
+          );
+        }
+      }
+      return record;
+    });
+    const sourceReferences = sourceRecords.map(artifactReference);
+    const rawSources = parseSourcesManifest(readProjectJson(projectPath, projectArtifacts.sources, "sources manifest"));
+    const sourcesRecord = assertArtifactRecordCurrent(
+      projectPath,
+      manifest,
+      "sources",
+      semanticJsonFingerprint(rawSources),
+      new Set(),
+      verified,
+      stage,
+    );
+    assertArtifactRecordContract(sourcesRecord, { path: projectArtifacts.sources, role: "authoritative_input", schema_version: "2.0" }, stage);
+    assertArtifactInputs(sourcesRecord, sourceReferences, stage);
+    return { source_records: sourceRecords, sources_record: sourcesRecord, verified };
+  }
   const sourceRecords = sources.sources.map((source) => {
     const key = `source:${source.source_id}`;
     const existing = manifest.artifacts[key];
@@ -4558,8 +4820,11 @@ function readSourceFrameRequest(projectPath: string): SourceFrameRequestArtifact
 
 function readSourcesForSourceFrames(projectPath: string): SourcesManifest {
   try {
-    return parseSourcesManifest(readProjectJson(projectPath, projectArtifacts.sources, "sources manifest"));
-  } catch {
+    const manifest = readManifest(projectPath);
+    if (manifest.sources.some((source) => !source.project_path)) throw sourceFrameError("SOURCE_BINDING_REQUIRED", "source bytes must be materialized before extracting frames");
+    return manifest;
+  } catch (error) {
+    if (isSourceFrameError(error) && (error as { code?: string }).code === "SOURCE_BINDING_REQUIRED") throw error;
     throw sourceFrameError("SOURCE_FRAME_SOURCE_NOT_FOUND", `${projectArtifacts.sources} is missing or invalid`);
   }
 }
@@ -5088,6 +5353,21 @@ function readOrBuildEdl(projectPath: string): EdlArtifact {
   return compileCurrentEdl(projectPath).edl;
 }
 
+export function compileEdlProject(projectPath: string): CommandResult<"project.compile-edl", { project_path: string; edl_path: string; entry_count: number; contract_version: "2.0" }> {
+  try {
+    const compiled = compileCurrentEdl(projectPath);
+    if (compiled.edl.contract_version !== "2.0") throw commandError("EDL_SCHEMA_UNSUPPORTED", "current EDL is not portable contract_version 2.0");
+    return ok("project.compile-edl", {
+      project_path: projectPath,
+      edl_path: join(projectPath, projectArtifacts.edl),
+      entry_count: compiled.edl.entries.length,
+      contract_version: "2.0",
+    });
+  } catch (error) {
+    return fail("project.compile-edl", errorCode(error, "EDL_COMPILE_FAILED"), error);
+  }
+}
+
 function compileCurrentEdl(projectPath: string): {
   edl: EdlArtifact;
   input_references: ArtifactFingerprintReference[];
@@ -5219,7 +5499,7 @@ function compileCurrentEdl(projectPath: string): {
       key: "edl",
       path: projectArtifacts.edl,
       role: "derived",
-      schema_version: "1.0",
+      schema_version: "2.0",
       authored_by: "cli",
       command: "project.compile-edl",
       mode: "produced",
@@ -5659,7 +5939,13 @@ export function normalizeCloudflareWhisperResult(value: unknown, sourceId: strin
 }
 
 function readManifest(projectPath: string): SourcesManifest {
-  return parseSourcesManifest(readProjectJson(projectPath, projectArtifacts.sources, "sources manifest"));
+  const manifest = parseSourcesManifest(readProjectJson(projectPath, projectArtifacts.sources, "sources manifest"));
+  if (manifest.contract_version !== "2.0") return manifest;
+  const materializationPath = join(projectPath, projectArtifacts.sourceMaterialization);
+  if (!existsSync(materializationPath)) return manifest;
+  const materialization = parseSourceMaterialization(readProjectJson(projectPath, projectArtifacts.sourceMaterialization, "source materialization"), manifest);
+  const paths = new Map(materialization.sources.map((source) => [source.source_id, source.project_path]));
+  return { ...manifest, sources: manifest.sources.map((source) => ({ ...source, project_path: paths.get(source.source_id) ?? "" })) };
 }
 
 function readEditPlan(projectPath: string, manifest: SourcesManifest): ReturnType<typeof parseEditPlan> {
@@ -5805,7 +6091,7 @@ function renderReviewMarkdown(reviewPackage: { original_ranges: TranscriptArtifa
 }
 
 function buildEdl(
-  projectPath: string,
+  _projectPath: string,
   manifest: SourcesManifest,
   transcript: TranscriptArtifact,
   analysis: AnalysisArtifact,
@@ -5845,17 +6131,17 @@ function buildEdl(
       if (cut.end - cut.start <= CUT_PADDING_SECONDS * 2) throw new Error(`candidate ${cut.id} is too short for boundary padding`);
       const cutStart = Math.min(duration, cut.start + CUT_PADDING_SECONDS);
       const cutEnd = Math.max(cutStart, cut.end - CUT_PADDING_SECONDS);
-      if (cutStart > cursor) entries.push(edlEntry(source.source_id, join(projectPath, source.project_path), cursor, cutStart, entries.length, `keep before ${cut.id}`));
+      if (cutStart > cursor) entries.push(edlEntry(source.source_id, cursor, cutStart, entries.length, `keep before ${cut.id}`));
       cursor = Math.max(cursor, cutEnd);
     }
-    if (duration > cursor) entries.push(edlEntry(source.source_id, join(projectPath, source.project_path), cursor, duration, entries.length, "keep source range"));
+    if (duration > cursor) entries.push(edlEntry(source.source_id, cursor, duration, entries.length, "keep source range"));
   }
   if (entries.length === 0) throw new Error("EDL has no renderable entries");
-  return parseEdl({ entries }, manifest);
+  return parseEdl({ contract_version: "2.0", entries }, manifest);
 }
 
-function edlEntry(sourceId: string, sourcePath: string, start: number, end: number, outputOrder: number, reason: string): EdlEntry {
-  return { source_id: sourceId, source_path: sourcePath, start, end, output_order: outputOrder, reason };
+function edlEntry(sourceId: string, start: number, end: number, outputOrder: number, reason: string): EdlEntry {
+  return { source_id: sourceId, source_path: undefined as unknown as string, start, end, output_order: outputOrder, reason };
 }
 
 function renderEnrichedVideo(
@@ -5865,6 +6151,7 @@ function renderEnrichedVideo(
   plan: EnrichmentPlanArtifact,
   assets: AssetManifestArtifact,
   output: { workDir: string; finalPath: string; storyboardPath: string },
+  resolvedStoryboard?: EnrichmentStoryboard,
 ): string {
   const workDir = output.workDir;
   mkdirSync(workDir, { recursive: true });
@@ -5875,14 +6162,14 @@ function renderEnrichedVideo(
 
   const needsRecut = requiresHyperframesRecut(plan);
   if (needsRecut) {
-    const visualPath = renderHyperframesRecut(projectPath, cleanRenderPath, subtitlesPath, plan, assets, workDir, output.storyboardPath);
+    const visualPath = renderHyperframesRecut(projectPath, cleanRenderPath, subtitlesPath, plan, assets, workDir, output.storyboardPath, resolvedStoryboard);
     const withAudioPath = join(workDir, "recut-with-audio.mp4");
     attachCleanAudio(visualPath, cleanRenderPath, withAudioPath);
     current = withAudioPath;
   } else {
     const storyboardPublicDir = join(workDir, "storyboard-public");
     mkdirSync(storyboardPublicDir, { recursive: true });
-    atomicWriteJson(output.storyboardPath, buildEnrichmentStoryboard(projectPath, cleanRenderPath, subtitlesPath, plan, assets, storyboardPublicDir));
+    atomicWriteJson(output.storyboardPath, resolvedStoryboard ?? buildEnrichmentStoryboard(projectPath, cleanRenderPath, subtitlesPath, plan, assets, storyboardPublicDir));
   }
 
   for (const slot of plan.music) {
@@ -5916,8 +6203,8 @@ function renderHyperframesRecut(
   assets: AssetManifestArtifact,
   workDir: string,
   storyboardPath: string,
+  resolvedStoryboard?: EnrichmentStoryboard,
 ): string {
-  if (!commandExists("npx")) throw new Error("npx not found for HyperFrames recut render");
   const workspace = resolveProjectOutputPath(projectPath, join(".hyperframes", "recut"), "HyperFrames render workspace");
   const publicDir = join(workspace, "public");
   const cardsDir = join(publicDir, "cards");
@@ -5926,9 +6213,17 @@ function renderHyperframesRecut(
   mkdirSync(cardsDir, { recursive: true });
   mkdirSync(join(publicDir, "assets"), { recursive: true });
   copyFileSync(cleanRenderPath, join(publicDir, "clean.mp4"));
+  if (resolvedStoryboard) {
+    for (const asset of assets.assets) {
+      const source = projectAssetPath(projectPath, asset.path);
+      const target = join(publicDir, asset.path);
+      mkdirSync(dirname(target), { recursive: true });
+      copyFileSync(source, target);
+    }
+  }
   installStoryboardRegistryElements(plan, publicDir);
 
-  const storyboard = buildEnrichmentStoryboard(projectPath, cleanRenderPath, subtitlesPath, plan, assets, publicDir);
+  const storyboard = resolvedStoryboard ?? buildEnrichmentStoryboard(projectPath, cleanRenderPath, subtitlesPath, plan, assets, publicDir);
   atomicWriteJson(storyboardPath, storyboard);
   writeJson(join(workspace, "hyperframes.json"), hyperframesConfig());
   writeJson(join(publicDir, "hyperframes.json"), hyperframesConfig());
@@ -6001,6 +6296,138 @@ export function buildEnrichmentStoryboard(
     elements,
     music: plan.music,
   };
+}
+
+export function resolveRenderContractStoryboard(input: {
+  projectPath: string;
+  width: number;
+  height: number;
+  durationSeconds: number;
+  captions: Array<{ start: number; end: number; text: string }>;
+  plan: EnrichmentPlanArtifact;
+  assets: AssetManifestArtifact;
+  bundlePaths: Record<string, string>;
+}): EnrichmentStoryboard {
+  const { projectPath, width, height, durationSeconds, captions, plan, assets, bundlePaths } = input;
+  const cards = plan.cards.map((card) => ({
+    ...resolveStoryboardCard(card, plan.profile.source_mode),
+    ...(card.asset_id ? { asset_path: requiredBundleAssetPath(bundlePaths, card.asset_id) } : {}),
+  }));
+  const elements = plan.elements.map((element): StoryboardElement => {
+    const catalogType = vendoredElementType(element);
+    const catalog = catalogType ? getVendoredElement(element.sfx_id ?? element.element_id, catalogType) : undefined;
+    const adapter = catalog ? adapterForVendoredElement(catalog) : adapterForElement(element);
+    const resolved: StoryboardElement = {
+      ...element,
+      catalog_title: catalog?.title ?? element.element_id,
+      renderable: (catalog?.renderable ?? false) || adapter.render_strategy !== "guidance_only" || isAssetElement(element),
+      guidance_only: (catalog?.guidance_only ?? false) && adapter.render_strategy === "guidance_only",
+      adapter,
+    };
+    if (element.element_type === "registry_block" && adapter.render_strategy === "native_composition") {
+      const item = loadVendoredRegistryItem(element.element_id, "hyperframes:block");
+      resolved.composition_src = item.files.find((file) => file.type === "hyperframes:composition")?.target;
+    }
+    if (isVisualAssetElement(element) && element.asset_id) resolved.asset_path = requiredBundleAssetPath(bundlePaths, element.asset_id);
+    return resolved;
+  });
+  const hyperframes = summarizeHyperframesBlocks(plan, assets);
+  const referencedAssetIds = referencedEnrichmentAssetIds(plan);
+  return {
+    version: "1.1",
+    canvas: { width, height, aspect_ratio: resolveCanvasAspectRatio(plan.profile.aspect_ratio, width, height) },
+    clean_video: { path: ".hyperframes/recut/public/clean.mp4", duration_seconds: durationSeconds },
+    profile: plan.profile,
+    dependencies: hyperframes.cdn_dependencies,
+    block_usage: cards.map((card) => {
+      const block = getHyperframesCatalogEntry(card.block_id)!;
+      return { card_id: card.id, block_id: card.block_id, source: block.source, visual_role: block.visual_role, template_family: block.template_family, dependencies: [...block.dependencies] };
+    }),
+    element_usage: summarizeHyperframesElements(plan),
+    captions: { enabled: plan.captions.enabled, identity: plan.captions.identity, cues: plan.captions.enabled ? captions : [], emphasis: plan.captions.emphasis },
+    qa_checks: buildQaChecks(projectPath, plan, assets).map((check) => ({
+      ...check,
+      ...(check.asset_id ? { asset_path: requiredBundleAssetPath(bundlePaths, check.asset_id) } : {}),
+    })),
+    asset_summary: assets.assets.filter((asset) => referencedAssetIds.has(asset.id)).map((asset) => ({
+      id: asset.id,
+      path: requiredBundleAssetPath(bundlePaths, asset.id),
+      type: asset.type,
+      source: asset.source,
+      provenance: asset.provenance,
+      provider: asset.provider,
+      license: asset.license,
+      source_url: asset.source_url,
+      runtime_dependencies: asset.runtime_dependencies,
+      used_by: [],
+      exists: true,
+    })),
+    cards,
+    elements,
+    music: plan.music,
+  };
+}
+
+function requiredBundleAssetPath(paths: Record<string, string>, assetId: string): string {
+  const path = paths[assetId];
+  if (!path) throw new Error(`missing bundled path for referenced asset ${assetId}`);
+  return path;
+}
+
+export function executeResolvedRenderPlan(input: {
+  runRoot: string;
+  timeline: EdlArtifact;
+  sourcePaths: Record<string, string>;
+  captions: Array<{ start: number; end: number; text: string }>;
+  output: { filename: string; width: number; height: number; fps: number };
+  plan?: EnrichmentPlanArtifact;
+  assets?: AssetManifestArtifact;
+  storyboard?: EnrichmentStoryboard;
+}): { outputPath: string; cleanPath: string; subtitlesPath: string; storyboardPath?: string } {
+  const { runRoot } = input;
+  mkdirSync(runRoot, { recursive: true });
+  const workDir = join(runRoot, ".work");
+  mkdirSync(workDir, { recursive: true });
+  const cleanPath = join(workDir, "clean.mp4");
+  renderResolvedEdl(input.timeline, input.sourcePaths, cleanPath, input.output);
+  const subtitlesPath = join(workDir, "subtitles.srt");
+  atomicWriteText(subtitlesPath, renderCaptionCuesSrt(input.captions));
+  const outputPath = join(runRoot, input.output.filename);
+  if (input.plan) {
+    if (!input.assets || !input.storyboard) throw commandError("CONTRACT_INVALID", "resolved enrichment requires frozen assets and storyboard");
+    const storyboardPath = join(workDir, "storyboard.json");
+    renderEnrichedVideo(runRoot, cleanPath, subtitlesPath, input.plan, input.assets, { workDir, finalPath: outputPath, storyboardPath }, input.storyboard);
+    return { outputPath, cleanPath, subtitlesPath, storyboardPath };
+  }
+  if (!burnSubtitles(cleanPath, subtitlesPath, outputPath, workDir)) copyFileSync(cleanPath, outputPath);
+  return { outputPath, cleanPath, subtitlesPath };
+}
+
+function renderCaptionCuesSrt(cues: Array<{ start: number; end: number; text: string }>): string {
+  return cues.map((cue, index) => `${index + 1}\n${srtTime(cue.start)} --> ${srtTime(cue.end)}\n${cue.text}\n`).join("\n");
+}
+
+function renderResolvedEdl(
+  edl: EdlArtifact,
+  sourcePaths: Record<string, string>,
+  outputPath: string,
+  output: { width: number; height: number; fps: number },
+): void {
+  if (!commandExists("ffmpeg")) throw commandError("RENDER_PREFLIGHT_FAILED", "ffmpeg not found for strict render");
+  const workDir = dirname(outputPath);
+  const parts = [...edl.entries].sort((a, b) => a.output_order - b.output_order).map((entry, index) => {
+    const sourcePath = sourcePaths[entry.source_id];
+    if (!sourcePath) throw commandError("SOURCE_BINDING_MISSING", `missing bound source ${entry.source_id}`);
+    const partPath = join(workDir, `part-${String(index).padStart(3, "0")}.mp4`);
+    const vf = `scale=${output.width}:${output.height}:force_original_aspect_ratio=decrease,pad=${output.width}:${output.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${output.fps},format=yuv420p`;
+    const result = spawnSync("ffmpeg", ["-y", "-ss", String(entry.start), "-i", sourcePath, "-t", String(entry.end - entry.start), "-vf", vf, "-af", "aresample=48000,aformat=channel_layouts=stereo", "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-r", String(output.fps), "-c:a", "aac", "-ar", "48000", "-ac", "2", partPath], { encoding: "utf8" });
+    if (result.status !== 0) throw commandError("CONTRACT_RENDER_FAILED", `strict source segment render failed: ${result.stderr || result.stdout}`);
+    return partPath;
+  });
+  const concatPath = join(workDir, "concat.txt");
+  writeFileSync(concatPath, parts.map((path) => `file '${path.replaceAll("'", "'\\''")}'`).join("\n") + "\n");
+  const result = spawnSync("ffmpeg", ["-y", "-f", "concat", "-safe", "0", "-i", concatPath, "-c", "copy", "-movflags", "+faststart", outputPath], { encoding: "utf8" });
+  if (result.status !== 0) throw commandError("CONTRACT_RENDER_FAILED", `strict concat failed: ${result.stderr || result.stdout}`);
 }
 
 function installStoryboardRegistryElements(plan: EnrichmentPlanArtifact, publicDir: string): void {
@@ -6876,7 +7303,7 @@ function formatSeconds(value: number): string {
 }
 
 function runHyperframes(args: string[], cwd: string, message: string, timeout = 120): void {
-  const result = spawnSync("npx", ["--yes", "hyperframes", ...args], { cwd, encoding: "utf8", timeout: timeout * 1000 });
+  const result = spawnSync(resolveHyperframesBinary(), args, { cwd, encoding: "utf8", timeout: timeout * 1000 });
   if (result.status !== 0) throw new Error(`${message}: ${result.stderr || result.stdout}`);
 }
 
@@ -6993,13 +7420,15 @@ function ffmpegFilterExists(name: string): boolean {
 
 function renderEdl(projectPath: string, edl: EdlArtifact, outputPath: string) {
   if (!commandExists("ffmpeg")) throw new Error("ffmpeg not found for render");
+  const sources = readManifest(projectPath);
+  const sourcePaths = new Map(sources.sources.map((source) => [source.source_id, source.project_path]));
   const workDir = resolve(projectPath, ".render");
   mkdirSync(workDir, { recursive: true });
   const partPaths = edl.entries.map((entry, index) => {
     const partPath = join(workDir, `part-${String(index).padStart(3, "0")}.mp4`);
     const result = spawnSync(
       "ffmpeg",
-      ["-y", "-ss", String(entry.start), "-i", entry.source_path, "-t", String(entry.end - entry.start), "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-movflags", "+faststart", partPath],
+      ["-y", "-ss", String(entry.start), "-i", entry.source_path || readableProjectSource(projectPath, entry.source_id, sourcePaths.get(entry.source_id) ?? ""), "-t", String(entry.end - entry.start), "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-movflags", "+faststart", partPath],
       { encoding: "utf8" },
     );
     if (result.status !== 0) throw new Error(`ffmpeg segment render failed: ${result.stderr || result.stdout}`);
@@ -7207,6 +7636,114 @@ function probeMedia(path: string): Record<string, unknown> & { duration_seconds:
   const duration = result.status === 0 ? Number.parseFloat(result.stdout.trim()) : Number.NaN;
   if (Number.isFinite(duration)) return { duration_seconds: duration, probe_ok: true };
   return { duration_seconds: 0, probe_ok: false, probe_error: (result.stderr || result.stdout || "unknown ffprobe error").trim() };
+}
+
+export function probePortableSourceIdentity(path: string): NonNullable<SourceAsset["identity"]> {
+  const bytes = readFileSync(path);
+  const sha256 = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const sizeBytes = bytes.byteLength;
+  const result = spawnSync("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", path], { encoding: "utf8" });
+  let root: Record<string, unknown> = {};
+  try {
+    root = result.status === 0 ? JSON.parse(result.stdout) as Record<string, unknown> : {};
+  } catch {
+    root = {};
+  }
+  const streams = Array.isArray(root.streams) ? root.streams.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object") : [];
+  const video = streams.find((stream) => stream.codec_type === "video") ?? {};
+  const audio = streams.find((stream) => stream.codec_type === "audio");
+  const format = root.format && typeof root.format === "object" ? root.format as Record<string, unknown> : {};
+  const duration = finiteNumber(format.duration) ?? finiteNumber(video.duration) ?? 0;
+  const width = Math.max(0, Math.trunc(finiteNumber(video.width) ?? 0));
+  const height = Math.max(0, Math.trunc(finiteNumber(video.height) ?? 0));
+  const rotation = streamRotation(video);
+  const quarterTurn = Math.abs(rotation) % 180 === 90;
+  return {
+    sha256,
+    size_bytes: sizeBytes,
+    duration_seconds: duration,
+    video: {
+      codec_name: stringOr(video.codec_name, "unknown"),
+      width,
+      height,
+      display_width: quarterTurn ? height : width,
+      display_height: quarterTurn ? width : height,
+      rotation,
+      avg_frame_rate: stringOr(video.avg_frame_rate, "0/0"),
+      pixel_format: stringOr(video.pix_fmt, "unknown"),
+    },
+    audio: audio ? {
+      codec_name: stringOr(audio.codec_name, "unknown"),
+      sample_rate: Math.max(0, Math.trunc(finiteNumber(audio.sample_rate) ?? 0)),
+      channels: Math.max(0, Math.trunc(finiteNumber(audio.channels) ?? 0)),
+      channel_layout: stringOr(audio.channel_layout, "unknown"),
+    } : undefined,
+  };
+}
+
+function streamRotation(stream: Record<string, unknown>): number {
+  const tags = stream.tags && typeof stream.tags === "object" ? stream.tags as Record<string, unknown> : undefined;
+  const tagRotation = finiteNumber(tags?.rotate);
+  if (tagRotation !== undefined) return Math.trunc(tagRotation);
+  const sideData = Array.isArray(stream.side_data_list) ? stream.side_data_list : [];
+  for (const item of sideData) {
+    if (!item || typeof item !== "object") continue;
+    const rotation = finiteNumber((item as Record<string, unknown>).rotation);
+    if (rotation !== undefined) return Math.trunc(rotation);
+  }
+  return 0;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number.parseFloat(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function stringOr(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function portableSourcesForWrite(manifest: SourcesManifest): unknown {
+  return {
+    contract_version: "2.0",
+    sources: manifest.sources.map((source) => ({
+      source_id: source.source_id,
+      order: source.order,
+      original_filename: source.original_filename,
+      local_media_ref: source.local_media_ref,
+      identity: source.identity,
+    })),
+  };
+}
+
+function sourceIdentityProjection(source: SourceAsset): unknown {
+  if (!source.identity) throw commandError("SOURCE_MANIFEST_INVALID", `source ${source.source_id} is missing portable identity`);
+  return portableSourceIdentityFingerprintProjection({
+    source_id: source.source_id,
+    order: source.order,
+    original_filename: source.original_filename,
+    local_media_ref: source.local_media_ref ?? "local-ref-not-fingerprinted",
+    identity: source.identity,
+  } as Parameters<typeof portableSourceIdentityFingerprintProjection>[0]);
+}
+
+function sourceIdentityRecord(projectPath: string, source: SourceAsset, command: string, recordedAt: string): ArtifactRecord {
+  return recordJsonArtifact({
+    project_path: projectPath,
+    key: `source-identity:${source.source_id}`,
+    path: `.virtual/source-identity/${source.source_id}`,
+    role: "authoritative_input",
+    schema_version: "2.0",
+    authored_by: "cli",
+    command,
+    mode: "produced",
+    value: sourceIdentityProjection(source),
+    recorded_at: recordedAt,
+  });
+}
+
+function commandError(code: string, message: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code });
 }
 
 function probeVideoSize(path: string): { width: number; height: number } {

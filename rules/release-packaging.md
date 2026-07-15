@@ -114,3 +114,11 @@ npm publish --access public --registry=https://registry.npmjs.org/
 - 不把 `.env`、provider key、npm token 或 GitHub token 打进任何发布包。
 - 不发布版本号和 tag 不一致的包。
 - 不把 prerelease 版本发布到 npm `latest` dist-tag。
+
+## Delivery identity
+
+- npm 和 internal package 必须包含同一 `delivery-manifest.json`，并通过 `koubo-clip delivery verify --json`。
+- Manifest 固定 CLI payload、renderer resources、official Skill、runtime compatibility digest、schema versions、capability IDs 和 exact dependencies。
+- `gsap` 固定 `3.15.0`，`hyperframes` 固定 `0.7.36`；strict runtime 禁止联网下载 renderer。
+- `skills install` 必须在复制前验证 bundled Skill，在 staging 后和 atomic replace 后再次验证 installed Skill。
+- Release 外层另生成 artifact SHA-256；外层 digest 不替代 delivery manifest 内部身份。

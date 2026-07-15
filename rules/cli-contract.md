@@ -169,3 +169,11 @@ CLI failures 应使用稳定 code。Provider mode 相关 blocker 至少包含 `c
 - `SOURCE_FRAME_IMAGE_TOO_LARGE`: 最后一档 JPEG 仍超过单图上限。
 - `SOURCE_FRAME_BATCH_TOO_LARGE`: 合规 JPEG 总量超过批次上限。
 - `PROJECT_SOURCE_FRAMES_FAILED`: staging/directory preparation、public artifact replacement 或 manifest commit 等未预期命令失败；message 固定为 `source frames command failed`，不得传播包含真实路径的底层错误。
+
+## Render contract
+
+- `render-contract.json`、binding、strict result 和 strict inspection 是 CLI-owned。Skill、host 和 user 不得手写或改写。
+- Export 只接受 sources v2 与 EDL v2；合同 payload 不得含 source path、project path、absolute path、export timestamp 或 `local_media_ref`。
+- Contract bundle、binding output 和 run directory 均不可覆盖。公共合同/result 必须 commit-last。
+- Strict render 只能调用冻结执行内核；禁止调用 authoring EDL compiler、transcript-to-SRT、enrichment validator、storyboard builder 或 provider。
+- Unknown schema/capability/runtime digest、asset tamper、binding member 缺失/多余、source replacement 和 output tamper 都必须返回稳定非零错误。

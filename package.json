@@ -1,7 +1,7 @@
 {
   "name": "koubo-clip",
   "description": "Agent-driven local talking-head video cleanup and enrichment CLI.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -9,6 +9,7 @@
   },
   "files": [
     "bin/koubo-clip",
+    "delivery-manifest.json",
     "packages/cli/src",
     "!packages/cli/src/**/*.test.ts",
     "packages/cli/vendor/hyperframes",
@@ -50,6 +51,7 @@
     "hermes"
   ],
   "dependencies": {
-    "gsap": "^3.15.0"
+    "gsap": "3.15.0",
+    "hyperframes": "0.7.36"
   }
 }

@@ -1,11 +1,13 @@
 ---
 name: koubo-clip
-description: Guide agents through local talking-head video cleanup with the koubo-clip CLI. Use when a user provides one or more口播/talking-head videos and wants repeated speech, false starts, filler, silence, waiting gaps, captions, sourced visual assets, music, SFX, or HyperFrames enrichment reviewed and rendered.
+description: Guide agents through local or detached talking-head video authoring with the koubo-clip CLI. Use when a user provides one or more口播/talking-head videos, or portable source identities without local media bytes, and wants cleanup decisions, captions, visual/audio enrichment, evidence review, a local render, or an immutable render contract for strict execution on another machine.
 ---
 
 # koubo-clip
 
-Use the CLI as the source of truth. The skill owns the user workflow, source-frame semantic selection and visual review, provider-mode routing, request specs, proposal writing, and final explanation; the CLI owns media facts, timestamps, validation, deterministic frame extraction, rendering, subtitles, asset checks, focus evidence, and inspection artifacts.
+Use the CLI as the source of truth. The skill owns the user workflow, transcript/candidate semantic review, proposal and edit decisions, visual/audio choices, evidence interpretation, and final explanation. The CLI owns source identity and materialization, schemas, lineage, portable EDL, caption mapping, resolved storyboard, immutable render contracts, source binding, deterministic rendering, and inspection.
+
+This Skill is an authoring surface. A strict render-contract consumer must not load or run it.
 
 ## Command
 
@@ -40,11 +42,15 @@ Read only the references needed for the current stage:
    - Use `platform` when the task comes from Hermes, TaskWorkspace, LocalAgent, workspace refs, asset ids, controlled local artifacts, or the "koubo-clip/口播快剪" employee capability.
    - Use `standalone` for ordinary local CLI use where the user's machine owns provider configuration.
    - If a project already has `project.json`, obey its `provider_execution_mode`; do not mix modes in one project.
-2. When resuming an existing project, run `koubo-clip project status <project> --json` first. Follow its blockers, remediation, `next_commands`, and last checkpoint; never infer state by scanning files. For a new project, run `koubo-clip doctor --provider-mode <mode>` and `koubo-clip project create <video...> --provider-mode <mode>`.
+2. When resuming an existing project, run `koubo-clip project status <project> --json` first. Follow its blockers, remediation, `next_commands`, source identity/materialization state, and last checkpoint; never infer state by scanning files. For a new project:
+   - With local media, run `project create <video...> --project <dir> --provider-mode <mode>`; the CLI writes portable identity and a separate verified materialization.
+   - Without local media bytes, run `project create --source-manifest <sources-v2.json> --project <dir> --provider-mode <mode>`. Treat `local_media_ref` as opaque metadata. Never resolve it, echo it, pass it to a filesystem tool, or copy media into the project.
 3. If the user or host already has a transcript, put it at `<project>/transcript.json`; otherwise:
    - In `standalone` mode, run `koubo-clip project explore <project> --provider-mode standalone --asr auto`.
    - In `platform` mode, ask the host/platform ASR capability to write `transcript.json` first, then run `koubo-clip project explore <project> --provider-mode platform --asr external`.
-4. Before a production proposal, read `transcript.json`, `material-report.md`, and `sources.json`; select 1-20 useful, non-padding source-local observation points, write `source-frame-request.json`, and run `koubo-clip project source-frames <project> --provider-mode <mode>`.
+4. Before a production proposal, read `transcript.json`, `material-report.md`, and `sources.json`; select 1-20 useful, non-padding source-local observation points and write `source-frame-request.json`.
+   - With materialized source bytes, run `project source-frames <project> --provider-mode <mode>`.
+   - For detached authoring, ask the authorized host to fulfill the request as an evidence directory, then run `project source-frames <project> --import <evidence-dir> --provider-mode <mode>`. Do not copy or trust external frames yourself; the CLI validates containment, hash, size, JPEG probe, source identity, request id, and source time before publishing canonical evidence.
    - The CLI only validates and extracts JPEGs. If the host has vision capability, review `source-frames.json` and its project-relative images together with ASR facts.
    - If standalone vision is unavailable, continue transcript-only and explicitly state that source-image semantic review was not performed. In platform mode, missing host vision is a host-workflow blocker, not a CLI extraction failure.
 5. Run `koubo-clip project review <project> --provider-mode <mode>` and infer the user's business goal from source evidence. Do not jump directly from "做成卖货视频" or similar broad requests to rendering.
@@ -57,7 +63,7 @@ Read only the references needed for the current stage:
    - Before confirmation, write asset intent only: intent, query, provider preference, license/cost/source risk, and reason. Do not write final `asset_id`, local path, provider URL, download URL, absolute path, or raw MCP payload.
 7. Run `koubo-clip project proposal <project> --provider-mode <mode> --json`. Show the complete options and preserve `proposal_fingerprint` plus the `option_selection_fingerprints` map. The user confirms exactly once: `OK` selects `recommended_option_id`, or they provide one option id. Material changes require updating and revalidating the proposal before the final selection.
 8. Convert the confirmed cleanup choice into `edit-plan.json` with `contract_version:"1.0"`, `confirmed_option_id`, and the matching `proposal_selection_fingerprint`. Do not ask users to edit JSON unless they want to. CLI consumers validate this binding and automatically rebuild a stale EDL when prerequisites are complete.
-9. For UI-facing inserts, write `focus-candidates.json`, then run `project focus-candidates`, `project focus-frames`, `project focus-grounding`, and `project focus-review` with the same provider mode. Focus candidate timing is on the cleaned output timeline; the CLI maps it through the EDL and writes source-local frame evidence.
+9. Run `project compile-edl <project>` after the confirmed edit plan. For UI-facing inserts, write `focus-candidates.json`, then run `project focus-candidates`, `project focus-frames`, `project focus-grounding`, and `project focus-review` with the same provider mode. In detached authoring, fulfill focus evidence externally and use `project focus-frames <project> --import <evidence-dir>`; the CLI verifies each output time against the current portable EDL mapping rather than trusting an external source mapping.
 10. For approved visual assets, write `visual-request.json`.
    - For each retained request, compare candidates against the viewer job, ASR facts, source-frame evidence, source mode, selected business direction, license/source constraints, and runtime risk. Search order and `recommended` are hints only; neither authorizes acquisition.
    - Write both `selected_candidate_id` and `selection_reason` for every retained request. `reason` explains why the slot exists; `selection_reason` explains why that exact candidate was chosen.
@@ -72,13 +78,19 @@ Read only the references needed for the current stage:
    - A simplified platform/legacy handoff may write standalone `asset-usage-plan.json`, then run `project enrich-plan` once to normalize it into canonical enrichment.
    - Do not write new embedded usage plans in `project.json` or `edit-plan.json`. Canonical plus compatibility input, or multiple compatibility inputs, is `ASSET_USAGE_PLAN_CONFLICT`; never merge them.
 13. Run `koubo-clip project enrich-plan <project> --provider-mode <mode>` and show `qa_checks[]`; fix missing assets, provenance, runtime dependency, timing, coordinate evidence, or authority conflicts before render.
-14. Run `koubo-clip project render <project> --provider-mode <mode>`. Treat only current `render-result.json` as render success; use its `canonical_output_key` rather than guessing from an old `final.mp4`.
-15. Run `koubo-clip project inspect <project> --provider-mode <mode>`. Treat only current `inspection.json` bound to that render fingerprint as inspection success; inspection frames use the final output timeline.
-16. Run `project status --json` again and report the canonical deliverable, render/inspection fingerprints, removed sections, enrichment choices, provider provenance, grounded evidence, `inspection_checks[]`, sampled frames, warnings, and skipped or failed stages.
+14. Choose one execution handoff:
+   - Local authoring execution: run `project render`, then `project inspect` as before.
+   - Distributed execution: run `render-contract export <project> --output <new-bundle-dir>`. The output directory must not exist. Do not write, edit, patch, merge, or reserialize `render-contract.json`; the CLI alone compiles and signs the frozen closure.
+15. For distributed execution, transfer the immutable bundle through the platform. The remote machine must use the same compatible Koubo Clip delivery and invoke `render-contract verify`, `bind`, `render`, then `inspect`. The remote executor must not receive or consult transcript, analysis, edit-plan, enrichment-plan, or this Skill.
+16. Run `project status --json` again and report the current authoring fingerprint, contract digest or canonical local deliverable, render/inspection fingerprints, removed sections, enrichment choices, grounded evidence, checks, warnings, and skipped or failed stages.
+   - For local execution, select the output only through `render-result.json.canonical_output_key`; never guess from a filename.
 
 ## Hard Rules
 
 - Explore before asking for final positioning when raw footage is supplied.
+- Never hand-write, modify, or repair `render-contract.json`, bindings, strict results, or strict inspection artifacts. Invoke CLI commands and treat digest/schema/runtime failures as blockers.
+- Never run this Skill during strict contract consumption. Do not re-analyze source media, regenerate plans, add default edits, rewrite transcript, reselect assets, or repair missing authoring state on the render machine.
+- Detached planning may complete while source-byte stages remain blocked. `SOURCE_BINDING_REQUIRED` means only the byte-dependent operation is unavailable; it does not invalidate transcript review, proposal, edit decisions, portable EDL, evidence import, or contract export.
 - Broad business goals require 2-4 complete proposal options. For "卖货", "朋友圈咨询", "高级感", "种草", "专业讲解", or "去废话保留卖点", put direction, execution plan, and asset requirements together, then ask for one option confirmation.
 - Asset slots come from the confirmed execution plan. Capabilities fulfill slots; they do not decide the creative asset strategy by themselves.
 - Never treat text-only transcripts as precise cut timing.

@@ -143,6 +143,20 @@ koubo-clip project source-frames koubo-clips/raw
 koubo-clip project review koubo-clips/raw
 ```
 
+规划机器没有原片字节时，使用分布式 authoring/strict execution 流程：
+
+```bash
+koubo-clip project create --source-manifest ./sources.json --project ./project --provider-mode platform
+koubo-clip project compile-edl ./project
+koubo-clip render-contract export ./project --output ./render-bundle
+koubo-clip render-contract verify ./render-bundle
+koubo-clip render-contract bind ./render-bundle --source-map ./source-map.json --output ./bindings.json
+koubo-clip render-contract render ./render-bundle --bindings ./bindings.json --output ./strict-run
+koubo-clip render-contract inspect ./render-bundle --result ./strict-run/render-contract-result.json
+```
+
+合同由 CLI 独占生成且不可变。Strict consumer 不读取 transcript、analysis、edit-plan 或 enrichment-plan，也不会在缺失 authoring 状态时重新规划。
+
 `review` 之后，CLI 不会黑盒生成制作方案。agent 或用户需要先写入 `production-proposal.json`，再运行：
 
 ```bash
@@ -416,7 +430,7 @@ bun run koubo-clip -- project focus-review <project>
 ## 项目状态
 
 - 当前安装版本以 `koubo-clip --version` 为准，不在 README 硬编码。
-- 当前包状态：已发布到 npm。
+- 当前包状态：已发布到 npm；当前发布线已包含 detached authoring 和 strict render-contract execution。
 - 当前推荐开发方式：源码仓库中使用 Bun。
 - npm package：`koubo-clip`。
 - 视觉素材、音乐和部分 provider 能力依赖网络、API key、用户资产或 host MCP handoff。

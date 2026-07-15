@@ -1,13 +1,17 @@
 #!/usr/bin/env bun
 
+import * as nodeFs from "node:fs";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { bundleInfo, cliVersion, resolveKouboClipSkillRoot } from "./bundle-paths";
 import { parseProjectMetadata, projectArtifacts, type CapabilitiesArtifact, type ProviderExecutionMode } from "./artifacts";
 import { projectStatus } from "./project-status";
+import { bindRenderContract, exportRenderContract, inspectBoundContract, renderBoundContract, verifyRenderContractBundle } from "./render-contract-commands";
+import { verifyInstalledDelivery, verifyInstalledSkill } from "./delivery-runtime";
 import {
   commandExists,
+  compileEdlProject,
   createProject,
   elementCatalogProject,
   enrichPlanProject,
@@ -43,16 +47,24 @@ Usage:
   koubo-clip --version
   koubo-clip capabilities --json
   koubo-clip doctor [--provider-mode standalone|platform]
+  koubo-clip delivery verify --json
   koubo-clip skills path [--json]
+  koubo-clip skills verify [--path <installed-skill>] --json
   koubo-clip skills install --target codex|claude|hermes [--dest <dir>] [--force]
-  koubo-clip project create <video...> [--provider-mode standalone|platform]
+  koubo-clip render-contract export <project> --output <bundle-dir>
+  koubo-clip render-contract verify <bundle-dir>
+  koubo-clip render-contract bind <bundle-dir> --source-map <json> --output <bindings.json>
+  koubo-clip render-contract render <bundle-dir> --bindings <bindings.json> --output <run-dir>
+  koubo-clip render-contract inspect <bundle-dir> --result <run-dir/render-contract-result.json>
+  koubo-clip project create <video...> [--project <dir>] [--provider-mode standalone|platform]
+  koubo-clip project create --source-manifest <sources-v2.json> --project <dir> [--provider-mode standalone|platform]
   koubo-clip project explore <project> [--provider-mode standalone|platform] [--asr auto|off|external] [--asr-provider cloudflare-whisper|whisper-cli]
-  koubo-clip project source-frames <project> [--provider-mode standalone|platform] [--json]
+  koubo-clip project source-frames <project> [--import <evidence-dir>] [--provider-mode standalone|platform] [--json]
   koubo-clip project review <project>
   koubo-clip project proposal <project>
   koubo-clip project element-catalog <project>
   koubo-clip project focus-candidates <project>
-  koubo-clip project focus-frames <project>
+  koubo-clip project focus-frames <project> [--import <evidence-dir>]
   koubo-clip project focus-grounding <project>
   koubo-clip project focus-review <project>
   koubo-clip project music-catalog <project>
@@ -63,20 +75,22 @@ Usage:
   koubo-clip project visual-acquire <project>
   koubo-clip project visual-review <project>
   koubo-clip project enrich-plan <project>
+  koubo-clip project compile-edl <project>
   koubo-clip project render <project>
   koubo-clip project inspect <project>
   koubo-clip project status <project> [--json]
 `;
 
 const projectCommands = [
-  "create <video...> [--provider-mode standalone|platform]",
+  "create <video...> [--project <dir>] [--provider-mode standalone|platform]",
+  "create --source-manifest <sources-v2.json> --project <dir> [--provider-mode standalone|platform]",
   "explore <project> [--provider-mode standalone|platform] [--asr auto|off|external] [--asr-provider cloudflare-whisper|whisper-cli]",
-  "source-frames <project> [--provider-mode standalone|platform] [--json]",
+  "source-frames <project> [--import <evidence-dir>] [--provider-mode standalone|platform] [--json]",
   "review <project> [--provider-mode standalone|platform]",
   "proposal <project> [--provider-mode standalone|platform]",
   "element-catalog <project> [--provider-mode standalone|platform]",
   "focus-candidates <project> [--provider-mode standalone|platform]",
-  "focus-frames <project> [--provider-mode standalone|platform]",
+  "focus-frames <project> [--import <evidence-dir>] [--provider-mode standalone|platform]",
   "focus-grounding <project> [--provider-mode standalone|platform]",
   "focus-review <project> [--provider-mode standalone|platform]",
   "music-catalog <project> [--provider-mode standalone|platform]",
@@ -87,6 +101,7 @@ const projectCommands = [
   "visual-acquire <project> [--provider-mode standalone|platform]",
   "visual-review <project> [--provider-mode standalone|platform]",
   "enrich-plan <project> [--provider-mode standalone|platform]",
+  "compile-edl <project>",
   "render <project> [--provider-mode standalone|platform]",
   "inspect <project> [--provider-mode standalone|platform]",
   "status <project> [--json]",
@@ -127,6 +142,7 @@ export async function main(argv = process.argv.slice(2), io: Io = {}): Promise<n
         ffmpeg: commandExists("ffmpeg"),
         ffprobe: commandExists("ffprobe"),
         npx: commandExists("npx"),
+        hyperframes: commandExists("hyperframes") || existsSync(join(process.cwd(), "node_modules", ".bin", "hyperframes")),
         whisper_cli: commandExists("whisper-cli"),
         bundle: bundleInfo(),
         providers: providerStatus(mode),
@@ -135,11 +151,34 @@ export async function main(argv = process.argv.slice(2), io: Io = {}): Promise<n
     return 0;
   }
 
+  if (command === "delivery") {
+    const { positionals } = parseArgs(argv.slice(1));
+    if (positionals[0] !== "verify") {
+      err(JSON.stringify({ ok: false, command: "delivery", error: { code: "UNKNOWN_DELIVERY_COMMAND", message: `Unknown delivery command: ${positionals[0] ?? ""}` } }));
+      return 1;
+    }
+    try {
+      const manifest = verifyInstalledDelivery();
+      out(JSON.stringify({ ok: true, command: "delivery.verify", data: manifest }));
+      return 0;
+    } catch (error) {
+      err(JSON.stringify({ ok: false, command: "delivery.verify", error: { code: error && typeof error === "object" && "code" in error ? String(error.code) : "DELIVERY_MANIFEST_INVALID", message: error instanceof Error ? error.message : String(error) } }));
+      return 1;
+    }
+  }
+
   if (command === "skills") {
     const result = runSkillsCommand(argv.slice(1));
     const write = result.ok ? out : err;
     if ("text" in result && typeof result.text === "string") write(result.text);
     else write(JSON.stringify(result));
+    return result.ok ? 0 : 1;
+  }
+
+  if (command === "render-contract") {
+    const result = runRenderContractCommand(argv.slice(1));
+    const write = result.ok ? out : err;
+    write(JSON.stringify(result));
     return result.ok ? 0 : 1;
   }
 
@@ -158,6 +197,17 @@ export async function main(argv = process.argv.slice(2), io: Io = {}): Promise<n
   return 1;
 }
 
+function runRenderContractCommand(argv: string[]) {
+  const { positionals, flags } = parseArgs(argv);
+  const [subcommand, target] = positionals;
+  if (subcommand === "export") return exportRenderContract(required(target, "project path"), required(flags.output, "--output"));
+  if (subcommand === "verify") return verifyRenderContractBundle(required(target, "bundle path"));
+  if (subcommand === "bind") return bindRenderContract(required(target, "bundle path"), required(flags["source-map"], "--source-map"), required(flags.output, "--output"));
+  if (subcommand === "render") return renderBoundContract(required(target, "bundle path"), required(flags.bindings, "--bindings"), required(flags.output, "--output"));
+  if (subcommand === "inspect") return inspectBoundContract(required(target, "bundle path"), required(flags.result, "--result"));
+  return { ok: false as const, command: "render-contract", error: { code: "UNKNOWN_RENDER_CONTRACT_COMMAND", message: `Unknown render-contract command: ${subcommand ?? ""}` } };
+}
+
 function runSkillsCommand(argv: string[]) {
   const { positionals, flags } = parseArgs(argv);
   const [subcommand] = positionals;
@@ -166,16 +216,38 @@ function runSkillsCommand(argv: string[]) {
     const data = { ok: true as const, skill: "koubo-clip", path: skillPath, exists: existsSync(join(skillPath, "SKILL.md")) };
     return flags.json ? data : { ok: true as const, text: skillPath };
   }
+  if (subcommand === "verify") {
+    try {
+      const verified = verifyInstalledSkill(flags.path ?? skillPath);
+      return { ok: true as const, command: "skills.verify", skill: "koubo-clip", path: verified.path, digest: verified.digest, cli_version: verified.manifest.cli_version };
+    } catch (error) {
+      return { ok: false as const, error: { code: error && typeof error === "object" && "code" in error ? String(error.code) : "DELIVERY_MANIFEST_INVALID", message: error instanceof Error ? error.message : String(error) } };
+    }
+  }
   if (subcommand === "install") {
     const installRoot = defaultSkillInstallRoot(flags.target);
     if (!installRoot) return { ok: false as const, error: { code: "INVALID_SKILLS_TARGET", message: "Use --target codex, claude, or hermes" } };
     if (!existsSync(join(skillPath, "SKILL.md"))) return { ok: false as const, error: { code: "SKILL_NOT_FOUND", message: `koubo-clip skill not found: ${skillPath}` } };
+    try {
+      verifyInstalledSkill(skillPath);
+    } catch (error) {
+      return { ok: false as const, error: { code: error && typeof error === "object" && "code" in error ? String(error.code) : "DELIVERY_MANIFEST_INVALID", message: error instanceof Error ? error.message : String(error) } };
+    }
     const root = flags.dest ?? installRoot;
     const target = join(root, "koubo-clip");
     if (existsSync(target) && !flags.force) return { ok: false as const, error: { code: "SKILL_EXISTS", message: `${target} already exists; pass --force to overwrite` } };
     mkdirSync(root, { recursive: true });
-    if (existsSync(target)) rmSync(target, { recursive: true, force: true });
-    cpSync(skillPath, target, { recursive: true });
+    const staging = join(root, `.koubo-clip-staging-${Date.now()}`);
+    cpSync(skillPath, staging, { recursive: true });
+    try {
+      verifyInstalledSkill(staging);
+      if (existsSync(target)) rmSync(target, { recursive: true, force: true });
+      (nodeFs as unknown as { renameSync(from: string, to: string): void }).renameSync(staging, target);
+      verifyInstalledSkill(target);
+    } catch (error) {
+      rmSync(staging, { recursive: true, force: true });
+      return { ok: false as const, error: { code: error && typeof error === "object" && "code" in error ? String(error.code) : "DELIVERY_DIGEST_MISMATCH", message: error instanceof Error ? error.message : String(error) } };
+    }
     return { ok: true as const, target: flags.target, skill: "koubo-clip", source: skillPath, installed_path: target };
   }
   return { ok: false as const, error: { code: "UNKNOWN_SKILLS_COMMAND", message: `Unknown skills command: ${subcommand ?? ""}` } };
@@ -217,6 +289,10 @@ function softwareCapabilities(): CapabilitiesArtifact {
     artifact_schema_versions: {
       "project.json": "1.0",
       "artifact-manifest.json": "1.0",
+      "sources.json": "2.0",
+      "source-materialization.json": "1.0",
+      "edl.json": "2.0",
+      "render-contract.json": "1.0",
       "production-proposal.json": "1.1",
       "edit-plan.json": "1.0",
       "asset-usage-plan.json": "1.0",
@@ -234,6 +310,12 @@ function softwareCapabilities(): CapabilitiesArtifact {
       render_result: true,
       structured_inspection: true,
       structured_project_status: true,
+      detached_source: true,
+      external_frame_evidence: true,
+      portable_edl: true,
+      render_contract_export: true,
+      render_contract_consume_strict: true,
+      source_binding: true,
     },
     provider_modes: {
       standalone: { providers: "cli-managed", artifact_contract: "shared" },
@@ -249,7 +331,30 @@ function softwareCapabilities(): CapabilitiesArtifact {
       "ARTIFACT_INVALID",
       "RENDER_RESULT_STALE",
       "RENDER_OUTPUT_HASH_MISMATCH",
+      "SOURCE_INPUT_MODE_CONFLICT",
+      "SOURCE_MANIFEST_INVALID",
+      "SOURCE_BINDING_REQUIRED",
+      "SOURCE_IDENTITY_MISMATCH",
+      "SOURCE_MATERIALIZATION_INVALID",
+      "CONTRACT_SCHEMA_UNSUPPORTED",
+      "CONTRACT_INVALID",
+      "CONTRACT_DIGEST_MISMATCH",
+      "CONTRACT_RUNTIME_MISMATCH",
+      "CONTRACT_CAPABILITY_MISSING",
+      "CONTRACT_ASSET_HASH_MISMATCH",
+      "UNSAFE_CONTRACT_PATH",
+      "SOURCE_BINDING_MISSING",
+      "SOURCE_BINDING_UNKNOWN",
+      "SOURCE_IDENTITY_HASH_MISMATCH",
+      "SOURCE_IDENTITY_PROBE_MISMATCH",
+      "RENDER_PREFLIGHT_FAILED",
+      "CONTRACT_RENDER_FAILED",
+      "RENDER_OUTPUT_INVALID",
+      "INSPECTION_ACCEPTANCE_FAILED",
     ],
+    capability_ids: ["detached_source.v1", "external_frame_evidence.v1", "portable_edl.v1", "render_contract.export.v1", "render_contract.consume_strict.v1", "source_binding.v1"],
+    delivery: { manifest_schema_version: "1.0", cli_version: cliVersion(), runtime_dependencies: ["gsap@3.15.0", "hyperframes@0.7.36"] },
+    render_contract: { schema_version: "1.0", exact_runtime_compatibility: true, immutable_directory_bundle: true },
   };
 }
 
@@ -327,14 +432,14 @@ async function runProjectCommand(argv: string[]) {
   const { positionals, flags } = parseArgs(argv);
   const [subcommand, ...rest] = positionals;
   const mode = providerMode(flags["provider-mode"]);
-  if (subcommand === "create") return createProject(rest, { projectPath: flags.project, providerMode: mode });
+  if (subcommand === "create") return createProject(rest, { projectPath: flags.project, providerMode: mode, sourceManifestPath: flags["source-manifest"] });
   if (subcommand === "explore") return await exploreProject(required(rest[0], "project path"), { asr: asrMode(flags.asr), asrProvider: asrProvider(flags["asr-provider"]), providerMode: mode });
-  if (subcommand === "source-frames") return sourceFramesProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "source-frames") return sourceFramesProject(required(rest[0], "project path"), { providerMode: mode, importPath: flags.import });
   if (subcommand === "review") return reviewProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "proposal") return proposalProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "element-catalog") return elementCatalogProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "focus-candidates") return focusCandidatesProject(required(rest[0], "project path"), { providerMode: mode });
-  if (subcommand === "focus-frames") return focusFramesProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "focus-frames") return focusFramesProject(required(rest[0], "project path"), { providerMode: mode, importPath: flags.import });
   if (subcommand === "focus-grounding") return focusGroundingProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "focus-review") return focusReviewProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "music-catalog") return musicCatalogProject(required(rest[0], "project path"), { providerMode: mode });
@@ -345,6 +450,7 @@ async function runProjectCommand(argv: string[]) {
   if (subcommand === "visual-acquire") return await visualAcquireProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "visual-review") return visualReviewProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "enrich-plan") return enrichPlanProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "compile-edl") return compileEdlProject(required(rest[0], "project path"));
   if (subcommand === "render") return renderProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "inspect") return inspectProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "status") return { ok: true as const, command: "project.status" as const, data: projectStatus(required(rest[0], "project path")) };

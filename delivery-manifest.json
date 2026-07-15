@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0",
+  "cli_version": "0.0.2",
+  "source_revision": "346358c6c266e991ac031618f8a5694accfd73c6",
+  "distribution_kind": "source",
+  "cli_payload_digest": "sha256:2ed05aef9ec1e771a0ebf73eb1a34b199dc1aaf5a61320314a3a567843683c91",
+  "renderer_resources_digest": "sha256:51d07c4346916bba3cad591e0ad99c8adf04377bd4f8ee6c23e796a33da7e346",
+  "official_skill_digest": "sha256:15fda327ab0a44a666d35aabcb08add583c432f453ac42476d07512997cd81dd",
+  "runtime_compatibility_digest": "sha256:11018ea1e26a43b235a272ad2e8d82c3c1daf4759fdb97d7a100e08186752a12",
+  "schema_versions": {
+    "sources.json": "2.0",
+    "source-materialization.json": "1.0",
+    "edl.json": "2.0",
+    "render-contract.json": "1.0"
+  },
+  "capability_ids": [
+    "detached_source.v1",
+    "external_frame_evidence.v1",
+    "portable_edl.v1",
+    "render_contract.export.v1",
+    "render_contract.consume_strict.v1",
+    "source_binding.v1"
+  ],
+  "runtime_dependencies": [
+    "gsap@3.15.0",
+    "hyperframes@0.7.36"
+  ]
+}

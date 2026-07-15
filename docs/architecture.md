@@ -242,7 +242,7 @@ render 顺序必须保证生产正确性：
 11. 最后提交 artifact manifest success，并写 `render-result.json`，记录 exact inputs、output hashes/probes 和 canonical output；没有该 current result，MP4 不构成成功。
 12. 独立 `project inspect` 读取 current render result 的 canonical output，校验其 hash/probe 和绑定的 current storyboard，物化 namespaced inspection frames、`inspection.json` 与派生 `report.md`。
 
-HyperFrames 通过 `npx --yes hyperframes` 调用。缺失或失败的 HyperFrames 是需要 registry/caption visual recut plans 的 blocker，不能静默生成假 final。纯 audio/SFX-only enrichment 仍可不依赖 HyperFrames，直接使用 FFmpeg。
+HyperFrames 通过交付中锁定的本地 `hyperframes@0.7.36` binary 调用，禁止 floating `npx --yes` 下载。缺失、版本不匹配或失败是需要 registry/caption visual recut plans 的 blocker，不能静默生成假 final。纯 audio/SFX-only enrichment 仍可不依赖 HyperFrames，直接使用 FFmpeg。
 
 CLI vendor 了 HyperFrames 的可创建元素体系：`registry/blocks`、`registry/components`、`registry/examples`、embedded-captions theme/DNA、animation rules/blueprints、SFX、motion-graphics categories、talking-head references 和 creative frame presets。这些是 CLI resources，不是对外 agent skills。Agents 选择元素和 timing；CLI 校验、安装、渲染和报告。Agents 不能向 renderer 传任意 HTML、GSAP、URLs、绝对路径或 `..` 路径。GSAP/Google Fonts 等 runtime dependencies 只能通过 CLI allowlist 和固定版本 catalog 写入，不是公开动画 authoring surface。
 
@@ -260,3 +260,14 @@ vendored 元素进入 renderer 前会经过轻量 adapter 分层。Adapter 从 r
 普通用户应安装 CLI 和唯一对外 skill，配置 providers，并通过 agent 运行工作流。他们不应需要 clone 源码仓库，也不应加载 `packages/cli/vendor/hyperframes/*` 中的上游资源目录。
 
 Hermes 集成以后应使用同一套 artifacts，但 v0 不能依赖 Hermes TaskWorkspace、tenant state 或平台工具调用。
+
+## Portable authoring 与 strict execution
+
+```text
+authoring agent: sources identity -> review/proposal/edit-plan -> portable EDL/captions/resolved storyboard -> immutable bundle
+strict machine: bundle + explicit source map -> verified binding -> executeResolvedRenderPlan -> result -> inspection
+```
+
+Skill 只存在于 authoring 段。CLI compiler 把 agent decisions 解析成冻结后的执行闭包；strict runtime 与 authoring runtime 只在 `executeResolvedRenderPlan` 汇合。Strict runtime 不读取 transcript、analysis、edit-plan 或 enrichment-plan，也没有 fallback。
+
+Source lineage 分为 `source-identity:*`、`source-materialization` 和 `source:*` bytes。规划依赖 identity；ASR、抽帧和本地 render 才依赖 bytes。External evidence import 先验证完整批次的 containment、regular-file、hash、size、JPEG probe 和 request/EDL mapping，再原子发布 canonical evidence。

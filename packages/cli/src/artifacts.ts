@@ -7,13 +7,47 @@ export type SourceAsset = {
   source_id: string;
   order: number;
   original_filename: string;
+  local_media_ref?: string;
+  /** Legacy/materialized compatibility view. Empty for detached sources. */
   project_path: string;
   duration_seconds: number;
   probe?: Record<string, unknown>;
+  identity?: {
+    sha256: string;
+    size_bytes: number;
+    duration_seconds: number;
+    video: {
+      codec_name: string;
+      width: number;
+      height: number;
+      display_width: number;
+      display_height: number;
+      rotation: number;
+      avg_frame_rate: string;
+      pixel_format: string;
+    };
+    audio?: {
+      codec_name: string;
+      sample_rate: number;
+      channels: number;
+      channel_layout: string;
+    };
+  };
 };
 
 export type SourcesManifest = {
+  contract_version?: "2.0";
   sources: SourceAsset[];
+};
+
+export type SourceMaterializationArtifact = {
+  contract_version: "1.0";
+  sources: Array<{
+    source_id: string;
+    project_path: string;
+    sha256: string;
+    size_bytes: number;
+  }>;
 };
 
 export type TimedTextRange = {
@@ -66,6 +100,7 @@ export type EditPlanArtifact = {
 
 export type EdlEntry = {
   source_id: string;
+  /** Legacy compatibility view. Omitted from serialized EDL v2. */
   source_path: string;
   start: number;
   end: number;
@@ -76,6 +111,7 @@ export type EdlEntry = {
 };
 
 export type EdlArtifact = {
+  contract_version?: "2.0";
   entries: EdlEntry[];
 };
 
@@ -878,6 +914,8 @@ export type ProjectStatusArtifact = {
   next_commands: string[];
   blockers: StatusBlocker[];
   last_successful_checkpoint?: { stage: string; completed_at: string; output_artifact_keys: string[] };
+  sources?: Array<{ source_id: string; identity: "available" | "legacy"; materialization: "verified" | "unbound" | "invalid" }>;
+  render_contract?: { ready: boolean; blockers: StatusBlocker[]; current_authoring_fingerprint?: ArtifactFingerprint; current_contract_digest?: string };
 };
 
 export type ProviderModeCapability = {
@@ -895,6 +933,9 @@ export type CapabilitiesArtifact = {
   render_inputs: string[];
   inspect_inputs: string[];
   error_codes: string[];
+  capability_ids?: string[];
+  delivery?: Record<string, unknown>;
+  render_contract?: Record<string, unknown>;
 };
 
 export type CommandResult<TCommand extends string, TData> =
@@ -917,6 +958,7 @@ export const projectArtifacts = {
   project: "project.json",
   artifactManifest: "artifact-manifest.json",
   sources: "sources.json",
+  sourceMaterialization: "source-materialization.json",
   materialReport: "material-report.md",
   transcriptJson: "transcript.json",
   transcriptMarkdown: "transcript.md",
@@ -928,6 +970,7 @@ export const projectArtifacts = {
   editPlan: "edit-plan.json",
   assetUsagePlan: "asset-usage-plan.json",
   edl: "edl.json",
+  renderContract: "render-contract.json",
   sourceFrameRequest: "source-frame-request.json",
   sourceFrames: "source-frames.json",
   focusCandidates: "focus-candidates.json",
@@ -974,8 +1017,48 @@ export function parseProjectMetadata(value: unknown): ProjectMetadataArtifact {
 
 export function parseSourcesManifest(value: unknown): SourcesManifest {
   const obj = record(value, "sources manifest");
+  const contractVersion = obj.contract_version === undefined ? undefined : string(obj.contract_version, "contract_version");
+  if (contractVersion !== undefined && contractVersion !== "2.0") throw new Error('sources contract_version must be "2.0"');
   const sources = array(obj.sources, "sources").map((item, index): SourceAsset => {
     const source = record(item, `sources[${index}]`);
+    if (contractVersion === "2.0") {
+      if (source.project_path !== undefined) throw new Error(`sources[${index}].project_path is forbidden in sources contract_version 2.0`);
+      const identity = record(source.identity, `sources[${index}].identity`);
+      const video = record(identity.video, `sources[${index}].identity.video`);
+      const sha256 = string(identity.sha256, `sources[${index}].identity.sha256`);
+      if (!/^sha256:[a-f0-9]{64}$/.test(sha256)) throw new Error(`sources[${index}].identity.sha256 must be sha256:<64 lowercase hex>`);
+      const audio = identity.audio === undefined ? undefined : record(identity.audio, `sources[${index}].identity.audio`);
+      const duration = nonNegativeNumber(identity.duration_seconds, `sources[${index}].identity.duration_seconds`);
+      return {
+        source_id: string(source.source_id, `sources[${index}].source_id`),
+        order: integer(source.order, `sources[${index}].order`),
+        original_filename: string(source.original_filename, `sources[${index}].original_filename`),
+        local_media_ref: string(source.local_media_ref, `sources[${index}].local_media_ref`),
+        project_path: "",
+        duration_seconds: duration,
+        identity: {
+          sha256,
+          size_bytes: integer(identity.size_bytes, `sources[${index}].identity.size_bytes`),
+          duration_seconds: duration,
+          video: {
+            codec_name: string(video.codec_name, `sources[${index}].identity.video.codec_name`),
+            width: integer(video.width, `sources[${index}].identity.video.width`),
+            height: integer(video.height, `sources[${index}].identity.video.height`),
+            display_width: integer(video.display_width, `sources[${index}].identity.video.display_width`),
+            display_height: integer(video.display_height, `sources[${index}].identity.video.display_height`),
+            rotation: integer(video.rotation, `sources[${index}].identity.video.rotation`),
+            avg_frame_rate: string(video.avg_frame_rate, `sources[${index}].identity.video.avg_frame_rate`),
+            pixel_format: string(video.pixel_format, `sources[${index}].identity.video.pixel_format`),
+          },
+          audio: audio === undefined ? undefined : {
+            codec_name: string(audio.codec_name, `sources[${index}].identity.audio.codec_name`),
+            sample_rate: integer(audio.sample_rate, `sources[${index}].identity.audio.sample_rate`),
+            channels: integer(audio.channels, `sources[${index}].identity.audio.channels`),
+            channel_layout: string(audio.channel_layout, `sources[${index}].identity.audio.channel_layout`),
+          },
+        },
+      };
+    }
     return {
       source_id: string(source.source_id, `sources[${index}].source_id`),
       order: integer(source.order, `sources[${index}].order`),
@@ -987,7 +1070,30 @@ export function parseSourcesManifest(value: unknown): SourcesManifest {
   });
   unique(sources.map((source) => source.source_id), "source_id");
   unique(sources.map((source) => String(source.order)), "source order");
-  return { sources };
+  return { contract_version: contractVersion as "2.0" | undefined, sources };
+}
+
+export function parseSourceMaterialization(value: unknown, manifest?: SourcesManifest): SourceMaterializationArtifact {
+  const obj = record(value, "source materialization");
+  if (string(obj.contract_version, "contract_version") !== "1.0") throw new Error('source materialization contract_version must be "1.0"');
+  const known = sourceIds(manifest);
+  const sources = array(obj.sources, "sources").map((item, index) => {
+    const source = record(item, `sources[${index}]`);
+    const sourceId = string(source.source_id, `sources[${index}].source_id`);
+    requireKnownSource(sourceId, known, `sources[${index}].source_id`);
+    const projectPath = string(source.project_path, `sources[${index}].project_path`);
+    if (projectPath.startsWith("/") || projectPath.split(/[\\/]+/).includes("..")) throw new Error(`sources[${index}].project_path must be project-relative`);
+    const sha256 = string(source.sha256, `sources[${index}].sha256`);
+    if (!/^sha256:[a-f0-9]{64}$/.test(sha256)) throw new Error(`sources[${index}].sha256 must be sha256:<64 lowercase hex>`);
+    return {
+      source_id: sourceId,
+      project_path: projectPath,
+      sha256,
+      size_bytes: integer(source.size_bytes, `sources[${index}].size_bytes`),
+    };
+  });
+  unique(sources.map((source) => source.source_id), "materialized source_id");
+  return { contract_version: "1.0", sources };
 }
 
 export function parseTranscript(value: unknown, manifest?: SourcesManifest): TranscriptArtifact {
@@ -1078,6 +1184,8 @@ export function parseAssetUsagePlan(value: unknown): AssetUsagePlanArtifact {
 export function parseEdl(value: unknown, manifest?: SourcesManifest): EdlArtifact {
   const known = sourceIds(manifest);
   const obj = record(value, "edl");
+  const contractVersion = obj.contract_version === undefined ? undefined : string(obj.contract_version, "contract_version");
+  if (contractVersion !== undefined && contractVersion !== "2.0") throw new Error('EDL contract_version must be "2.0"');
   const entries = array(obj.entries, "entries").map((item, index): EdlEntry => {
     const entry = record(item, `entries[${index}]`);
     const source_id = string(entry.source_id, `entries[${index}].source_id`);
@@ -1087,9 +1195,10 @@ export function parseEdl(value: unknown, manifest?: SourcesManifest): EdlArtifac
     if (end <= start) throw new Error(`entries[${index}].end must be greater than start`);
     const source = manifest?.sources.find((item) => item.source_id === source_id);
     if (source && end > source.duration_seconds) throw new Error(`entries[${index}].end exceeds source duration`);
+    if (contractVersion === "2.0" && entry.source_path !== undefined) throw new Error(`entries[${index}].source_path is forbidden in EDL contract_version 2.0`);
     return {
       source_id,
-      source_path: string(entry.source_path, `entries[${index}].source_path`),
+      source_path: contractVersion === "2.0" ? (undefined as unknown as string) : string(entry.source_path, `entries[${index}].source_path`),
       start,
       end,
       output_order: integer(entry.output_order, `entries[${index}].output_order`),
@@ -1100,7 +1209,7 @@ export function parseEdl(value: unknown, manifest?: SourcesManifest): EdlArtifac
   });
   unique(entries.map((entry) => String(entry.output_order)), "output_order");
   rejectOverlaps(entries, "EDL entries");
-  return { entries };
+  return { contract_version: contractVersion as "2.0" | undefined, entries };
 }
 
 export function parseEnrichmentPlan(value: unknown): EnrichmentPlanArtifact {

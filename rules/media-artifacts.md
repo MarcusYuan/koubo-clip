@@ -205,3 +205,11 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 - 公共 writer 遵循 parse/validate -> input fingerprint -> current dependency check -> staging -> output parse/probe/hash -> atomic replace -> manifest success 的 commit-last 顺序。失败只记录 stage attempt，不创建假的 output record。
 - inspection 期间不要生成新策略。
 - 不要把手写 replacement subtitles、manifests 或 render scripts 作为正常恢复路径。
+
+## Portable source 与 evidence import
+
+- `sources.json` v2 不含路径；`source-materialization.json` v1 的 path 必须是已验证 project-relative regular file，并绑定 identity hash/size。
+- `local_media_ref` 只能作为 opaque metadata 保存。不得传给 filesystem、FFmpeg、下载器、错误或 status。
+- `source-frames --import` 和 `focus-frames --import` 只读取 evidence directory 内的 manifest-relative regular JPEG；拒绝 symlink、escape、partial batch、hash/size/probe 或 binding mismatch。
+- Focus import 必须用 current EDL 重新计算 output-time 到 source/time 的映射；外部 manifest 的映射只作为待验证声明。
+- Detached source 没有 materialization 时，本地 ASR/抽帧/render 返回 `SOURCE_BINDING_REQUIRED`，不得覆盖旧 evidence；identity-only 规划阶段不因此整体 blocked。

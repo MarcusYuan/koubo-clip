@@ -428,3 +428,13 @@ koubo-clips/<slug>/
 - 任意 artifact 或 MP4 的存在都不能单独证明阶段成功；current 状态必须有匹配的 schema、fingerprint 和 dependency lineage。
 - edit plan、EDL、enrichment、render 和 inspection 必须能追溯到当前上游输入；上游改变后旧下游结果会被明确标记 stale 并被 CLI 拒绝。
 - 宿主可以通过稳定 capability discovery 和只读 project status JSON 恢复流程、获得精确 render inputs、当前 deliverable、blockers、next commands 和最后成功 checkpoint。
+
+## Detached source 与分布式执行合同
+
+- `sources.json` v2 只保存 portable identity 和 opaque `local_media_ref`，不得保存机器路径；authoring project 的已验证本地副本单独写入 `source-materialization.json` v1。
+- Detached project 不要求原片存在，不创建 `source/`，并允许 external transcript、source/focus evidence、proposal、edit plan、portable EDL、captions、resolved storyboard 和 contract export 完成。
+- `edl.json` v2 只含 `source_id` 与 source-local ranges。CLI 在 materialized render 或 strict binding 时才解析真实路径。
+- `render-contract export` 生成不可覆盖的目录合同包。合同 digest 仅覆盖 canonical payload；bundle 只含实际引用的 content-addressed 非源素材。
+- Strict consumer 只读取合同、bundle assets 和显式 source binding。它不得读取 authoring transcript、analysis、edit-plan 或 enrichment-plan，不得重规划、补默认值或修复项目。
+- Hash/size 必须 exact；source probe duration tolerance 为 0.05 秒；输出 duration tolerance 为 `max(0.05, 2/fps)`。Mismatch 一律 fail closed。
+- CLI delivery 必须公开 CLI version、payload/resources/Skill digest、schema versions、capability IDs 和 exact GSAP/HyperFrames versions，并能在 export、verify、bind、render 前验证兼容性。

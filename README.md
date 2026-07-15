@@ -143,6 +143,20 @@ koubo-clip project source-frames koubo-clips/raw
 koubo-clip project review koubo-clips/raw
 ```
 
+For distributed authoring without source bytes on the planning machine:
+
+```bash
+koubo-clip project create --source-manifest ./sources.json --project ./project --provider-mode platform
+koubo-clip project compile-edl ./project
+koubo-clip render-contract export ./project --output ./render-bundle
+koubo-clip render-contract verify ./render-bundle
+koubo-clip render-contract bind ./render-bundle --source-map ./source-map.json --output ./bindings.json
+koubo-clip render-contract render ./render-bundle --bindings ./bindings.json --output ./strict-run
+koubo-clip render-contract inspect ./render-bundle --result ./strict-run/render-contract-result.json
+```
+
+The contract is CLI-owned and immutable. A strict consumer never reads transcript, analysis, edit-plan, or enrichment-plan files and never replans missing authoring state.
+
 After `review`, the CLI does not generate a production plan as a black box. The agent or user must write `production-proposal.json` first, then run:
 
 ```bash
@@ -416,7 +430,7 @@ Common files in the project directory:
 ## Project Status
 
 - Use `koubo-clip --version` as the installed version source; the README does not hard-code it.
-- Current package status: published to npm.
+- Current package status: published to npm; the current release line includes detached authoring and strict render-contract execution.
 - Current recommended development mode: use Bun from the source repository.
 - npm package: `koubo-clip`.
 - Visual assets, music, and some provider capabilities depend on network access, API keys, user assets, or host MCP handoff.

@@ -1248,7 +1248,7 @@ test("explore clips transcript ranges to source duration", async () => {
   const explored = await exploreProject(project, { asr: "external" });
   expect(explored.ok).toBe(true);
   if (!explored.ok) throw new Error(explored.error.message);
-  const duration = JSON.parse(readFileSync(join(project, "sources.json"), "utf8")).sources[0].duration_seconds;
+  const duration = JSON.parse(readFileSync(join(project, "sources.json"), "utf8")).sources[0].identity.duration_seconds;
   const transcript = JSON.parse(readFileSync(join(project, "transcript.json"), "utf8"));
   expect(transcript.segments[0].end).toBe(duration);
 });
@@ -2480,19 +2480,19 @@ test("source frames reject unknown, endpoint, unsafe, and escaping sources with 
   expectSourceFrameFailure(unknown, "SOURCE_FRAME_SOURCE_NOT_FOUND");
 
   const endpoint = readyProject(2).project;
-  const endpointManifest = JSON.parse(readFileSync(join(endpoint, "sources.json"), "utf8")) as { sources: Array<{ duration_seconds: number }> };
-  writeSourceFrameRequest(endpoint, [sourceFrameRequest("endpoint", endpointManifest.sources[0]!.duration_seconds)]);
+  const endpointManifest = JSON.parse(readFileSync(join(endpoint, "sources.json"), "utf8")) as { sources: Array<{ identity: { duration_seconds: number } }> };
+  writeSourceFrameRequest(endpoint, [sourceFrameRequest("endpoint", endpointManifest.sources[0]!.identity.duration_seconds)]);
   expectSourceFrameFailure(endpoint, "SOURCE_FRAME_TIME_OUT_OF_RANGE");
 
   const unsafe = readyProject(2).project;
-  const unsafeManifest = JSON.parse(readFileSync(join(unsafe, "sources.json"), "utf8")) as { sources: Array<{ project_path: string }> };
+  const unsafeManifest = JSON.parse(readFileSync(join(unsafe, "source-materialization.json"), "utf8")) as { sources: Array<{ project_path: string }> };
   unsafeManifest.sources[0]!.project_path = "../raw.mp4";
-  writeFileSync(join(unsafe, "sources.json"), JSON.stringify(unsafeManifest));
+  writeFileSync(join(unsafe, "source-materialization.json"), JSON.stringify(unsafeManifest));
   writeSourceFrameRequest(unsafe, [sourceFrameRequest("unsafe", 0.2)]);
   expectSourceFrameFailure(unsafe, "SOURCE_FRAME_SOURCE_NOT_FOUND");
 
   const escapingReady = readyProject(2);
-  const escapingManifest = JSON.parse(readFileSync(join(escapingReady.project, "sources.json"), "utf8")) as { sources: Array<{ project_path: string }> };
+  const escapingManifest = JSON.parse(readFileSync(join(escapingReady.project, "source-materialization.json"), "utf8")) as { sources: Array<{ project_path: string }> };
   const projectSource = join(escapingReady.project, escapingManifest.sources[0]!.project_path);
   unlinkSync(projectSource);
   const fsRuntime = nodeFs as unknown as { symlinkSync(target: string, path: string): void };
@@ -2501,7 +2501,7 @@ test("source frames reject unknown, endpoint, unsafe, and escaping sources with 
   expectSourceFrameFailure(escapingReady.project, "SOURCE_FRAME_SOURCE_NOT_FOUND");
 
   const unreadableReady = readyProject(2);
-  const unreadableManifest = JSON.parse(readFileSync(join(unreadableReady.project, "sources.json"), "utf8")) as { sources: Array<{ project_path: string }> };
+  const unreadableManifest = JSON.parse(readFileSync(join(unreadableReady.project, "source-materialization.json"), "utf8")) as { sources: Array<{ project_path: string }> };
   const unreadableSource = join(unreadableReady.project, unreadableManifest.sources[0]!.project_path);
   const chmodFs = nodeFs as unknown as { chmodSync(path: string, mode: number): void };
   try {
@@ -3057,7 +3057,7 @@ test("artifact lifecycle: a failed rerender preserves the prior render result", 
   if (!firstRender.ok) throw new Error(firstRender.error.message);
   const renderResultPath = join(project, "render-result.json");
   const priorRenderResult = existsSync(renderResultPath) ? readFileSync(renderResultPath, "utf8") : undefined;
-  const sources = JSON.parse(readFileSync(join(project, "sources.json"), "utf8")) as { sources: Array<{ project_path: string }> };
+  const sources = JSON.parse(readFileSync(join(project, "source-materialization.json"), "utf8")) as { sources: Array<{ project_path: string }> };
   writeFileSync(join(project, sources.sources[0]!.project_path), "broken media for rerender failure");
 
   const failedRender = renderProject(project);
