@@ -26,6 +26,9 @@ koubo-clip 通过分阶段 CLI 加 agent 工作流，把一个或多个本地口
 7. 渲染 clean MP4 和 subtitles。
 8. 可选渲染带 source-mode-aware captions、HyperFrames elements、images、SFX 和 music 的 enriched final MP4。
 9. 报告完成前校验输出 artifacts。
+10. 通过公开、可恢复的 artifact lineage 和 project status 合同，区分 current、stale、invalid、derived、evidence 和 human-readable artifacts；宿主不需要扫描目录猜测状态。
+
+Artifact 权威状态、fingerprint、失效和恢复的目标合同见 `docs/artifact-lifecycle.md`。在对应 CLI、Skill、rules 和测试落地前，该文档描述的是本轮修复目标，不表示当前实现已经完成。
 
 ## V0 范围
 
@@ -83,7 +86,9 @@ project create
   -> 按确认方案生成可选 focus / image / music / enrichment artifacts
   -> storyboard + HyperFrames recut
   -> audio/music mix
-  -> 检查 output
+  -> render-result.json 指定 canonical output
+  -> inspect current render result
+  -> inspection.json + report.md
 ```
 
 `explore` 不是轻量探测。它应该转写音频、检查基础媒体事实、检测明显 timing 问题，并在询问用户最终目标前总结这批素材能变成什么。
@@ -128,7 +133,7 @@ koubo-clip project source-frames <project> --provider-mode <standalone|platform>
 
 CLI 不负责选择语义时间点。它只严格校验 request、校验 source 是 project 内真实可读文件，并按 request 顺序确定性抽取受大小约束的 JPEG，写入 `.source-frames/frame-0001.jpg` 等文件和 `source-frames.json`。Request 合法记录 id、source-local time、可选 segment、transcript quote 和 reason；manifest 还合法记录顺序 index、MIME、尺寸、byte size、SHA-256 和汇总值。`id`、`source_id` 和可选 `segment_id` 是 opaque identifiers，不得包含 URL scheme、`/`、`\` 或 Windows drive/path 形态。结构化未知字段不能用来夹带额外 path/URL/provider/token metadata，artifact path 必须是 project-relative。`transcript_quote` 和 `reason` 只做 trim 后非空校验，不扫描文本内容，因此正常台词或理由可以包含 URL 或路径文本。Warnings、errors 和日志不得泄漏 source 绝对路径、provider key 或 raw provider payload。指向 project 外部文件的 symlink source 无效。
 
-V0 使用 delete-first，不引入 atomic staging 或 request hash。在正常可写 filesystem 上，命令先使旧 `source-frames.json` 失效并清理本命令管理的图片，全部成功后才最后写入新 manifest。Host 只可在最近一次 `project source-frames` 返回成功后把该 manifest 视为 authoritative；如果 cleanup 因 filesystem 权限失败，旧文件可能物理残留，但命令返回 `PROJECT_SOURCE_FRAMES_FAILED`，host 必须忽略残留 manifest。
+Source-frame writer 遵循 commit-last。命令先校验 request、source containment 和时间边界，在 managed staging path 生成并验证全部 JPEG、size 和 SHA-256，再原子替换公共 `.source-frames/` 与 `source-frames.json`，最后提交 `artifact-manifest.json` 的成功记录。失败不得先删除或半覆盖旧 evidence；partial staging 可以保留诊断，但不能被标为 current。Host 只以 `project status` 返回的 lineage 状态判断权威性，不按旧文件是否物理残留猜测。
 
 Source frames 是用户确认前只读理解素材的明确例外：生成它们不代表用户确认，也不能触发 edit plan、focus planning、素材获取/生成、enrichment 或 render。它们不依赖 EDL，也不把 source time 映射成 output timeline。
 
@@ -159,11 +164,13 @@ render 前，工作流应产出人类和机器都可读的 review artifacts：
 - Confidence 和 timing-granularity notes。
 - 需要用户判断的 unresolved risks。
 
-用户应能自然回复，例如“保留第 3 段，其他都剪掉”，skill 应把它转换成 `edit-plan.json`。
+用户应能自然回复，例如“保留第 3 段，其他都剪掉”。在 staged workflow 中，skill 先把这类意图纳入 production proposal option，用户完成一次方案确认后再转换成 `edit-plan.json`；明确标记的 fast cleanup workflow 可以使用独立简化合同，但不能伪装成已确认的 staged project。
 
 ## 制作方案确认单
 
 `production-proposal.json` / `.md` 是用户确认前的总方案。它由 skill/agent 基于 `material-report`、`review-package`、用户用途和 element/music 能力写入，CLI 负责校验并物化 markdown。
+
+对“卖货、朋友圈吸引咨询、高级感、种草、专业讲解、去废话保留卖点”等开放式业务目标，skill 不应直接生成素材或渲染。它必须在同一 `production-proposal.json.options[]` 中给出 2-4 个可选业务方向；每个 option 同时包含 `business_direction`、`edit_execution_plan` 和 `asset_requirements`。用户只确认一次 recommended option 或具体 option id。素材 capability 只 fulfill 已确认 option 的槽位；最终是否入片只由 canonical `enrichment-plan.json` 决定。简化 `asset_usage_plan` 只是交接输入，必须先经 CLI 一次性归一化并消费或归档 active input，后续 render 只读取 current canonical plan。
 
 确认单必须同时覆盖剪辑、字幕、UI 动效、图片/生图、音乐、SFX、风险和可选方案。它回答“这条视频会被做成什么样”，而不是替代执行 artifacts。
 
@@ -207,7 +214,7 @@ project review
 
 `project enrich-plan` 仍然是 final render 前的最后一份计划合同。它必须消费已经 grounded 的 intent 和 frame evidence，而不是重新解释业务关键词。
 
-`storyboard.json` 是合成剧本清单，也是成片检查清单的唯一来源。Production proposal 决定“哪里要加入什么以及为什么”，`enrichment-plan.json` 表达执行选择，CLI 再把它物化成带 `qa_checks[]` 的 storyboard。Render 按 storyboard 合成；inspect 也按同一份 storyboard 抽取对应帧并报告每个加入点的证据，避免出现一份渲染清单和另一份手写检查清单互相漂移。
+`storyboard.json` 是 current enrichment inputs 的 CLI-derived 合成剧本和 QA checklist，不是独立业务决定，也不是完成证明。Production proposal 决定“哪里要加入什么以及为什么”，`enrichment-plan.json` 表达执行选择，CLI 再把它物化成带 `qa_checks[]` 的 storyboard。Render 只消费 lineage current 的 storyboard，并在 `render-result.json.inputs[]` 中绑定其 fingerprint；inspect 先验证 current `render-result.json` 及其 canonical output，再按该 render result 实际绑定的 storyboard checks 抽帧，避免旧 storyboard 或另一份手写检查清单漂移进当前检查。
 
 enrichment plan 必须先分类 cleaned material，再选择 visuals：
 
@@ -258,6 +265,10 @@ visual-catalog
   -> visual-review.json/md
   -> enrichment-plan.elements[].element_type = "visual_asset"
 ```
+
+`visual-search` / provider list 只负责召回候选，不代表允许 acquire。Agent/host 必须结合 viewer job、ASR、源画面、source mode、已确认业务方向、授权和 runtime 风险审查候选，并在 `visual-request.json` 中写入 `selected_candidate_id` 和 `selection_reason`；前者是 acquire 的唯一授权，后者说明为什么选择这个具体 candidate。Request 原有的 `reason` 仍只说明为什么该位置需要视觉素材。候选的 `recommended` 和数组顺序都只是展示提示，不能作为 fallback。Agent 决定不插入素材时，应从最终 `requests[]` 删除该槽位，并在 business/focus review 中记录原因；没有 request 时不运行 visual acquire。
+
+候选的 `preview_path` 只用于 agent、视觉模型或用户比较候选，不能被 acquire 或 render 当作素材；只有明确选中且具有可渲染 `local_path` 的完整素材才能进入 platform acquire。两种 provider mode 都要求新工作流显式选择：`standalone` 可以由 CLI 搜索或下载 provider 候选，但 acquire 仍须消费明确选择；`platform` 由 host 完成搜索、授权和选中素材的物化，CLI fail closed 地校验 selection、project-local 路径和候选 provenance。为兼容已有 standalone artifacts，parser 可以接受缺少 `selection_reason` 的旧 request，但 platform acquire 必须拒绝它。这个合同继续使用现有 request/candidate artifacts，不新增 `visual-selection.json`、数据库、provider 接口或平台专属 selection 对象。
 
 CLI 首版直接支持 Iconify API 搜索和 SVG 下载，也直接支持 Lordicon official API 搜索和 JSON/SVG 下载。Lottie import、shadcn 和 21st 作为 host/MCP handoff 候选来源，支持 `.json` Lottie、`.lottie`、SVG、静态图片或安全导出的 UI/template 文件固化到 `assets/icons`、`assets/lottie`、`assets/visuals` 或 `assets/images`。SVG 必须经过 sanitization；最终 asset path 仍只能是 project-relative local path。
 
@@ -330,6 +341,8 @@ legacy `version:"1.0"` `slots[]` plans 继续接受，并在内部转换成 v1.1
 
 ```text
 koubo-clips/<slug>/
+  project.json
+  artifact-manifest.json
   sources.json
   source/
     001-original.<ext>
@@ -354,6 +367,12 @@ koubo-clips/<slug>/
     frames/
   focus-review.md
   focus-review.json
+  music-catalog.md
+  music-catalog.json
+  music-request.json
+  music-acquisition.json
+  music-review.md
+  music-review.json
   visual-catalog.md
   visual-catalog.json
   visual-request.json
@@ -363,6 +382,9 @@ koubo-clips/<slug>/
   visual-review.md
   visual-review.json
   edit-plan.json
+  asset-usage-plan.json  # optional active compatibility input
+  .migration/
+    asset-usage-plan-<fingerprint>.json
   edl.json
   enrichment-plan.json
   storyboard.json
@@ -382,6 +404,11 @@ koubo-clips/<slug>/
     visuals/
   renders/clean.mp4
   renders/final.mp4
+  render-result.json
+  inspection.json
+  .inspection/
+    <render-fingerprint-prefix>/
+      element-*.jpg
   report.md
 ```
 
@@ -398,3 +425,6 @@ koubo-clips/<slug>/
 - Speech 不会在 cut boundaries 被截断。
 - report 解释 removed segments 和 unresolved risks。
 - CLI 在实现后可以为 agent automation 运行 dry-run 或 JSON mode。
+- 任意 artifact 或 MP4 的存在都不能单独证明阶段成功；current 状态必须有匹配的 schema、fingerprint 和 dependency lineage。
+- edit plan、EDL、enrichment、render 和 inspection 必须能追溯到当前上游输入；上游改变后旧下游结果会被明确标记 stale 并被 CLI 拒绝。
+- 宿主可以通过稳定 capability discovery 和只读 project status JSON 恢复流程、获得精确 render inputs、当前 deliverable、blockers、next commands 和最后成功 checkpoint。

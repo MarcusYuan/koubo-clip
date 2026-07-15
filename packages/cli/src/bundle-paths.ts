@@ -1,10 +1,31 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const sourceRoot = resolve(moduleDir, "..", "..", "..");
 const binaryRoot = resolve(dirname(process.execPath), "..");
+declare const KOUBO_CLIP_BUILD_VERSION: string | undefined;
+let resolvedCliVersion: string | undefined;
+
+export function cliVersion(): string {
+  if (resolvedCliVersion) return resolvedCliVersion;
+  if (typeof KOUBO_CLIP_BUILD_VERSION !== "undefined" && KOUBO_CLIP_BUILD_VERSION) {
+    resolvedCliVersion = KOUBO_CLIP_BUILD_VERSION;
+    return resolvedCliVersion;
+  }
+  try {
+    const value = JSON.parse(readFileSync(join(sourceRoot, "package.json"), "utf8")) as { version?: unknown };
+    if (typeof value.version === "string" && value.version) {
+      resolvedCliVersion = value.version;
+      return resolvedCliVersion;
+    }
+  } catch {
+    // Compiled packages inject KOUBO_CLIP_BUILD_VERSION and do not need package.json.
+  }
+  resolvedCliVersion = "0.0.0-unknown";
+  return resolvedCliVersion;
+}
 
 export function resolveHyperframesRoot(): string {
   return firstExisting(

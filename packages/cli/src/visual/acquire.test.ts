@@ -1,10 +1,10 @@
 import { Buffer } from "node:buffer";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { parseAssetManifest, projectArtifacts } from "../artifacts";
-import { acquireVisualAssets, buildVisualCatalog, buildVisualReview, sanitizeSvg, searchVisualAssets } from "./acquire";
+import { acquireVisualAssets, buildVisualCatalog, buildVisualReview, renderVisualCandidatesMarkdown, renderVisualReviewMarkdown, sanitizeSvg, searchVisualAssets } from "./acquire";
 
 test("visual catalog exposes internet-first sources and allowlisted runtimes", () => {
   const catalog = buildVisualCatalog();
@@ -204,4 +204,144 @@ test("shadcn and 21st handoff candidates import only local static exports", asyn
   expect(acquisition.assets.map((asset) => asset.provider)).toEqual(["shadcn", "21st"]);
   expect(existsSync(join(dir, "assets", "visuals", "visual-shadcn-card.svg"))).toBe(true);
   expect(existsSync(join(dir, "assets", "visuals", "visual-twenty-first-card.svg"))).toBe(true);
+});
+
+test("visual acquire requires explicit selection even for recommended or sole renderable candidates", async () => {
+  for (const recommended of [true, false]) {
+    const dir = mkdtempSync(join(tmpdir(), "koubo-explicit-visual-"));
+    writeFileSync(join(dir, projectArtifacts.visualRequest), JSON.stringify({
+      version: "1.0",
+      source_mode: "screen_recording",
+      presentation_intent: "short_form",
+      requests: [{ id: "alarm", viewer_job: "show alarm", semantic_query: "alarm", asset_type: "icon", preferred_sources: [], reason: "alarm needs an icon" }],
+    }));
+    writeFileSync(join(dir, projectArtifacts.visualCandidates), JSON.stringify({
+      version: "1.0",
+      candidates: [{ id: "alarm-candidate", request_id: "alarm", provider: "local", asset_type: "icon", title: "Alarm", semantic_query: "alarm", local_path: "alarm.svg", renderable: true, recommended, reason: "matches alarm", runtime_dependencies: [] }],
+      warnings: [],
+    }));
+
+    let error: unknown;
+    try {
+      await acquireVisualAssets(dir);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(String(error)).toContain("selected_candidate_id is required");
+    expect(existsSync(join(dir, "assets"))).toBe(false);
+    expect(existsSync(join(dir, projectArtifacts.assetManifest))).toBe(false);
+  }
+});
+
+test("visual acquire preflights every request before fetch, file, or manifest side effects", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-visual-preflight-"));
+  const originalManifest = '{"assets":[]}\n';
+  writeFileSync(join(dir, projectArtifacts.assetManifest), originalManifest);
+  writeFileSync(join(dir, projectArtifacts.visualRequest), JSON.stringify({
+    version: "1.0",
+    source_mode: "screen_recording",
+    presentation_intent: "short_form",
+    requests: [
+      { id: "first", viewer_job: "show first", semantic_query: "first", asset_type: "icon", preferred_sources: [], reason: "first reason", selected_candidate_id: "first-candidate" },
+      { id: "second", viewer_job: "show second", semantic_query: "second", asset_type: "icon", preferred_sources: [], reason: "second reason", selected_candidate_id: "missing-candidate" },
+    ],
+  }));
+  writeFileSync(join(dir, projectArtifacts.visualCandidates), JSON.stringify({
+    version: "1.0",
+    candidates: [{ id: "first-candidate", request_id: "first", provider: "url", asset_type: "icon", title: "First", semantic_query: "first", download_url: "https://example.com/first.svg", renderable: true, recommended: true, reason: "first candidate", runtime_dependencies: [] }],
+    warnings: [],
+  }));
+  const previousFetch = fetch;
+  let fetchCount = 0;
+  (globalThis as unknown as { fetch: unknown }).fetch = async () => {
+    fetchCount += 1;
+    throw new Error("fetch must not run");
+  };
+
+  try {
+    let error: unknown;
+    try {
+      await acquireVisualAssets(dir);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(String(error)).toContain("missing-candidate was not found for this request");
+    expect(fetchCount).toBe(0);
+    expect(existsSync(join(dir, "assets"))).toBe(false);
+    expect(readFileSync(join(dir, projectArtifacts.assetManifest), "utf8")).toBe(originalManifest);
+  } finally {
+    (globalThis as unknown as { fetch: unknown }).fetch = previousFetch;
+  }
+});
+
+test("visual acquire keeps every current asset and manifest when the second selected asset fails", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-visual-commit-last-"));
+  const firstTarget = join(dir, "assets", "icons", "visual-first.svg");
+  const secondTarget = join(dir, "assets", "icons", "visual-second.svg");
+  writeFileSync(join(dir, "first.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><path d="M1 1h8v8H1z"/></svg>');
+  mkdirSync(join(dir, "assets", "icons"), { recursive: true });
+  writeFileSync(firstTarget, "current first bytes");
+  writeFileSync(secondTarget, "current second bytes");
+  writeFileSync(join(dir, projectArtifacts.visualRequest), JSON.stringify({
+    version: "1.0",
+    source_mode: "screen_recording",
+    presentation_intent: "short_form",
+    requests: [
+      { id: "first", viewer_job: "show first", semantic_query: "first", asset_type: "icon", preferred_sources: [], reason: "first reason", selected_candidate_id: "first-candidate" },
+      { id: "second", viewer_job: "show second", semantic_query: "second", asset_type: "icon", preferred_sources: [], reason: "second reason", selected_candidate_id: "second-candidate" },
+    ],
+  }));
+  writeFileSync(join(dir, projectArtifacts.visualCandidates), JSON.stringify({
+    version: "1.0",
+    candidates: [
+      { id: "first-candidate", request_id: "first", provider: "local", asset_type: "icon", title: "First", semantic_query: "first", local_path: "first.svg", renderable: true, recommended: true, reason: "first candidate", runtime_dependencies: [] },
+      { id: "second-candidate", request_id: "second", provider: "local", asset_type: "icon", title: "Second", semantic_query: "second", local_path: "missing-second.svg", renderable: true, recommended: true, reason: "second candidate", runtime_dependencies: [] },
+    ],
+    warnings: [],
+  }));
+  const originalManifest = `${JSON.stringify({
+    assets: [
+      { id: "visual-first", path: "assets/icons/visual-first.svg", type: "icon", source: "imported" },
+      { id: "visual-second", path: "assets/icons/visual-second.svg", type: "icon", source: "imported" },
+    ],
+  }, null, 2)}\n`;
+  writeFileSync(join(dir, projectArtifacts.assetManifest), originalManifest);
+
+  let error: unknown;
+  try {
+    await acquireVisualAssets(dir);
+  } catch (caught) {
+    error = caught;
+  }
+  expect(String(error)).toContain("missing-second.svg");
+
+  expect(readFileSync(firstTarget, "utf8")).toBe("current first bytes");
+  expect(readFileSync(secondTarget, "utf8")).toBe("current second bytes");
+  expect(readFileSync(join(dir, projectArtifacts.assetManifest), "utf8")).toBe(originalManifest);
+  expect(readdirSync(dir).some((entry) => entry.startsWith(".visual-acquire-staging-"))).toBe(false);
+});
+
+test("visual candidate and review markdown expose preview and distinct reasons", () => {
+  const candidatesMarkdown = renderVisualCandidatesMarkdown({
+    version: "1.0",
+    candidates: [{ id: "alarm", request_id: "alarm-request", provider: "local", asset_type: "icon", title: "Alarm", semantic_query: "alarm", preview_path: ".visual-previews/alarm.png", local_path: "alarm.svg", renderable: true, recommended: true, reason: "candidate match", runtime_dependencies: [] }],
+    warnings: [],
+  });
+  expect(candidatesMarkdown).toContain("preview=.visual-previews/alarm.png");
+
+  const review = buildVisualReview({
+    version: "1.0",
+    assets: [{ id: "acquired-alarm", request_id: "alarm-request", candidate_id: "alarm", asset_id: "visual-alarm", provider: "local", asset_type: "icon", path: "assets/icons/visual-alarm.svg", hash: "abc", acquired_at: "2026-07-11T00:00:00.000Z", runtime_dependencies: [], warnings: [] }],
+    warnings: [],
+  }, {
+    version: "1.0",
+    source_mode: "screen_recording",
+    presentation_intent: "short_form",
+    requests: [{ id: "alarm-request", viewer_job: "show alarm", semantic_query: "alarm", asset_type: "icon", preferred_sources: [], reason: "the spoken cue needs visual help", selected_candidate_id: "alarm", selection_reason: "best readable silhouette" }],
+  });
+  expect(review.items[0]?.usage_reason).toBe("the spoken cue needs visual help");
+  expect(review.items[0]?.selection_reason).toBe("best readable silhouette");
+  const reviewMarkdown = renderVisualReviewMarkdown(review);
+  expect(reviewMarkdown).toContain("usage=the spoken cue needs visual help");
+  expect(reviewMarkdown).toContain("selection=best readable silhouette");
 });

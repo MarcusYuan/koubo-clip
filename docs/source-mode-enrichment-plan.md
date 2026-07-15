@@ -73,8 +73,9 @@
    - 解释为什么包含 generated images 或 music，或者为什么跳过它们。
 
 6. 增加 visual inspection 输出。
-   - 将每个 visual card 的中点帧抽取到 `.inspection/`。
-   - 在 `inspect` 输出中包含 `source_mode` 和 `inspection_frames[]`，让 agent 能验证 UI readability 和 caption safety。
+   - `project inspect` 只读取 current `render-result.json` 指定的 canonical output。
+   - 将每个 visual card 的检查帧抽取到 `.inspection/<render-fingerprint-prefix>/`，避免旧 render 帧混入当前检查。
+   - 持久化绑定 render result fingerprint 的 `inspection.json`，并在命令输出中包含 `source_mode` 和 `inspection_frames[]`，让 agent 能验证 UI readability 和 caption safety。
 
 7. 真实视频验收测试。
    - 重新运行 `/Users/yuanpeng/Downloads/0507 (1).mp4`。

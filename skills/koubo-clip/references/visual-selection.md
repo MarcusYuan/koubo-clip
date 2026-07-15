@@ -34,6 +34,8 @@ When the user asks for broad goals such as "sell harder", "make it clear", or "s
 
 Choose only treatments that serve a viewer job. If none help, choose no insert and write the reason, such as "source UI is already clear", "asset would hide the screen", or "the goal is authenticity".
 
+No insert is a semantic decision, not a fake candidate. Remove that slot from final `visual-request.json.requests[]`, retain the rationale in business/focus review, and skip visual acquire/review when no requests remain.
+
 ## Source Priority
 
 - Common semantic icons such as alarm, phone, navigation, message, bluetooth, battery, call, or checkmark: use Iconify or Lordicon first.
@@ -44,6 +46,32 @@ Choose only treatments that serve a viewer job. If none help, choose no insert a
 - No insert: choose this when the added content would only decorate and not help the viewer job.
 
 Provider execution depends on project mode. In `standalone` mode the CLI may search/download supported visual providers. In `platform` mode the skill still states the same visual need, but the host/platform tool must fulfill it first and write normalized candidates plus project-local/static exports; the CLI only imports and validates those landed artifacts.
+
+## Candidate Review And Selection
+
+Search/list only recalls candidates. Compare each viable candidate against:
+
+- the viewer job and the request `reason`
+- ASR facts and source-frame evidence at the intended output moment
+- `source_mode` and the risk of covering important source content
+- the selected business direction and its visual language
+- license, attribution, source, and cost constraints
+- runtime, format, dependency, and rendering risk
+
+Candidate order and `recommended` are review hints only. They never authorize acquisition, even when there is only one renderable candidate.
+
+For every retained request in either provider mode, write:
+
+- `selected_candidate_id`: the exact reviewed candidate to acquire
+- `selection_reason`: why this candidate best serves the slot and evidence
+
+Keep `reason` and `selection_reason` distinct: `reason` explains why the segment needs a visual slot; `selection_reason` explains why the selected candidate is the right fulfillment.
+
+In `standalone` mode, search first, review the candidate list, update `visual-request.json` with the explicit selection, then acquire. In `platform` mode, the host writes normalized candidates and safe project-relative `preview_path` values when previews are needed; after review, it materializes only the selected candidate to a project-relative `local_path` before CLI acquire.
+
+`preview_path` is review evidence only. It must never be used as acquisition bytes or as a substitute for `local_path`. A platform candidate with only `preview_path` is not fulfilled and cannot be acquired.
+
+Candidate lists are evidence, not project state or render authority. Lineage for acquisition binds the selected request/candidate projection and the acquired asset bytes; changing an unselected candidate must not make an otherwise current render stale. Candidate/review Markdown is a rebuildable human view and never authorizes acquire or blocks completion. On resume, use `project status --json` rather than checking whether candidate, preview, acquisition, or asset files happen to exist.
 
 ## Proposal Surface
 

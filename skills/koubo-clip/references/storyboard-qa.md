@@ -32,10 +32,14 @@ Run `project enrich-plan` and show `qa_checks[]`:
 
 Fix blockers before render.
 
+Render consumes only current canonical `enrichment-plan.json`. If the project has a standalone or legacy asset-usage compatibility input, run `project enrich-plan` to normalize that unique input first; do not pass it directly to render or merge it at runtime.
+
 ## After Render
 
-Run `project inspect` and review `inspection_checks[]`.
+Run `project inspect` and review `inspection_checks[]`. The command must resolve the canonical output through current `render-result.json`; do not inspect an arbitrary `final.mp4`, an old storyboard, or whichever MP4 happens to exist.
 
 For visual checks, inspect sampled frames. For music and SFX, inspect timing, asset provenance, volume, ducking, and reason.
+
+After inspect, run `project status --json`. Completion requires current `inspection.json` bound to the same render-result fingerprint with no blocker. `report.md` is a rebuildable human view and is not machine completion evidence.
 
 The CLI reports sampled evidence and warnings; the agent judges whether the result meets the user's goal.

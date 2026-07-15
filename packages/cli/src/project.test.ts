@@ -7,8 +7,10 @@ import * as nodePath from "node:path";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { parseAssetManifest, parseEnrichmentPlan, parseProjectMetadata } from "./artifacts";
+import { fileBytesFingerprint, semanticJsonFingerprint } from "./artifact-lifecycle";
 import * as projectApi from "./project";
 import { buildEnrichmentStoryboard, commandExists, createProject, elementCatalogProject, enrichPlanProject, exploreProject, inspectProject, musicAcquireProject, musicCatalogProject, musicReviewProject, normalizeCloudflareWhisperResult, normalizeWhisperJson, proposalProject, renderProject, reviewProject, sourceFramesProject, validateSourceFrameByteLimits, visualAcquireProject, visualCatalogProject, visualReviewProject, visualSearchProject } from "./project";
+import { projectStatus } from "./project-status";
 
 test("creates, explores, and reviews a source-aware project", async () => {
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-"));
@@ -328,6 +330,7 @@ test("platform mode visual search and acquire consume local candidates only", as
           preferred_sources: ["iconify"],
           reason: "host supplied icon candidate",
           selected_candidate_id: "alarm-local",
+          selection_reason: "the local icon matches the requested alarm cue",
         },
       ],
     }),
@@ -375,6 +378,99 @@ test("platform mode visual search and acquire consume local candidates only", as
   }
 });
 
+test("platform visual acquire requires an explicit reviewed project-local selection", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-contract-"));
+  const source = join(dir, "raw.mp4");
+  const project = join(dir, "project");
+  writeFileSync(source, "not real media");
+  createProject([source], { projectPath: project, providerMode: "platform" });
+  writeFileSync(join(project, "preview.png"), "preview");
+  writeFileSync(join(project, "selected.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10H0z"/></svg>');
+
+  const writeRequest = (selectedCandidateId?: string, selectionReason?: string) => writeFileSync(
+    join(project, "visual-request.json"),
+    JSON.stringify({
+      version: "1.0",
+      source_mode: "screen_recording",
+      presentation_intent: "short_form",
+      requests: [{
+        id: "alarm",
+        viewer_job: "show alarm cue",
+        semantic_query: "alarm clock",
+        asset_type: "icon",
+        preferred_sources: ["iconify"],
+        reason: "the slot needs a visible alarm cue",
+        ...(selectedCandidateId === undefined ? {} : { selected_candidate_id: selectedCandidateId }),
+        ...(selectionReason === undefined ? {} : { selection_reason: selectionReason }),
+      }],
+    }),
+  );
+  const writeCandidates = (candidate: Record<string, unknown>) => writeFileSync(
+    join(project, "visual-candidates.json"),
+    JSON.stringify({
+      version: "1.0",
+      candidates: [{
+        id: "alarm-selected",
+        request_id: "alarm",
+        provider: "iconify",
+        asset_type: "icon",
+        title: "alarm",
+        semantic_query: "alarm clock",
+        license: "MIT",
+        renderable: true,
+        recommended: true,
+        reason: "candidate from the platform",
+        runtime_dependencies: [],
+        ...candidate,
+      }],
+      warnings: [],
+    }),
+  );
+  const expectBlocker = async (artifact: string) => {
+    const result = await visualAcquireProject(project, { providerMode: "platform" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected platform visual acquire blocker");
+    expect(result.error.code).toBe("PLATFORM_PROVIDER_BLOCKED");
+    expect(result.error.stage).toBe("visual-acquire");
+    expect(result.error.artifact).toBe(artifact);
+    expect(result.error.remediation).toContain("selected_candidate_id and selection_reason");
+    expect(result.error.remediation).toContain("only the selected candidate");
+  };
+
+  writeCandidates({ local_path: "selected.svg" });
+  writeRequest();
+  await expectBlocker("visual-request.json");
+  writeRequest("alarm-selected");
+  await expectBlocker("visual-request.json");
+  writeRequest("alarm-selected", "   ");
+  await expectBlocker("visual-request.json");
+
+  writeRequest("alarm-selected", "best semantic match");
+  writeCandidates({ request_id: "another-request", local_path: "selected.svg" });
+  await expectBlocker("visual-candidates.json");
+  writeCandidates({ renderable: false, local_path: "selected.svg" });
+  await expectBlocker("visual-candidates.json");
+  writeCandidates({ preview_path: "preview.png" });
+  await expectBlocker("visual-candidates.json");
+  writeCandidates({ local_path: "missing.svg" });
+  await expectBlocker("visual-candidates.json");
+
+  const outside = join(dir, "outside.svg");
+  writeFileSync(outside, '<svg xmlns="http://www.w3.org/2000/svg"/>');
+  nodeFs.symlinkSync(outside, join(project, "escaped.svg"));
+  writeCandidates({ local_path: "escaped.svg" });
+  await expectBlocker("visual-candidates.json");
+  writeCandidates({ preview_path: "escaped.svg", local_path: "selected.svg" });
+  await expectBlocker("visual-candidates.json");
+
+  writeCandidates({ preview_path: "preview.png", local_path: "selected.svg", license_url: "https://example.com/license" });
+  const acquired = await visualAcquireProject(project, { providerMode: "platform" });
+  expect(acquired.ok).toBe(true);
+  if (!acquired.ok) throw new Error(acquired.error.message);
+  expect(acquired.data.acquired_count).toBe(1);
+  expect(existsSync(join(project, "assets", "icons", "visual-alarm.svg"))).toBe(true);
+});
+
 test("platform mode visual provider paths return blockers instead of fetching", async () => {
   const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-block-"));
   const source = join(dir, "raw.mp4");
@@ -396,6 +492,7 @@ test("platform mode visual provider paths return blockers instead of fetching", 
           preferred_sources: ["iconify"],
           reason: "needs host candidate",
           selected_candidate_id: "alarm-remote",
+          selection_reason: "the requested remote candidate matches the alarm cue",
         },
       ],
     }),
@@ -521,6 +618,26 @@ test("validates and renders a production proposal without creating execution art
   expect(existsSync(join(project, "music-request.json"))).toBe(false);
   expect(existsSync(join(project, "enrichment-plan.json"))).toBe(false);
 
+  const initialProposalLifecycle = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as {
+    artifacts: Record<string, unknown>;
+  };
+  expect(Boolean(initialProposalLifecycle.artifacts["proposal-selection:balanced"])).toBe(true);
+  expect(Boolean(initialProposalLifecycle.artifacts["proposal-selection:cleanup-only"])).toBe(true);
+  const proposalPath = join(project, "production-proposal.json");
+  const reducedProposal = JSON.parse(readFileSync(proposalPath, "utf8")) as {
+    options: Array<{ id: string }>;
+  } & Record<string, unknown>;
+  reducedProposal.options = reducedProposal.options.filter((option) => option.id === "balanced");
+  writeFileSync(proposalPath, JSON.stringify(reducedProposal));
+  const reproposed = proposalProject(project);
+  expect(reproposed.ok).toBe(true);
+  if (!reproposed.ok) throw new Error(reproposed.error.message);
+  const proposalLifecycle = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as {
+    artifacts: Record<string, unknown>;
+  };
+  expect(Boolean(proposalLifecycle.artifacts["proposal-selection:balanced"])).toBe(true);
+  expect(Boolean(proposalLifecycle.artifacts["proposal-selection:cleanup-only"])).toBe(false);
+
   writeFileSync(
     join(project, "production-proposal.json"),
     JSON.stringify({
@@ -620,6 +737,363 @@ test("visual acquisition accepts a confirmed local handoff candidate", async () 
   expect(manifest.assets[0]?.provenance).toBe("visual-acquisition");
 });
 
+test("visual lifecycle binds acquisition to selected members and cleans removed candidate records", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-visual-lineage-"));
+  const source = join(dir, "raw.mp4");
+  const project = join(dir, "project");
+  writeFileSync(source, "not real media");
+  createProject([source], { projectPath: project, providerMode: "platform" });
+  writeFileSync(join(project, "selected.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10H0z"/></svg>');
+  writeFileSync(join(project, "alternate.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><circle cx="5" cy="5" r="4"/></svg>');
+  writeFileSync(
+    join(project, "visual-request.json"),
+    JSON.stringify({
+      version: "1.0",
+      source_mode: "screen_recording",
+      presentation_intent: "short_form",
+      requests: [{
+        id: "alarm",
+        viewer_job: "make the alarm cue visible",
+        semantic_query: "alarm clock",
+        asset_type: "icon",
+        preferred_sources: ["iconify"],
+        reason: "the source needs a visible alarm cue",
+        selected_candidate_id: "alarm-selected",
+        selection_reason: "best semantic match",
+      }],
+    }),
+  );
+  const writeCandidates = (includeAlternate: boolean, alternateTitle = "alternate alarm", selectedTitle = "selected alarm") => writeFileSync(
+    join(project, "visual-candidates.json"),
+    JSON.stringify({
+      version: "1.0",
+      candidates: [
+        {
+          id: "alarm-selected",
+          request_id: "alarm",
+          provider: "iconify",
+          asset_type: "icon",
+          title: selectedTitle,
+          semantic_query: "alarm clock",
+          local_path: "selected.svg",
+          license: "MIT",
+          renderable: true,
+          recommended: true,
+          reason: "selected local candidate",
+          runtime_dependencies: [],
+        },
+        ...(includeAlternate ? [{
+          id: "alarm-alternate",
+          request_id: "alarm",
+          provider: "iconify",
+          asset_type: "icon",
+          title: alternateTitle,
+          semantic_query: "alarm clock",
+          local_path: "alternate.svg",
+          license: "MIT",
+          renderable: true,
+          recommended: false,
+          reason: "unselected local candidate",
+          runtime_dependencies: [],
+        }] : []),
+      ],
+      warnings: [],
+    }),
+  );
+
+  writeCandidates(true);
+  const catalog = visualCatalogProject(project, { providerMode: "platform" });
+  expect(catalog.ok).toBe(true);
+  const searched = await visualSearchProject(project, { providerMode: "platform" });
+  expect(searched.ok).toBe(true);
+  const acquired = await visualAcquireProject(project, { providerMode: "platform" });
+  expect(acquired.ok).toBe(true);
+  if (!acquired.ok) throw new Error(acquired.error.message);
+
+  const readLifecycle = () => JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as {
+    artifacts: Record<string, { fingerprint: string; inputs: Array<{ key: string; fingerprint: string }> }>;
+    stage_attempts: Record<string, { status: string; input_fingerprint: string; failure_code?: string }>;
+  };
+  let lifecycle = readLifecycle();
+  expect(lifecycle.stage_attempts["project.visual-catalog"]?.status).toBe("success");
+  expect(lifecycle.stage_attempts["project.visual-search"]?.status).toBe("success");
+  expect(lifecycle.stage_attempts["project.visual-acquire"]?.status).toBe("success");
+  expect(Boolean(lifecycle.artifacts["visual-request:alarm"])).toBe(true);
+  expect(Boolean(lifecycle.artifacts["visual-candidate:alarm:alarm-selected"])).toBe(true);
+  expect(Boolean(lifecycle.artifacts["visual-candidate:alarm:alarm-alternate"])).toBe(true);
+  expect(Boolean(lifecycle.artifacts["asset:visual-alarm"])).toBe(true);
+  expect(Boolean(lifecycle.artifacts["asset-manifest"])).toBe(true);
+  expect(Boolean(lifecycle.artifacts["visual-review-view"])).toBe(true);
+  const acquisitionInputKeys = lifecycle.artifacts["visual-acquisition"]!.inputs.map((input) => input.key);
+  expect(acquisitionInputKeys).toContain("visual-request:alarm");
+  expect(acquisitionInputKeys).toContain("visual-candidate:alarm:alarm-selected");
+  expect(acquisitionInputKeys).toContain("asset:visual-alarm");
+  expect(acquisitionInputKeys.includes("visual-candidate:alarm:alarm-alternate")).toBe(false);
+  expect(acquisitionInputKeys.includes("visual-request")).toBe(false);
+  expect(acquisitionInputKeys.includes("visual-candidates")).toBe(false);
+  const acquisitionFingerprint = lifecycle.artifacts["visual-acquisition"]!.fingerprint;
+
+  writeCandidates(true, "renamed alternate alarm");
+  const searchedAgain = await visualSearchProject(project, { providerMode: "platform" });
+  expect(searchedAgain.ok).toBe(true);
+  const reviewedAfterUnselectedChange = visualReviewProject(project, { providerMode: "platform" });
+  expect(reviewedAfterUnselectedChange.ok).toBe(true);
+  lifecycle = readLifecycle();
+  expect(lifecycle.artifacts["visual-acquisition"]?.fingerprint).toBe(acquisitionFingerprint);
+
+  writeCandidates(false);
+  const searchedWithoutAlternate = await visualSearchProject(project, { providerMode: "platform" });
+  expect(searchedWithoutAlternate.ok).toBe(true);
+  lifecycle = readLifecycle();
+  expect(Boolean(lifecycle.artifacts["visual-candidate:alarm:alarm-alternate"])).toBe(false);
+  expect(Boolean(lifecycle.artifacts["visual-candidate:alarm:alarm-selected"])).toBe(true);
+  const reviewedAfterCandidateCleanup = visualReviewProject(project, { providerMode: "platform" });
+  expect(reviewedAfterCandidateCleanup.ok).toBe(true);
+
+  writeCandidates(false, "unused", "mutated selected alarm");
+  const staleSelectedReview = visualReviewProject(project, { providerMode: "platform" });
+  expect(staleSelectedReview.ok).toBe(false);
+  if (staleSelectedReview.ok) throw new Error("expected selected candidate lineage failure");
+  expect(staleSelectedReview.error.code).toBe("ARTIFACT_INVALID");
+});
+
+test("visual acquire records known-input failure without replacing the last successful acquisition", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-visual-failure-lineage-"));
+  const source = join(dir, "raw.mp4");
+  const project = join(dir, "project");
+  writeFileSync(source, "not real media");
+  createProject([source], { projectPath: project, providerMode: "platform" });
+  writeFileSync(join(project, "selected.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10H0z"/></svg>');
+  const writeRequest = (candidateId: string) => writeFileSync(
+    join(project, "visual-request.json"),
+    JSON.stringify({
+      version: "1.0",
+      source_mode: "screen_recording",
+      presentation_intent: "short_form",
+      requests: [{
+        id: "alarm",
+        viewer_job: "make the alarm cue visible",
+        semantic_query: "alarm clock",
+        asset_type: "icon",
+        preferred_sources: ["iconify"],
+        reason: "the source needs a visible alarm cue",
+        selected_candidate_id: candidateId,
+        selection_reason: "reviewed local candidate",
+      }],
+    }),
+  );
+  writeFileSync(
+    join(project, "visual-candidates.json"),
+    JSON.stringify({
+      version: "1.0",
+      candidates: [{
+        id: "alarm-selected",
+        request_id: "alarm",
+        provider: "iconify",
+        asset_type: "icon",
+        title: "selected alarm",
+        semantic_query: "alarm clock",
+        local_path: "selected.svg",
+        license: "MIT",
+        renderable: true,
+        recommended: true,
+        reason: "selected local candidate",
+        runtime_dependencies: [],
+      }],
+      warnings: [],
+    }),
+  );
+
+  writeRequest("alarm-selected");
+  const acquired = await visualAcquireProject(project, { providerMode: "platform" });
+  expect(acquired.ok).toBe(true);
+  const acquisitionPath = join(project, "visual-acquisition.json");
+  const acquisitionBeforeFailure = readFileSync(acquisitionPath, "utf8");
+  const manifestBeforeFailure = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as {
+    artifacts: Record<string, { fingerprint: string }>;
+  };
+  const acquisitionFingerprint = manifestBeforeFailure.artifacts["visual-acquisition"]!.fingerprint;
+
+  writeRequest("missing-candidate");
+  const failed = await visualAcquireProject(project, { providerMode: "platform" });
+  expect(failed.ok).toBe(false);
+  if (failed.ok) throw new Error("expected visual acquire failure");
+  expect(failed.error.code).toBe("PLATFORM_PROVIDER_BLOCKED");
+  expect(readFileSync(acquisitionPath, "utf8")).toBe(acquisitionBeforeFailure);
+  const manifestAfterFailure = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as {
+    artifacts: Record<string, { fingerprint: string }>;
+    stage_attempts: Record<string, { status: string; input_fingerprint: string; failure_code?: string }>;
+  };
+  expect(manifestAfterFailure.artifacts["visual-acquisition"]?.fingerprint).toBe(acquisitionFingerprint);
+  expect(manifestAfterFailure.stage_attempts["project.visual-acquire"]?.status).toBe("failed");
+  expect(manifestAfterFailure.stage_attempts["project.visual-acquire"]?.input_fingerprint.startsWith("sha256:")).toBe(true);
+  expect(manifestAfterFailure.stage_attempts["project.visual-acquire"]?.failure_code).toBe("PLATFORM_PROVIDER_BLOCKED");
+});
+
+test("visual acquire wrapper failure restores the current asset, manifest, and acquisition checkpoint", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-visual-wrapper-checkpoint-"));
+  const source = join(dir, "raw.mp4");
+  const project = join(dir, "project");
+  writeFileSync(source, "not real media");
+  createProject([source], { projectPath: project, providerMode: "platform" });
+  const selectedPath = join(project, "selected.svg");
+  writeFileSync(selectedPath, '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10H0z"/></svg>');
+  writeFileSync(join(project, "visual-request.json"), JSON.stringify({
+    version: "1.0",
+    source_mode: "screen_recording",
+    presentation_intent: "short_form",
+    requests: [{
+      id: "alarm",
+      viewer_job: "make the alarm cue visible",
+      semantic_query: "alarm clock",
+      asset_type: "icon",
+      preferred_sources: ["iconify"],
+      reason: "the source needs a visible alarm cue",
+      selected_candidate_id: "alarm-selected",
+      selection_reason: "reviewed local candidate",
+    }],
+  }));
+  writeFileSync(join(project, "visual-candidates.json"), JSON.stringify({
+    version: "1.0",
+    candidates: [{
+      id: "alarm-selected",
+      request_id: "alarm",
+      provider: "iconify",
+      asset_type: "icon",
+      title: "selected alarm",
+      semantic_query: "alarm clock",
+      local_path: "selected.svg",
+      license: "MIT",
+      renderable: true,
+      recommended: true,
+      reason: "selected local candidate",
+      runtime_dependencies: [],
+    }],
+    warnings: [],
+  }));
+
+  const first = await visualAcquireProject(project, { providerMode: "platform" });
+  expect(first.ok).toBe(true);
+  const assetPath = join(project, "assets", "icons", "visual-alarm.svg");
+  const acquisitionPath = join(project, "visual-acquisition.json");
+  const currentAsset = readFileSync(assetPath);
+  const currentAcquisition = readFileSync(acquisitionPath, "utf8");
+  writeFileSync(selectedPath, '<svg xmlns="http://www.w3.org/2000/svg"><circle cx="5" cy="5" r="4"/></svg>');
+  mkdirSync(join(project, "assets", "images"), { recursive: true });
+  writeFileSync(join(project, "assets", "images", "untracked.png"), "untracked image bytes");
+  const manifestPath = join(project, "asset-manifest.json");
+  const manifest = parseAssetManifest(JSON.parse(readFileSync(manifestPath, "utf8")));
+  manifest.assets.push({ id: "untracked", path: "assets/images/untracked.png", type: "image", source: "user" });
+  const currentManifest = `${JSON.stringify(manifest, null, 2)}\n`;
+  writeFileSync(manifestPath, currentManifest);
+
+  const failed = await visualAcquireProject(project, { providerMode: "platform" });
+  expect(failed.ok).toBe(false);
+  if (failed.ok) throw new Error("expected visual wrapper failure");
+  expect(failed.error.code).toBe("LINEAGE_UNPROVEN");
+  expect(readFileSync(assetPath)).toEqual(currentAsset);
+  expect(readFileSync(manifestPath, "utf8")).toBe(currentManifest);
+  expect(readFileSync(acquisitionPath, "utf8")).toBe(currentAcquisition);
+  expect(nodeFs.readdirSync(project).some((entry) => entry.startsWith(".visual-acquire-staging-"))).toBe(false);
+});
+
+test("visual acquire preserves current non-visual asset lineage in a mixed manifest", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-visual-mixed-assets-"));
+  const source = join(dir, "raw.mp4");
+  const project = join(dir, "project");
+  writeFileSync(source, "not real media");
+  createProject([source], { projectPath: project, providerMode: "platform" });
+
+  const userAssetPath = join(project, "assets", "images", "user-image.png");
+  mkdirSync(join(project, "assets", "images"), { recursive: true });
+  writeFileSync(userAssetPath, "user image bytes");
+  writeFileSync(
+    join(project, "asset-manifest.json"),
+    JSON.stringify({ assets: [{ id: "user-image", path: "assets/images/user-image.png", type: "image", source: "user" }] }),
+  );
+  const lifecyclePath = join(project, "artifact-manifest.json");
+  const lifecycle = JSON.parse(readFileSync(lifecyclePath, "utf8")) as {
+    artifacts: Record<string, Record<string, unknown>>;
+    updated_at: string;
+  };
+  const now = new Date().toISOString();
+  const userAssetFingerprint = `sha256:${createHash("sha256").update(readFileSync(userAssetPath)).digest("hex")}`;
+  const producerVersion = String(lifecycle.artifacts.project?.producer_cli_version ?? "0.0.0-test");
+  lifecycle.artifacts["asset:user-image"] = {
+    key: "asset:user-image",
+    path: "assets/images/user-image.png",
+    role: "authoritative_input",
+    schema_version: "bytes-v1",
+    fingerprint: userAssetFingerprint,
+    file_sha256: userAssetFingerprint,
+    authored_by: "user",
+    validated_by_command: "project.enrich-plan",
+    producer_cli_version: producerVersion,
+    command_contract_version: "1.0",
+    inputs: [],
+    validated_at: now,
+  };
+  lifecycle.updated_at = now;
+  writeFileSync(lifecyclePath, `${JSON.stringify(lifecycle, null, 2)}\n`);
+  const preservedRecord = JSON.parse(JSON.stringify(lifecycle.artifacts["asset:user-image"]));
+
+  writeFileSync(join(project, "selected.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10H0z"/></svg>');
+  writeFileSync(
+    join(project, "visual-request.json"),
+    JSON.stringify({
+      version: "1.0",
+      source_mode: "screen_recording",
+      presentation_intent: "short_form",
+      requests: [{
+        id: "alarm",
+        viewer_job: "make the alarm cue visible",
+        semantic_query: "alarm clock",
+        asset_type: "icon",
+        preferred_sources: ["iconify"],
+        reason: "the source needs a visible alarm cue",
+        selected_candidate_id: "alarm-selected",
+        selection_reason: "reviewed local candidate",
+      }],
+    }),
+  );
+  writeFileSync(
+    join(project, "visual-candidates.json"),
+    JSON.stringify({
+      version: "1.0",
+      candidates: [{
+        id: "alarm-selected",
+        request_id: "alarm",
+        provider: "iconify",
+        asset_type: "icon",
+        title: "selected alarm",
+        semantic_query: "alarm clock",
+        local_path: "selected.svg",
+        license: "MIT",
+        renderable: true,
+        recommended: true,
+        reason: "selected local candidate",
+        runtime_dependencies: [],
+      }],
+      warnings: [],
+    }),
+  );
+
+  const acquired = await visualAcquireProject(project, { providerMode: "platform" });
+  expect(acquired.ok).toBe(true);
+  if (!acquired.ok) throw new Error(acquired.error.message);
+  const after = JSON.parse(readFileSync(lifecyclePath, "utf8")) as {
+    artifacts: Record<string, { inputs: Array<{ key: string }> }>;
+  };
+  expect(after.artifacts["asset:user-image"]).toEqual(preservedRecord);
+  expect(Boolean(after.artifacts["asset:visual-alarm"])).toBe(true);
+  const manifestInputKeys = after.artifacts["asset-manifest"]!.inputs.map((input) => input.key);
+  expect(manifestInputKeys).toContain("asset:user-image");
+  expect(manifestInputKeys).toContain("asset:visual-alarm");
+  const acquisitionInputKeys = after.artifacts["visual-acquisition"]!.inputs.map((input) => input.key);
+  expect(acquisitionInputKeys.includes("asset:user-image")).toBe(false);
+  expect(acquisitionInputKeys).toContain("asset:visual-alarm");
+});
+
 test("explore fails clearly when transcript is missing", async () => {
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-"));
   const source = join(dir, "raw.mp4");
@@ -714,14 +1188,14 @@ test("renders and inspects an edit plan", async () => {
   expect(edl.entries[1].start).toBe(1.3499999999999999);
 });
 
-test("rejects unsafe precise cut timing", () => {
-  const textOnlyProject = projectWithAnalysis("text-only", undefined);
+test("rejects unsafe precise cut timing", async () => {
+  const textOnlyProject = await projectWithAnalysis("text-only", undefined);
   const textOnlyRender = renderProject(textOnlyProject);
   expect(textOnlyRender.ok).toBe(false);
   if (textOnlyRender.ok) throw new Error("expected text-only failure");
   expect(textOnlyRender.error.message).toContain("text-only");
 
-  const chineseProject = projectWithAnalysis("word", "zh");
+  const chineseProject = await projectWithAnalysis("word", "zh");
   const chineseReview = reviewProject(chineseProject);
   expect(chineseReview.ok).toBe(true);
   if (!chineseReview.ok) throw new Error(chineseReview.error.message);
@@ -747,7 +1221,7 @@ test("normalizes rounded SRT millisecond rollover", () => {
       segments: [{ source_id: "src-001", start: 0.9996, end: 1.2004, text: "edge" }],
     }),
   );
-  writeFileSync(join(project, "analysis.json"), JSON.stringify({ candidates: [] }));
+  void exploreProject(project, { asr: "external" });
   writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ decisions: [] }));
   const rendered = renderProject(project);
   expect(rendered.ok).toBe(true);
@@ -799,14 +1273,14 @@ test("renders two sources in manifest order", async () => {
     }),
   );
   await exploreProject(project, { asr: "external" });
-  writeFileSync(
-    join(project, "analysis.json"),
-    JSON.stringify({
+  writeOwnedAnalysis(
+    project,
+    {
       candidates: [
         { id: "c-001-cut", source_id: "src-001", start: 0.2, end: 0.5, text: "first", type: "manual", reason: "remove setup", confidence: 0.9 },
         { id: "c-002-risk", source_id: "src-002", start: 0.2, end: 0.5, text: "second", type: "manual", reason: "needs review", confidence: 0.6 },
       ],
-    }),
+    },
   );
   reviewProject(project);
   writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ decisions: [{ action: "cut", candidate_id: "c-001-cut" }] }));
@@ -850,8 +1324,8 @@ test("honors explicit source order", async () => {
   expect(edl.entries.map((entry: { source_id: string }) => entry.source_id)).toEqual(["src-002", "src-001"]);
 });
 
-test("rejects edit plans that reference unknown candidates", () => {
-  const project = projectWithAnalysis("segment", undefined);
+test("rejects edit plans that reference unknown candidates", async () => {
+  const project = await projectWithAnalysis("segment", undefined);
   writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ decisions: [{ action: "cut", candidate_id: "missing" }] }));
   const rendered = renderProject(project);
   expect(rendered.ok).toBe(false);
@@ -873,11 +1347,12 @@ test("rejects candidate ranges outside source duration", () => {
       segments: [{ source_id: "src-001", start: 0, end: 1, text: "keep" }],
     }),
   );
-  writeFileSync(
-    join(project, "analysis.json"),
-    JSON.stringify({
+  void exploreProject(project, { asr: "external" });
+  writeOwnedAnalysis(
+    project,
+    {
       candidates: [{ id: "c-001-bad", source_id: "src-001", start: 0.5, end: 2, text: "bad", type: "manual", reason: "test", confidence: 0.9 }],
-    }),
+    },
   );
   writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ decisions: [{ action: "cut", candidate_id: "c-001-bad" }] }));
   const rendered = renderProject(project);
@@ -900,14 +1375,15 @@ test("rejects overlapping selected cut candidates", () => {
       segments: [{ source_id: "src-001", start: 0, end: 2, text: "keep" }],
     }),
   );
-  writeFileSync(
-    join(project, "analysis.json"),
-    JSON.stringify({
+  void exploreProject(project, { asr: "external" });
+  writeOwnedAnalysis(
+    project,
+    {
       candidates: [
         { id: "c-001-a", source_id: "src-001", start: 0.2, end: 0.8, text: "a", type: "manual", reason: "test", confidence: 0.9 },
         { id: "c-002-b", source_id: "src-001", start: 0.7, end: 1.2, text: "b", type: "manual", reason: "test", confidence: 0.9 },
       ],
-    }),
+    },
   );
   writeFileSync(
     join(project, "edit-plan.json"),
@@ -1351,7 +1827,7 @@ test("renders v1.1 screen-recording recut to final mp4 and reports it when Hyper
   expect(readFileSync(inspected.data.report_path, "utf8")).toContain("gsap_3_14_2 script gsap@3.14.2");
   expect(readFileSync(inspected.data.report_path, "utf8")).toContain("## Assets");
   expect(readFileSync(inspected.data.report_path, "utf8")).toContain("## QA Checks");
-  expect(readFileSync(inspected.data.report_path, "utf8")).toContain(".inspection/card-img.jpg");
+  expect(/\.inspection\/[a-f0-9]{16}\/card-img\.jpg/.test(readFileSync(inspected.data.report_path, "utf8"))).toBe(true);
 });
 
 test("renders music enrichment with audio in final mp4", () => {
@@ -1367,6 +1843,149 @@ test("renders music enrichment with audio in final mp4", () => {
   expect(rendered.ok).toBe(true);
   if (!rendered.ok) throw new Error(rendered.error.message);
   expect(Boolean(rendered.data.final_render_path && hasAudio(rendered.data.final_render_path))).toBe(true);
+});
+
+test("validates platform asset_usage_plan with prepared visual and audio assets", () => {
+  if (!commandExists("ffmpeg")) return;
+  const { project } = readyProject(2, "platform");
+  const assetDir = join(project, "assets", "koubo-clip");
+  mkdirSync(assetDir, { recursive: true });
+  makeMusic(join(assetDir, "bgm.wav"), 2);
+  makeMusic(join(assetDir, "sfx-click.wav"), 0.3);
+  makeStillImage(join(assetDir, "bluetooth-icon.png"));
+  writeFileSync(
+    join(assetDir, "prepared-assets.json"),
+    JSON.stringify({
+      assets: [
+        { asset_ref: "assets/koubo-clip/bgm.wav", type: "music" },
+        { asset_ref: "assets/koubo-clip/sfx-click.wav", type: "sfx" },
+        { asset_ref: "assets/koubo-clip/bluetooth-icon.png", type: "icon" },
+      ],
+    }),
+  );
+  writeFileSync(
+    join(project, "edit-plan.json"),
+    JSON.stringify({
+      decisions: [],
+      asset_usage_plan: {
+        music: [{ asset_ref: "assets/koubo-clip/bgm.wav", start: 0, end: 1.8, volume: 0.18, duck_original_audio: true, fade_in: 0.1, fade_out: 0.1, purpose: "增强科技感和节奏感" }],
+        sfx: [{ asset_ref: "assets/koubo-clip/sfx-click.wav", time: 0.7, duration: 0.2, volume: 0.35, purpose: "语音拨打电话功能出现时的提示音" }],
+        visual_assets: [{ asset_ref: "assets/koubo-clip/bluetooth-icon.png", start: 0.2, end: 1.1, position: "top-right", size: "small", animation: "fade-in", asset_type: "icon", purpose: "强化蓝牙耳机产品属性" }],
+      },
+    }),
+  );
+
+  const enriched = enrichPlanProject(project, { providerMode: "platform" });
+  expect(enriched.ok).toBe(true);
+  if (!enriched.ok) throw new Error(enriched.error.message);
+  expect(enriched.data.asset_summary.map((asset) => asset.path)).toEqual([
+    "assets/koubo-clip/bgm.wav",
+    "assets/koubo-clip/sfx-click.wav",
+    "assets/koubo-clip/bluetooth-icon.png",
+  ]);
+  expect(enriched.data.audio_usage.music[0]?.asset_id).toContain("music-1-bgm");
+  expect(enriched.data.audio_usage.sfx[0]?.asset_id).toContain("sfx-1-sfx-click");
+  expect(enriched.data.element_usage.some((usage) => usage.asset_id?.includes("visual-1-bluetooth-icon"))).toBe(true);
+  expect(enriched.data.element_usage.some((usage) => usage.element_type === "visual_asset")).toBe(true);
+});
+
+test("renders platform asset_usage_plan audio assets and reports audio_usage", () => {
+  if (!commandExists("ffmpeg")) return;
+  const { project } = readyProject(2, "platform");
+  const assetDir = join(project, "assets", "koubo-clip");
+  mkdirSync(assetDir, { recursive: true });
+  makeMusic(join(assetDir, "bgm.wav"), 2);
+  makeMusic(join(assetDir, "sfx-click.wav"), 0.3);
+  writeFileSync(
+    join(project, "edit-plan.json"),
+    JSON.stringify({
+      decisions: [],
+      asset_usage_plan: {
+        music: [{ asset_ref: "assets/koubo-clip/bgm.wav", start: 0, end: 1.8, volume: 0.12, duck_original_audio: true, fade_in: 0.1, fade_out: 0.1, purpose: "背景节奏" }],
+        sfx: [{ asset_ref: "assets/koubo-clip/sfx-click.wav", time: 0.7, duration: 0.2, volume: 0.2, purpose: "按钮提示音" }],
+        visual_assets: [],
+      },
+    }),
+  );
+
+  const normalized = enrichPlanProject(project, { providerMode: "platform" });
+  expect(normalized.ok).toBe(true);
+  if (!normalized.ok) throw new Error(normalized.error.message);
+  const rendered = renderProject(project, { providerMode: "platform" });
+  expect(rendered.ok).toBe(true);
+  if (!rendered.ok) throw new Error(rendered.error.message);
+  expect(rendered.data.enrichment_applied).toBe(true);
+  expect(Boolean(rendered.data.final_render_path && hasAudio(rendered.data.final_render_path))).toBe(true);
+  expect(rendered.data.audio_usage.music.length).toBe(1);
+  expect(rendered.data.audio_usage.sfx.length).toBe(1);
+
+  const inspected = inspectProject(project, { providerMode: "platform" });
+  expect(inspected.ok).toBe(true);
+  if (!inspected.ok) throw new Error(inspected.error.message);
+  expect(inspected.data.enrichment_applied).toBe(true);
+  expect(inspected.data.audio_usage.music[0]?.asset_id).toContain("music-1-bgm");
+  expect(inspected.data.audio_usage.sfx[0]?.asset_id).toContain("sfx-1-sfx-click");
+  expect(readFileSync(inspected.data.report_path, "utf8")).toContain("## Audio Usage");
+});
+
+test("asset_usage_plan normalization fails closed when an asset is missing", () => {
+  if (!commandExists("ffmpeg")) return;
+  const { project } = readyProject(2, "platform");
+  writeFileSync(
+    join(project, "edit-plan.json"),
+    JSON.stringify({
+      decisions: [],
+      asset_usage_plan: {
+        music: [{ asset_ref: "assets/koubo-clip/missing.wav", start: 0, end: 1, volume: 0.1, duck_original_audio: true, fade_in: 0.1, fade_out: 0.1, purpose: "missing" }],
+        sfx: [],
+        visual_assets: [],
+      },
+    }),
+  );
+  const normalized = enrichPlanProject(project, { providerMode: "platform" });
+  expect(normalized.ok).toBe(false);
+  if (normalized.ok) throw new Error("expected missing asset failure");
+  expect(normalized.error.code).toBe("missing_asset_ref");
+  expect(normalized.error.message).toContain("assets/koubo-clip/missing.wav");
+});
+
+test("asset_usage_plan normalization fails closed when the handoff is invalid", () => {
+  if (!commandExists("ffmpeg")) return;
+  const { project } = readyProject(2, "platform");
+  writeFileSync(
+    join(project, "edit-plan.json"),
+    JSON.stringify({
+      decisions: [],
+      asset_usage_plan: {
+        music: [{ asset_ref: "assets/koubo-clip/bgm.wav", start: 0, end: 0, purpose: "bad timing" }],
+        sfx: [],
+        visual_assets: [],
+      },
+    }),
+  );
+  const normalized = enrichPlanProject(project, { providerMode: "platform" });
+  expect(normalized.ok).toBe(false);
+  if (normalized.ok) throw new Error("expected invalid usage plan failure");
+  expect(normalized.error.code).toBe("asset_usage_plan_invalid");
+  expect(normalized.error.message).toContain("end must be greater");
+});
+
+test("keeps pure clipping behavior without asset_usage_plan", () => {
+  if (!commandExists("ffmpeg")) return;
+  const { project } = readyProject(2, "platform");
+  const rendered = renderProject(project, { providerMode: "platform" });
+  expect(rendered.ok).toBe(true);
+  if (!rendered.ok) throw new Error(rendered.error.message);
+  expect(rendered.data.enrichment_applied).toBe(false);
+  expect(rendered.data.audio_usage.music).toEqual([]);
+  expect(rendered.data.audio_usage.sfx).toEqual([]);
+  const inspected = inspectProject(project, { providerMode: "platform" });
+  expect(inspected.ok).toBe(true);
+  if (!inspected.ok) throw new Error(inspected.error.message);
+  expect(inspected.data.enrichment_applied).toBe(false);
+  expect(inspected.data.asset_summary).toEqual([]);
+  expect(inspected.data.element_usage).toEqual([]);
+  expect(inspected.data.audio_usage).toEqual({ music: [], sfx: [] });
 });
 
 test("acquires local music and reports provenance through inspect", async () => {
@@ -1421,10 +2040,81 @@ test("acquires local music and reports provenance through inspect", async () => 
   expect(report).toContain("provider=local");
 });
 
+test("music acquisition rolls back a partially published checkpoint and records the failed attempt", async () => {
+  if (!commandExists("ffmpeg")) return;
+  const { project } = readyProject(2);
+  makeMusic(join(project, "source", "stable.wav"), 2);
+  const writeRequest = (id: string, localPath: string) => writeFileSync(
+    join(project, "music-request.json"),
+    JSON.stringify({
+      version: "1.0",
+      id,
+      source: "local",
+      local_path: localPath,
+      reason: "commit-last regression",
+      target_duration_seconds: 1.5,
+    }),
+  );
+
+  writeRequest("stable-bed", "source/stable.wav");
+  const committed = await musicAcquireProject(project);
+  expect(committed.ok).toBe(true);
+  if (!committed.ok) throw new Error(committed.error.message);
+  const checkpointPaths = [
+    join(project, "assets", "music", "stable-bed.wav"),
+    join(project, "asset-manifest.json"),
+    join(project, "music-acquisition.json"),
+    join(project, "music-review.json"),
+    join(project, "music-review.md"),
+  ];
+  const checkpointHashes = new Map(checkpointPaths.map((path) => [path, createHash("sha256").update(readFileSync(path)).digest("hex")]));
+  const lifecycleBefore = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as {
+    artifacts: Record<string, unknown>;
+    stage_attempts: Record<string, { status: string; input_fingerprint: string; failure_code?: string }>;
+  };
+
+  const reviewPath = join(project, "music-review.json");
+  const realFs = nodeFs as unknown as { renameSync(sourcePath: string, targetPath: string): void };
+  let injected = false;
+  const failed = await musicAcquireProject(project, {}, {
+    renameSync(sourcePath, targetPath) {
+      if (!injected && targetPath === reviewPath && sourcePath.includes("music-acquire")) {
+        injected = true;
+        throw new Error("injected music publication failure");
+      }
+      realFs.renameSync(sourcePath, targetPath);
+    },
+  });
+  expect(failed.ok).toBe(false);
+  if (failed.ok) throw new Error("expected injected music publication failure");
+  expect(injected).toBe(true);
+  expect(failed.error.message).toContain("injected music publication failure");
+  for (const [path, fingerprint] of checkpointHashes) {
+    expect(createHash("sha256").update(readFileSync(path)).digest("hex")).toBe(fingerprint);
+  }
+  const acquisition = JSON.parse(readFileSync(join(project, "music-acquisition.json"), "utf8")) as { request: { id: string } };
+  expect(acquisition.request.id).toBe("stable-bed");
+
+  const lifecycleAfter = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as typeof lifecycleBefore;
+  expect(lifecycleAfter.artifacts).toEqual(lifecycleBefore.artifacts);
+  expect(lifecycleAfter.stage_attempts["project.music-acquire"]?.status).toBe("failed");
+  expect(lifecycleAfter.stage_attempts["project.music-acquire"]?.failure_code).toBe("PROJECT_MUSIC_ACQUIRE_FAILED");
+  expect(lifecycleAfter.stage_attempts["project.music-acquire"]?.input_fingerprint)
+    .toBe(lifecycleBefore.stage_attempts["project.music-acquire"]?.input_fingerprint);
+  const status = projectStatus(project);
+  const musicStage = status.stages.find((stage) => stage.stage === "music-acquire");
+  expect(musicStage?.state).toBe("complete");
+  expect(musicStage?.last_attempt?.status).toBe("failed");
+});
+
 test("acquires minimax music from hex response without leaking api key", async () => {
+  if (!commandExists("ffmpeg")) return;
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-music-"));
   const project = join(dir, "project");
   mkdirSync(join(project, "assets", "music"), { recursive: true });
+  const providerAudioPath = join(dir, "provider-audio.wav");
+  makeMusic(providerAudioPath, 2);
+  const providerAudioHex = Buffer.from(readFileSync(providerAudioPath)).toString("hex");
   writeFileSync(
     join(project, "music-request.json"),
     JSON.stringify({ version: "1.0", id: "minimax-bed", source: "minimax", reason: "publishable pacing", prompt: "calm tech tutorial instrumental", target_duration_seconds: 2 }),
@@ -1437,7 +2127,7 @@ test("acquires minimax music from hex response without leaking api key", async (
     payload = JSON.parse(String(init?.body ?? "{}"));
     return new Response(
       JSON.stringify({
-        data: { audio: Buffer.from("fake audio").toString("hex"), status: 2 },
+        data: { audio: providerAudioHex, status: 2 },
         extra_info: { music_duration: 2000 },
         base_resp: { status_code: 0, status_msg: "success" },
       }),
@@ -1455,6 +2145,46 @@ test("acquires minimax music from hex response without leaking api key", async (
     const manifestText = readFileSync(join(project, "asset-manifest.json"), "utf8");
     expect(manifestText).toContain("minimax");
     expect(manifestText.includes("test-key-placeholder")).toBe(false);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.MINIMAX_API_KEY;
+    else process.env.MINIMAX_API_KEY = oldKey;
+  }
+});
+
+test("music acquisition rejects unprobeable provider bytes before publishing public artifacts", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-clip-music-invalid-"));
+  const project = join(dir, "project");
+  mkdirSync(project, { recursive: true });
+  writeFileSync(
+    join(project, "music-request.json"),
+    JSON.stringify({ version: "1.0", id: "invalid-bed", source: "minimax", reason: "validate provider audio", prompt: "calm bed", target_duration_seconds: 2 }),
+  );
+  const oldFetch = globalThis.fetch;
+  const oldKey = process.env.MINIMAX_API_KEY;
+  process.env.MINIMAX_API_KEY = "test-key-placeholder";
+  globalThis.fetch = (async () => new Response(
+    JSON.stringify({
+      data: { audio: Buffer.from("not audio").toString("hex"), status: 2 },
+      extra_info: { music_duration: 2000 },
+      base_resp: { status_code: 0, status_msg: "success" },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  )) as typeof fetch;
+  try {
+    const acquired = await musicAcquireProject(project);
+    expect(acquired.ok).toBe(false);
+    if (acquired.ok) throw new Error("expected invalid provider audio to fail");
+    expect(acquired.error.message).toContain("could not be probed as audio");
+    expect(existsSync(join(project, "assets", "music", "invalid-bed.mp3"))).toBe(false);
+    expect(existsSync(join(project, "asset-manifest.json"))).toBe(false);
+    expect(existsSync(join(project, "music-acquisition.json"))).toBe(false);
+    expect(existsSync(join(project, "music-review.json"))).toBe(false);
+    const lifecycle = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as {
+      stage_attempts: Record<string, { status: string; failure_code?: string }>;
+    };
+    expect(lifecycle.stage_attempts["project.music-acquire"]?.status).toBe("failed");
+    expect(lifecycle.stage_attempts["project.music-acquire"]?.failure_code).toBe("PROJECT_MUSIC_ACQUIRE_FAILED");
   } finally {
     globalThis.fetch = oldFetch;
     if (oldKey === undefined) delete process.env.MINIMAX_API_KEY;
@@ -1483,7 +2213,7 @@ test("pixabay music 403 explains experimental web retrieval instead of api key s
   }
 });
 
-test("inspect reports caption-only final renders as enriched", () => {
+test("inspect ignores an uncommitted caption-only final render and plan", () => {
   if (!commandExists("ffmpeg")) return;
   const { project } = readyProject(2);
   const cleanRendered = renderProject(project);
@@ -1505,12 +2235,11 @@ test("inspect reports caption-only final renders as enriched", () => {
   const inspected = inspectProject(project);
   expect(inspected.ok).toBe(true);
   if (!inspected.ok) throw new Error(inspected.error.message);
-  expect(inspected.data.output_path.endsWith("final.mp4")).toBe(true);
-  expect(inspected.data.enrichment_applied).toBe(true);
-  expect(inspected.data.enrichment_summary[0]).toBe("captions anchor emphasis=1");
-  expect(inspected.data.inspection_checks[0]?.kind).toBe("caption_emphasis");
-  expect(inspected.data.inspection_frames.length).toBe(1);
-  expect(readFileSync(inspected.data.report_path, "utf8")).toContain("- captions anchor emphasis=1");
+  expect(inspected.data.output_path.endsWith("clean.mp4")).toBe(true);
+  expect(inspected.data.enrichment_applied).toBe(false);
+  expect(inspected.data.enrichment_summary).toEqual([]);
+  expect(inspected.data.inspection_checks).toEqual([]);
+  expect(inspected.data.inspection_frames).toEqual([]);
 });
 
 test("renders a HyperFrames keyword slot when explicitly enabled", () => {
@@ -1655,7 +2384,7 @@ test("source frame request errors do not echo path-like identifiers", () => {
   expect(JSON.stringify(result.error).includes(project)).toBe(false);
 });
 
-test("source frame reruns clean managed files and invalidate old manifests before request failures", () => {
+test("source frame reruns replace managed members and preserve the last checkpoint before request failures", () => {
   const { project } = readyProject(2);
   writeSourceFrameRequest(project, [sourceFrameRequest("frame-a", 0.2), sourceFrameRequest("frame-b", 0.7), sourceFrameRequest("frame-c", 1.2)]);
   expect(sourceFramesProject(project).ok).toBe(true);
@@ -1664,20 +2393,64 @@ test("source frame reruns clean managed files and invalidate old manifests befor
   expect(existsSync(join(project, ".source-frames", "frame-0001.jpg"))).toBe(true);
   expect(existsSync(join(project, ".source-frames", "frame-0002.jpg"))).toBe(false);
   expect(existsSync(join(project, ".source-frames", "frame-0003.jpg"))).toBe(false);
+  const lifecycle = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as { artifacts: Record<string, unknown> };
+  expect(Boolean(lifecycle.artifacts["source-frame:frame-only"])).toBe(true);
+  expect(Boolean(lifecycle.artifacts["source-frame:frame-a"])).toBe(false);
+  expect(Boolean(lifecycle.artifacts["source-frame:frame-b"])).toBe(false);
+  expect(Boolean(lifecycle.artifacts["source-frame:frame-c"])).toBe(false);
+  const committedManifest = readFileSync(join(project, "source-frames.json"), "utf8");
 
   writeFileSync(join(project, "source-frame-request.json"), "{");
   const invalid = sourceFramesProject(project);
   expect(invalid.ok).toBe(false);
   if (invalid.ok) throw new Error("expected invalid request failure");
   expect(invalid.error.code).toBe("SOURCE_FRAME_REQUEST_INVALID");
-  expect(existsSync(join(project, "source-frames.json"))).toBe(false);
+  expect(readFileSync(join(project, "source-frames.json"), "utf8")).toBe(committedManifest);
 
   rmSync(join(project, "source-frame-request.json"), { force: true });
   const missing = sourceFramesProject(project);
   expect(missing.ok).toBe(false);
   if (missing.ok) throw new Error("expected missing request failure");
   expect(missing.error.code).toBe("SOURCE_FRAME_REQUEST_MISSING");
-  expect(existsSync(join(project, "source-frames.json"))).toBe(false);
+  expect(readFileSync(join(project, "source-frames.json"), "utf8")).toBe(committedManifest);
+});
+
+test("source frame publication rolls back frame bytes and JSON when lifecycle commit fails", () => {
+  const { project } = readyProject(2);
+  writeSourceFrameRequest(project, [sourceFrameRequest("frame-old", 0.2)]);
+  expect(sourceFramesProject(project).ok).toBe(true);
+  const framePath = join(project, ".source-frames", "frame-0001.jpg");
+  const sourceFramesPath = join(project, "source-frames.json");
+  const lifecyclePath = join(project, "artifact-manifest.json");
+  const committedFrame = readFileSync(framePath);
+  const committedSourceFrames = readFileSync(sourceFramesPath);
+  const committedLifecycle = readFileSync(lifecyclePath);
+  writeSourceFrameRequest(project, [sourceFrameRequest("frame-new", 1.2)]);
+
+  const bin = mkdtempSync(join(tmpdir(), "koubo-source-frame-commit-failure-"));
+  const fsRuntime = nodeFs as unknown as { chmodSync(path: string, mode: number): void; statSync(path: string): { mode: number } };
+  const ffmpegPath = spawnSync("sh", ["-c", "command -v ffmpeg"], { encoding: "utf8" }).stdout.trim();
+  const ffprobePath = spawnSync("sh", ["-c", "command -v ffprobe"], { encoding: "utf8" }).stdout.trim();
+  writeExecutable(
+    bin,
+    "ffmpeg",
+    `#!/bin/sh\nlast=\nfor arg\ndo\n  last=$arg\ndone\n${JSON.stringify(ffmpegPath)} "$@"\nstatus=$?\nproject=$(dirname "$(dirname "$last")")\nchmod 000 "$project/artifact-manifest.json"\nexit "$status"\n`,
+    fsRuntime,
+  );
+  writeExecutable(bin, "ffprobe", `#!/bin/sh\nexec ${JSON.stringify(ffprobePath)} "$@"\n`, fsRuntime);
+
+  const lifecycleMode = fsRuntime.statSync(lifecyclePath).mode & 0o777;
+  let failed: ReturnType<typeof runSourceFramesInChild>;
+  try {
+    failed = runSourceFramesInChild(project, bin);
+  } finally {
+    fsRuntime.chmodSync(lifecyclePath, lifecycleMode || 0o644);
+  }
+  expect(failed!.ok).toBe(false);
+  expect(failed!.error?.code).toBe("PROJECT_SOURCE_FRAMES_FAILED");
+  expect(readFileSync(framePath)).toEqual(committedFrame);
+  expect(readFileSync(sourceFramesPath)).toEqual(committedSourceFrames);
+  expect(readFileSync(lifecyclePath)).toEqual(committedLifecycle);
 });
 
 test("source frame cleanup failures leave old manifests non-authoritative", () => {
@@ -1846,6 +2619,41 @@ test("completes focus flow from candidates to proposed elements and enrich plan 
   expect(review.data.proposed_elements[0]?.element_type).toBe("registry_block");
   expect(review.data.proposed_elements[0]?.target_rect).toEqual({ x: 0.42, y: 0.32, width: 0.14, height: 0.09 });
 
+  const focusManifest = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as {
+    artifacts: Record<string, { role: string; path: string; fingerprint: string; inputs: Array<{ key: string }> }>;
+    stage_attempts: Record<string, { status: string; inputs: Array<{ key: string }>; output_artifact_keys: string[] }>;
+  };
+  const focusFrameKeys = frames.data.frames.map((frame: { id: string }) => `focus-frame:${frame.id}`);
+  expect(focusManifest.artifacts["focus-candidates"]?.role).toBe("authoritative_input");
+  expect(focusManifest.artifacts["focus-candidates"]?.inputs.map((input) => input.key)).toEqual(["edl"]);
+  expect(focusManifest.artifacts["focus-candidates-view"]?.inputs.map((input) => input.key)).toEqual(["focus-candidates"]);
+  expect(focusManifest.artifacts[focusFrameKeys[0]!]!.inputs.map((input) => input.key)).toEqual(["edl", "focus-candidates", "source:src-001"]);
+  expect(focusManifest.artifacts["focus-frames"]?.inputs.map((input) => input.key)).toEqual(["edl", "focus-candidates", ...focusFrameKeys]);
+  expect(focusManifest.artifacts["focus-grounding"]?.inputs.map((input) => input.key)).toEqual([
+    "focus-candidates",
+    "focus-frames",
+    focusFrameKeys[0],
+  ]);
+  expect(focusManifest.artifacts["focus-review"]?.inputs.map((input) => input.key)).toEqual(["focus-candidates", "focus-frames", "focus-grounding"]);
+  expect(focusManifest.artifacts["focus-review-view"]?.inputs.map((input) => input.key)).toEqual(["focus-candidates", "focus-review"]);
+  expect([
+    focusManifest.stage_attempts["project.focus-candidates"]?.status,
+    focusManifest.stage_attempts["project.focus-frames"]?.status,
+    focusManifest.stage_attempts["project.focus-grounding"]?.status,
+    focusManifest.stage_attempts["project.focus-review"]?.status,
+  ]).toEqual(["success", "success", "success", "success"]);
+  expect(focusManifest.stage_attempts["project.focus-frames"]?.inputs.map((input) => input.key)).toEqual([
+    "edl",
+    "focus-candidates",
+    "source:src-001",
+  ]);
+  expect(focusManifest.stage_attempts["project.focus-grounding"]?.inputs.map((input) => input.key)).toEqual([
+    "focus-candidates",
+    "focus-frames",
+    focusFrameKeys[0],
+    "focus-grounding",
+  ]);
+
   writeFileSync(
     join(project, "enrichment-plan.json"),
     JSON.stringify({
@@ -1867,6 +2675,401 @@ test("completes focus flow from candidates to proposed elements and enrich plan 
   expect(enriched.data.element_usage[1]?.element_id).toBe("cinematic-zoom");
   expect(enriched.data.element_usage[1]?.target_rect).toEqual({ x: 0.42, y: 0.32, width: 0.14, height: 0.09 });
   expect(enriched.data.warnings.some((warning) => warning.includes("coordinate_source_frame"))).toBe(false);
+
+  const successfulGroundingFingerprint = focusManifest.artifacts["focus-grounding"]!.fingerprint;
+  writeFileSync(
+    join(project, "focus-grounding.json"),
+    JSON.stringify({
+      version: "1.0",
+      groundings: [
+        {
+          candidate_id: "focus-candidate-c-001-focus",
+          frame_id: "missing-frame",
+          evidence_note: "invalid current input should leave a failed attempt",
+          confidence: 0.86,
+        },
+      ],
+    }),
+  );
+  const invalidGrounding = focusGroundingProject(project);
+  expect(invalidGrounding.ok).toBe(false);
+  const failedManifest = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as typeof focusManifest;
+  expect(failedManifest.stage_attempts["project.focus-grounding"]?.status).toBe("failed");
+  expect(failedManifest.stage_attempts["project.focus-grounding"]?.output_artifact_keys).toEqual([]);
+  expect(failedManifest.artifacts["focus-grounding"]?.fingerprint).toBe(successfulGroundingFingerprint);
+});
+
+test("artifact lifecycle: focus consumers rebuild an EDL after the edit plan changes", () => {
+  if (!commandExists("ffmpeg")) return;
+  const focusCandidatesProject = requiredProjectCommand("focusCandidatesProject");
+  const { project } = readyProject(2);
+  writeOwnedAnalysis(
+    project,
+    {
+      candidates: [
+        {
+          id: "c-001-recut",
+          source_id: "src-001",
+          start: 0.6,
+          end: 1.2,
+          text: "remove this take",
+          type: "manual",
+          reason: "regression fixture",
+          confidence: 0.99,
+        },
+      ],
+    },
+  );
+
+  const firstRender = renderProject(project);
+  expect(firstRender.ok).toBe(true);
+  if (!firstRender.ok) throw new Error(firstRender.error.message);
+  const edlPath = join(project, "edl.json");
+  const staleEdl = readFileSync(edlPath, "utf8");
+  const editPlanPath = join(project, "edit-plan.json");
+  const editPlan = JSON.parse(readFileSync(editPlanPath, "utf8")) as Record<string, unknown>;
+  writeFileSync(editPlanPath, JSON.stringify({ ...editPlan, decisions: [{ action: "cut", candidate_id: "c-001-recut" }] }));
+  writeFileSync(
+    join(project, "focus-candidates.json"),
+    JSON.stringify({ version: "1.0", source_mode: "screen_recording", presentation_intent: "internal_tutorial", candidates: [] }),
+  );
+
+  const focused = focusCandidatesProject(project);
+  expect(focused.ok).toBe(true);
+  if (!focused.ok) throw new Error(focused.error.message);
+  const rebuiltEdlText = readFileSync(edlPath, "utf8");
+  const rebuiltEdl = JSON.parse(rebuiltEdlText) as { entries: Array<{ start: number; end: number; reason: string }> };
+  expect(rebuiltEdlText === staleEdl).toBe(false);
+  expect(rebuiltEdl.entries.length).toBe(2);
+  expect(rebuiltEdl.entries.map((entry) => entry.reason)).toEqual(["keep before c-001-recut", "keep source range"]);
+});
+
+test("artifact lifecycle: inspect ignores a physical stale final MP4 when the current render result is clean", () => {
+  if (!commandExists("ffmpeg")) return;
+  const { project } = readyProject(2);
+  const rendered = renderProject(project);
+  expect(rendered.ok).toBe(true);
+  if (!rendered.ok) throw new Error(rendered.error.message);
+  const staleFinalPath = join(project, "renders", "final.mp4");
+  copyFileSync(rendered.data.clean_render_path, staleFinalPath);
+
+  const inspected = inspectProject(project);
+  expect(inspected.ok).toBe(true);
+  if (!inspected.ok) throw new Error(inspected.error.message);
+  expect(inspected.data.output_path).toBe(rendered.data.clean_render_path);
+  expect(inspected.data.enrichment_applied).toBe(false);
+  expect(existsSync(join(project, "render-result.json"))).toBe(true);
+});
+
+test("artifact lifecycle: inspect rerun removes retired inspection-frame records", () => {
+  if (!commandExists("ffmpeg")) return;
+  const { project } = readyProject(2);
+  const rendered = renderProject(project);
+  expect(rendered.ok).toBe(true);
+  if (!rendered.ok) throw new Error(rendered.error.message);
+  const firstInspection = inspectProject(project);
+  expect(firstInspection.ok).toBe(true);
+  if (!firstInspection.ok) throw new Error(firstInspection.error.message);
+
+  const retiredFrameRelativePath = ".inspection/retired/old-frame.jpg";
+  const retiredFramePath = join(project, retiredFrameRelativePath);
+  mkdirSync(join(project, ".inspection", "retired"), { recursive: true });
+  writeFileSync(retiredFramePath, "retired frame bytes");
+  const retiredFrameFingerprint = `sha256:${createHash("sha256").update(readFileSync(retiredFramePath)).digest("hex")}`;
+  const lifecyclePath = join(project, "artifact-manifest.json");
+  const lifecycle = JSON.parse(readFileSync(lifecyclePath, "utf8")) as {
+    artifacts: Record<string, Record<string, unknown>>;
+    stage_attempts: Record<string, { output_artifact_keys: string[] }>;
+    updated_at: string;
+  };
+  const renderResultRecord = lifecycle.artifacts["render-result"]!;
+  const retiredKey = "inspection-frame:retired:0";
+  const recordedAt = new Date().toISOString();
+  lifecycle.artifacts[retiredKey] = {
+    key: retiredKey,
+    path: retiredFrameRelativePath,
+    role: "evidence",
+    schema_version: "image/jpeg",
+    fingerprint: retiredFrameFingerprint,
+    file_sha256: retiredFrameFingerprint,
+    authored_by: "cli",
+    produced_by_command: "project.inspect",
+    producer_cli_version: renderResultRecord.producer_cli_version,
+    command_contract_version: "1.0",
+    inputs: [{
+      key: "render-result",
+      schema_version: renderResultRecord.schema_version,
+      fingerprint: renderResultRecord.fingerprint,
+    }],
+    produced_at: recordedAt,
+  };
+  lifecycle.stage_attempts["project.inspect"]!.output_artifact_keys.push(retiredKey);
+  lifecycle.updated_at = recordedAt;
+  writeFileSync(lifecyclePath, `${JSON.stringify(lifecycle, null, 2)}\n`);
+
+  const reinspected = inspectProject(project);
+  expect(reinspected.ok).toBe(true);
+  if (!reinspected.ok) throw new Error(reinspected.error.message);
+  const committed = JSON.parse(readFileSync(lifecyclePath, "utf8")) as {
+    artifacts: Record<string, unknown>;
+    stage_attempts: Record<string, { output_artifact_keys: string[] }>;
+  };
+  expect(Boolean(committed.artifacts[retiredKey])).toBe(false);
+  expect(committed.stage_attempts["project.inspect"]?.output_artifact_keys.includes(retiredKey)).toBe(false);
+});
+
+test("artifact lifecycle: enrichment authority conflicts fail closed without rewriting canonical state", () => {
+  if (!commandExists("ffmpeg")) return;
+
+  const canonicalProject = readyProject(2, "platform").project;
+  const canonicalAssetDir = join(canonicalProject, "assets", "koubo-clip");
+  mkdirSync(canonicalAssetDir, { recursive: true });
+  makeMusic(join(canonicalAssetDir, "handoff.wav"), 2);
+  const canonicalPath = join(canonicalProject, "enrichment-plan.json");
+  const canonicalText = JSON.stringify({
+    version: "1.2",
+    profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor" },
+    captions: { enabled: false, identity: "anchor", emphasis: [] },
+    cards: [],
+    music: [],
+    elements: [],
+  });
+  writeFileSync(canonicalPath, canonicalText);
+  writeFileSync(
+    join(canonicalProject, "asset-usage-plan.json"),
+    JSON.stringify({
+      version: "1.0",
+      music: [
+        {
+          asset_ref: "assets/koubo-clip/handoff.wav",
+          start: 0,
+          end: 1.8,
+          volume: 0.1,
+          duck_original_audio: true,
+          fade_in: 0.1,
+          fade_out: 0.1,
+          purpose: "compatibility handoff",
+        },
+      ],
+      sfx: [],
+      visual_assets: [],
+    }),
+  );
+  const canonicalConflict = enrichPlanProject(canonicalProject, { providerMode: "platform" });
+
+  const duplicateProject = readyProject(2, "platform").project;
+  const duplicateAssetDir = join(duplicateProject, "assets", "koubo-clip");
+  mkdirSync(duplicateAssetDir, { recursive: true });
+  makeMusic(join(duplicateAssetDir, "bed.wav"), 2);
+  makeMusic(join(duplicateAssetDir, "click.wav"), 0.3);
+  const projectMetadataPath = join(duplicateProject, "project.json");
+  const projectMetadata = JSON.parse(readFileSync(projectMetadataPath, "utf8")) as Record<string, unknown>;
+  writeFileSync(
+    projectMetadataPath,
+    JSON.stringify({
+      ...projectMetadata,
+      asset_usage_plan: {
+        music: [
+          {
+            asset_ref: "assets/koubo-clip/bed.wav",
+            start: 0,
+            end: 1.8,
+            volume: 0.1,
+            duck_original_audio: true,
+            fade_in: 0.1,
+            fade_out: 0.1,
+            purpose: "legacy project source",
+          },
+        ],
+        sfx: [],
+        visual_assets: [],
+      },
+    }),
+  );
+  const duplicateEditPlanPath = join(duplicateProject, "edit-plan.json");
+  const duplicateEditPlan = JSON.parse(readFileSync(duplicateEditPlanPath, "utf8")) as Record<string, unknown>;
+  writeFileSync(
+    duplicateEditPlanPath,
+    JSON.stringify({
+      ...duplicateEditPlan,
+      asset_usage_plan: {
+        music: [],
+        sfx: [
+          {
+            asset_ref: "assets/koubo-clip/click.wav",
+            time: 0.7,
+            duration: 0.2,
+            volume: 0.2,
+            fade_seconds: 0,
+            purpose: "legacy edit plan source",
+          },
+        ],
+        visual_assets: [],
+      },
+    }),
+  );
+  const duplicateConflict = enrichPlanProject(duplicateProject, { providerMode: "platform" });
+
+  expect({
+    canonical_ok: canonicalConflict.ok,
+    canonical_code: canonicalConflict.ok ? undefined : canonicalConflict.error.code,
+    canonical_unchanged: readFileSync(canonicalPath, "utf8") === canonicalText,
+    duplicate_ok: duplicateConflict.ok,
+    duplicate_code: duplicateConflict.ok ? undefined : duplicateConflict.error.code,
+    duplicate_did_not_create_canonical: !existsSync(join(duplicateProject, "enrichment-plan.json")),
+  }).toEqual({
+    canonical_ok: false,
+    canonical_code: "ASSET_USAGE_PLAN_CONFLICT",
+    canonical_unchanged: true,
+    duplicate_ok: false,
+    duplicate_code: "ASSET_USAGE_PLAN_CONFLICT",
+    duplicate_did_not_create_canonical: true,
+  });
+});
+
+test("artifact lifecycle: normalized asset usage is consumed, archived, idempotent, and renderable", async () => {
+  if (!commandExists("ffmpeg")) return;
+  const usagePlan = {
+    version: "1.0",
+    music: [
+      {
+        asset_ref: "assets/koubo-clip/bed.wav",
+        start: 0,
+        end: 1.8,
+        volume: 0.1,
+        duck_original_audio: true,
+        fade_in: 0.1,
+        fade_out: 0.1,
+        purpose: "compatibility handoff",
+      },
+    ],
+    sfx: [],
+    visual_assets: [],
+  };
+  const archivedUsageRecords = (project: string) => {
+    const manifest = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as {
+      artifacts: Record<string, { key: string; path: string }>;
+    };
+    return Object.values(manifest.artifacts).filter((record) => record.key.startsWith("asset-usage-plan:"));
+  };
+
+  const ready = readyProject(2, "platform");
+  const standaloneProject = ready.project;
+  const standaloneAssetDir = join(standaloneProject, "assets", "koubo-clip");
+  mkdirSync(standaloneAssetDir, { recursive: true });
+  makeMusic(join(standaloneAssetDir, "bed.wav"), 2);
+  const standaloneUsagePath = join(standaloneProject, "asset-usage-plan.json");
+  writeFileSync(standaloneUsagePath, JSON.stringify(usagePlan));
+
+  const normalizedStandalone = enrichPlanProject(standaloneProject, { providerMode: "platform" });
+  expect(normalizedStandalone.ok).toBe(true);
+  expect(existsSync(standaloneUsagePath)).toBe(false);
+  const standaloneArchives = archivedUsageRecords(standaloneProject);
+  expect(standaloneArchives.length).toBe(1);
+  expect(standaloneArchives[0]?.path.startsWith(".migration/asset-usage-plan/")).toBe(true);
+  expect(existsSync(join(standaloneProject, standaloneArchives[0]!.path))).toBe(true);
+  const secondStandalone = enrichPlanProject(standaloneProject, { providerMode: "platform" });
+  const renderedStandalone = renderProject(standaloneProject, { providerMode: "platform" });
+
+  const embeddedProject = join(nodePath.dirname(standaloneProject), "embedded-project");
+  const createdEmbedded = createProject([ready.source], { projectPath: embeddedProject, providerMode: "platform" });
+  expect(createdEmbedded.ok).toBe(true);
+  writeFileSync(
+    join(embeddedProject, "transcript.json"),
+    JSON.stringify({
+      timing_granularity: "segment",
+      segments: [{ source_id: "src-001", start: 0.1, end: 1.9, text: "hello world" }],
+    }),
+  );
+  expect((await exploreProject(embeddedProject, { asr: "external", providerMode: "platform" })).ok).toBe(true);
+  const embeddedAssetDir = join(embeddedProject, "assets", "koubo-clip");
+  mkdirSync(embeddedAssetDir, { recursive: true });
+  copyFileSync(join(standaloneAssetDir, "bed.wav"), join(embeddedAssetDir, "bed.wav"));
+  writeFileSync(join(embeddedProject, "edit-plan.json"), JSON.stringify({ decisions: [], asset_usage_plan: usagePlan }));
+
+  const normalizedEmbedded = enrichPlanProject(embeddedProject, { providerMode: "platform" });
+  expect(normalizedEmbedded.ok).toBe(true);
+  const consumedEditPlan = JSON.parse(readFileSync(join(embeddedProject, "edit-plan.json"), "utf8")) as Record<string, unknown>;
+  expect("asset_usage_plan" in consumedEditPlan).toBe(false);
+  const embeddedArchives = archivedUsageRecords(embeddedProject);
+  expect(embeddedArchives.length).toBe(1);
+  expect(embeddedArchives[0]?.path.startsWith(".migration/asset-usage-plan/")).toBe(true);
+  expect(existsSync(join(embeddedProject, embeddedArchives[0]!.path))).toBe(true);
+  const secondEmbedded = enrichPlanProject(embeddedProject, { providerMode: "platform" });
+  const renderedEmbedded = renderProject(embeddedProject, { providerMode: "platform" });
+  expect({
+    standalone_second_ok: secondStandalone.ok,
+    standalone_second_error: secondStandalone.ok ? undefined : `${secondStandalone.error.code}: ${secondStandalone.error.message}`,
+    standalone_render_ok: renderedStandalone.ok,
+    standalone_render_error: renderedStandalone.ok ? undefined : `${renderedStandalone.error.code}: ${renderedStandalone.error.message}`,
+    embedded_second_ok: secondEmbedded.ok,
+    embedded_second_error: secondEmbedded.ok ? undefined : `${secondEmbedded.error.code}: ${secondEmbedded.error.message}`,
+    embedded_render_ok: renderedEmbedded.ok,
+    embedded_render_error: renderedEmbedded.ok ? undefined : `${renderedEmbedded.error.code}: ${renderedEmbedded.error.message}`,
+  }).toEqual({
+    standalone_second_ok: true,
+    standalone_second_error: undefined,
+    standalone_render_ok: true,
+    standalone_render_error: undefined,
+    embedded_second_ok: true,
+    embedded_second_error: undefined,
+    embedded_render_ok: true,
+    embedded_render_error: undefined,
+  });
+});
+
+test("artifact lifecycle: failed source-frame regeneration preserves committed manifest and evidence bytes", () => {
+  if (!commandExists("ffmpeg")) return;
+  const { project } = readyProject(2);
+  writeSourceFrameRequest(project, [sourceFrameRequest("committed-a", 0.3), sourceFrameRequest("committed-b", 1.1)]);
+  const first = sourceFramesProject(project);
+  expect(first.ok).toBe(true);
+  if (!first.ok) throw new Error(first.error.message);
+
+  const manifestPath = join(project, "source-frames.json");
+  const committedManifestText = readFileSync(manifestPath, "utf8");
+  const committedManifest = JSON.parse(committedManifestText) as { frames: Array<{ path: string }> };
+  const committedEvidence = new Map(
+    committedManifest.frames.map((frame) => [frame.path, createHash("sha256").update(readFileSync(join(project, frame.path))).digest("hex")]),
+  );
+
+  writeSourceFrameRequest(project, [sourceFrameRequest("replacement", 0.7)]);
+  const fsRuntime = nodeFs as unknown as { chmodSync(path: string, mode: number): void };
+  const failBin = mkdtempSync(join(tmpdir(), "koubo-source-frame-regeneration-fail-"));
+  writeExecutable(failBin, "ffmpeg", "#!/bin/sh\nexit 1\n", fsRuntime);
+  writeExecutable(failBin, "ffprobe", "#!/bin/sh\nprintf '%s\\n' '{\"streams\":[]}'\n", fsRuntime);
+  const failed = runSourceFramesInChild(project, failBin);
+  expect(failed.ok).toBe(false);
+  expect(failed.error?.code).toBe("SOURCE_FRAME_FFMPEG_FAILED");
+
+  expect(readFileSync(manifestPath, "utf8")).toBe(committedManifestText);
+  for (const [path, bytes] of committedEvidence) {
+    expect(existsSync(join(project, path))).toBe(true);
+    expect(createHash("sha256").update(readFileSync(join(project, path))).digest("hex")).toBe(bytes);
+  }
+});
+
+test("artifact lifecycle: a failed rerender preserves the prior render result", () => {
+  if (!commandExists("ffmpeg")) return;
+  const { project } = readyProject(2);
+  const firstRender = renderProject(project);
+  expect(firstRender.ok).toBe(true);
+  if (!firstRender.ok) throw new Error(firstRender.error.message);
+  const renderResultPath = join(project, "render-result.json");
+  const priorRenderResult = existsSync(renderResultPath) ? readFileSync(renderResultPath, "utf8") : undefined;
+  const sources = JSON.parse(readFileSync(join(project, "sources.json"), "utf8")) as { sources: Array<{ project_path: string }> };
+  writeFileSync(join(project, sources.sources[0]!.project_path), "broken media for rerender failure");
+
+  const failedRender = renderProject(project);
+  expect(failedRender.ok).toBe(false);
+  const renderResultAfterFailure = existsSync(renderResultPath) ? readFileSync(renderResultPath, "utf8") : undefined;
+  expect({
+    initial_render_result_committed: priorRenderResult !== undefined,
+    prior_render_result_preserved: renderResultAfterFailure === priorRenderResult,
+  }).toEqual({
+    initial_render_result_committed: true,
+    prior_render_result_preserved: true,
+  });
 });
 
 function sourceFrameRequest(id: string, timeSeconds: number) {
@@ -1936,7 +3139,7 @@ function writeExecutable(dir: string, name: string, content: string, fsRuntime: 
   fsRuntime.chmodSync(path, 0o755);
 }
 
-function projectWithAnalysis(timing: "word" | "segment" | "text-only", language: string | undefined): string {
+async function projectWithAnalysis(timing: "word" | "segment" | "text-only", language: string | undefined): Promise<string> {
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-unsafe-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
@@ -1950,22 +3153,37 @@ function projectWithAnalysis(timing: "word" | "segment" | "text-only", language:
       segments: [{ source_id: "src-001", start: 0, end: 1, text: "嗯" }],
     }),
   );
-  writeFileSync(
-    join(project, "analysis.json"),
-    JSON.stringify({
-      candidates: [{ id: "c-001-filler", source_id: "src-001", start: 0, end: 1, text: "嗯", type: "filler", reason: "test", confidence: 0.9 }],
-    }),
-  );
+  const explored = await exploreProject(project, { asr: "external" });
+  if (!explored.ok) throw new Error(explored.error.message);
+  writeOwnedAnalysis(project, {
+    candidates: [{ id: "c-001-filler", source_id: "src-001", start: 0, end: 1, text: "嗯", type: "filler", reason: "test", confidence: 0.9 }],
+  });
   writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ decisions: [{ action: "cut", candidate_id: "c-001-filler" }] }));
   return project;
 }
 
-function readyProject(duration = 2): { project: string; source: string } {
+function writeOwnedAnalysis(project: string, value: unknown): void {
+  const analysisPath = join(project, "analysis.json");
+  writeFileSync(analysisPath, JSON.stringify(value));
+  const manifestPath = join(project, "artifact-manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    artifacts: Record<string, { fingerprint: string; file_sha256?: string }>;
+    updated_at: string;
+  };
+  const analysis = manifest.artifacts.analysis;
+  if (!analysis) throw new Error("fixture requires explore to register the analysis artifact");
+  analysis.fingerprint = semanticJsonFingerprint(value);
+  analysis.file_sha256 = fileBytesFingerprint(analysisPath);
+  manifest.updated_at = new Date().toISOString();
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+function readyProject(duration = 2, providerMode: "standalone" | "platform" = "standalone"): { project: string; source: string } {
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-enrich-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
   makeSampleVideo(source, duration);
-  createProject([source], { projectPath: project });
+  createProject([source], { projectPath: project, providerMode });
   writeFileSync(
     join(project, "transcript.json"),
     JSON.stringify({

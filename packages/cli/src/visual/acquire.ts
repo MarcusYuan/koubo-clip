@@ -1,7 +1,8 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { extname, join } from "node:path";
+import * as nodeFs from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import {
   type AssetManifestArtifact,
   type AssetManifestEntry,
@@ -14,11 +15,13 @@ import {
   type VisualRequestArtifact,
   type VisualReviewArtifact,
   parseAssetManifest,
+  parseVisualAcquisition,
   parseVisualCandidates,
   parseVisualRequest,
   projectArtifacts,
 } from "../artifacts";
 import { HYPERFRAMES_DEPENDENCIES, type HyperframesDependencySummary, validateHyperframesCdnDependency } from "../hyperframes-catalog";
+import { resolveExistingProjectPath, resolveProjectOutputPath } from "../project-paths";
 
 export type VisualCatalogProvider = {
   id: VisualProvider | "rive";
@@ -72,6 +75,17 @@ type LordiconIcon = {
 const visualRuntimeDependencyIds = new Set(["lottie_web_5_12_2", "dotlottie_web_0_76_0", "gsap_3_14_2", "animejs_3_2_2"]);
 type BinaryBuffer = ReturnType<typeof Buffer.from>;
 const cliOwnedVisualProviders = new Set<VisualProvider>(["iconify", "lordicon"]);
+
+export type PreparedVisualAcquisition = {
+  acquisition: VisualAcquisitionArtifact;
+  asset_manifest: AssetManifestArtifact;
+  stageText(relativePath: string, value: string): string;
+  stageJson(relativePath: string, value: unknown): string;
+  stagedPath(relativePath: string): string;
+  publish(): void;
+  rollback(): void;
+  finalize(): void;
+};
 
 export function buildVisualCatalog(): VisualCatalogArtifact {
   return {
@@ -268,40 +282,191 @@ export function renderVisualCandidatesMarkdown(artifact: VisualCandidatesArtifac
   const rows = artifact.candidates.map((candidate) => {
     const license = candidate.license ? `license=${candidate.license}` : "license=unknown";
     const risk = candidate.source_risk ? ` risk=${candidate.source_risk}` : "";
-    return `- ${candidate.id}: ${candidate.title} (${candidate.provider}/${candidate.asset_type}) ${license}${risk}; renderable=${candidate.renderable ? "yes" : "no"}; ${candidate.reason}`;
+    const preview = candidate.preview_path ? ` preview=${candidate.preview_path};` : "";
+    return `- ${candidate.id}: ${candidate.title} (${candidate.provider}/${candidate.asset_type}) ${license}${risk}; renderable=${candidate.renderable ? "yes" : "no"};${preview} ${candidate.reason}`;
   });
   const warnings = artifact.warnings.map((warning) => `- ${warning}`);
   return `# Visual Candidates\n\n## Candidates\n${rows.join("\n") || "- none"}\n\n## Warnings\n${warnings.join("\n") || "- none"}\n`;
 }
 
 export async function acquireVisualAssets(projectPath: string): Promise<VisualAcquisitionArtifact> {
+  const prepared = await prepareVisualAssets(projectPath);
+  try {
+    prepared.publish();
+    prepared.finalize();
+    return prepared.acquisition;
+  } catch (error) {
+    try {
+      prepared.rollback();
+    } catch {
+      // Preserve the acquisition error; rollback is best effort.
+    }
+    throw error;
+  }
+}
+
+export async function prepareVisualAssets(projectPath: string): Promise<PreparedVisualAcquisition> {
   const request = parseVisualRequest(readJson(join(projectPath, projectArtifacts.visualRequest)));
   const candidates = parseVisualCandidates(readJson(join(projectPath, projectArtifacts.visualCandidates)));
+  const selections = request.requests.map((item) => {
+    if (!item.selected_candidate_id) throw new Error(`${item.id}: selected_candidate_id is required`);
+    const candidate = candidates.candidates.find((entry) => entry.request_id === item.id && entry.id === item.selected_candidate_id);
+    if (!candidate) throw new Error(`${item.id}: selected candidate ${item.selected_candidate_id} was not found for this request`);
+    if (!candidate.renderable) throw new Error(`${item.id}: selected candidate ${candidate.id} is not renderable`);
+    return { item, candidate };
+  });
   const manifestPath = join(projectPath, projectArtifacts.assetManifest);
   const manifest = existsSync(manifestPath) ? parseAssetManifest(readJson(manifestPath)) : { assets: [] };
   const warnings: string[] = [];
   const assets: VisualAcquisitionItem[] = [];
+  const stagingId = createHash("sha256").update(`${Date.now()}-${Math.random()}`).digest("hex").slice(0, 16);
+  const stagingRoot = resolveProjectOutputPath(projectPath, `.visual-acquire-staging-${stagingId}`, "visual acquisition staging directory");
+  const stagedFiles = new Map<string, StagedVisualFile>();
+  let state: "prepared" | "published" | "finalized" | "rolled_back" = "prepared";
+  const renameFile = (nodeFs as unknown as { renameSync(source: string, target: string): void }).renameSync;
 
-  mkdirSync(join(projectPath, "assets", "icons"), { recursive: true });
-  mkdirSync(join(projectPath, "assets", "lottie"), { recursive: true });
-  mkdirSync(join(projectPath, "assets", "visuals"), { recursive: true });
-  mkdirSync(join(projectPath, "assets", "images"), { recursive: true });
-
-  for (const item of request.requests) {
-    const candidate = selectCandidate(item.selected_candidate_id, candidates.candidates.filter((entry) => entry.request_id === item.id));
-    if (!candidate) {
-      warnings.push(`${item.id}: no renderable visual candidate selected`);
-      continue;
+  const normalizeRelativePath = (value: string): string => {
+    if (!value || resolve(value) === value) throw new Error(`visual staging path must be project-relative: ${value}`);
+    const projectRoot = resolve(projectPath);
+    const target = resolve(projectRoot, value);
+    if (target !== projectRoot && !target.startsWith(`${projectRoot}${sep}`)) {
+      throw new Error(`visual staging path escapes project: ${value}`);
     }
-    const acquired = await acquireCandidate(projectPath, item, candidate);
-    assets.push(acquired.item);
-    upsertAsset(manifest, acquired.asset);
-    warnings.push(...acquired.item.warnings);
-  }
+    return relative(projectRoot, target);
+  };
+  const stageContents = (relativePath: string, value: string | Uint8Array): string => {
+    if (state !== "prepared") throw new Error(`visual acquisition is ${state}`);
+    const normalized = normalizeRelativePath(relativePath);
+    const targetPath = resolveProjectOutputPath(projectPath, normalized, `visual acquisition output ${normalized}`);
+    const staged = join(stagingRoot, "files", normalized);
+    mkdirSync(dirname(staged), { recursive: true });
+    writeFileSync(staged, value);
+    stagedFiles.set(normalized, {
+      relative_path: normalized,
+      staged_path: staged,
+      target_path: targetPath,
+      backup_path: join(stagingRoot, "backups", normalized),
+      backup_created: false,
+      published: false,
+    });
+    return staged;
+  };
+  const cleanupStaging = () => {
+    try {
+      rmSync(stagingRoot, { recursive: true, force: true });
+    } catch {
+      // A private staging orphan is safe to ignore; public targets remain authoritative.
+    }
+  };
+  const rollbackPublished = () => {
+    const files = [...stagedFiles.values()].reverse();
+    let rollbackError: unknown;
+    for (const file of files) {
+      try {
+        if (file.published && existsSync(file.target_path)) rmSync(file.target_path, { force: true });
+        if (file.backup_created && existsSync(file.backup_path)) {
+          mkdirSync(dirname(file.target_path), { recursive: true });
+          renameFile(file.backup_path, file.target_path);
+        }
+      } catch (error) {
+        rollbackError ??= error;
+      }
+    }
+    cleanupStaging();
+    state = "rolled_back";
+    if (rollbackError) throw rollbackError;
+  };
 
-  writeJson(manifestPath, manifest);
-  return { version: "1.0", assets, warnings };
+  try {
+    for (const { item, candidate } of selections) {
+      const acquired = await acquireCandidate(projectPath, item, candidate, stageContents);
+      assets.push(acquired.item);
+      upsertAsset(manifest, acquired.asset);
+      warnings.push(...acquired.item.warnings);
+    }
+
+    const acquisition = parseVisualAcquisition({ version: "1.0", assets, warnings });
+    const stagedManifestPath = stageContents(projectArtifacts.assetManifest, `${JSON.stringify(manifest, null, 2)}\n`);
+    const assetManifest = parseAssetManifest(readJson(stagedManifestPath));
+
+    return {
+      acquisition,
+      asset_manifest: assetManifest,
+      stageText(relativePath, value) {
+        return stageContents(relativePath, value);
+      },
+      stageJson(relativePath, value) {
+        const staged = stageContents(relativePath, `${JSON.stringify(value, null, 2)}\n`);
+        readJson(staged);
+        return staged;
+      },
+      stagedPath(relativePath) {
+        const normalized = normalizeRelativePath(relativePath);
+        const staged = stagedFiles.get(normalized);
+        if (!staged) throw new Error(`visual acquisition has no staged file: ${relativePath}`);
+        return staged.staged_path;
+      },
+      publish() {
+        if (state !== "prepared") throw new Error(`visual acquisition is ${state}`);
+        const files = [...stagedFiles.values()].sort((left, right) => {
+          if (left.relative_path === projectArtifacts.assetManifest) return 1;
+          if (right.relative_path === projectArtifacts.assetManifest) return -1;
+          return left.relative_path.localeCompare(right.relative_path);
+        });
+        try {
+          for (const file of files) {
+            const safeTargetPath = resolveProjectOutputPath(projectPath, file.relative_path, `visual acquisition output ${file.relative_path}`);
+            if (safeTargetPath !== file.target_path) throw new Error(`visual acquisition target changed: ${file.relative_path}`);
+            resolveExistingProjectPath(projectPath, relative(projectPath, file.staged_path), `visual acquisition staged file ${file.relative_path}`);
+            mkdirSync(dirname(file.target_path), { recursive: true });
+            if (existsSync(file.target_path)) {
+              mkdirSync(dirname(file.backup_path), { recursive: true });
+              renameFile(file.target_path, file.backup_path);
+              file.backup_created = true;
+            }
+            renameFile(file.staged_path, file.target_path);
+            file.published = true;
+          }
+          state = "published";
+        } catch (error) {
+          try {
+            rollbackPublished();
+          } catch {
+            // Preserve the publish error; rollback is best effort.
+          }
+          throw error;
+        }
+      },
+      rollback() {
+        if (state === "rolled_back" || state === "finalized") return;
+        if (state === "prepared") {
+          cleanupStaging();
+          state = "rolled_back";
+          return;
+        }
+        rollbackPublished();
+      },
+      finalize() {
+        if (state !== "published") throw new Error(`visual acquisition is ${state}`);
+        state = "finalized";
+        cleanupStaging();
+      },
+    };
+  } catch (error) {
+    cleanupStaging();
+    state = "rolled_back";
+    throw error;
+  }
 }
+
+type StagedVisualFile = {
+  relative_path: string;
+  staged_path: string;
+  target_path: string;
+  backup_path: string;
+  backup_created: boolean;
+  published: boolean;
+};
 
 export function buildVisualReview(acquisition: VisualAcquisitionArtifact, request?: VisualRequestArtifact): VisualReviewArtifact {
   const requests = new Map((request?.requests ?? []).map((item) => [item.id, item]));
@@ -318,6 +483,7 @@ export function buildVisualReview(acquisition: VisualAcquisitionArtifact, reques
       license: asset.license,
       runtime_dependencies: [...asset.runtime_dependencies],
       usage_reason: requests.get(asset.request_id)?.reason ?? "visual acquisition",
+      selection_reason: requests.get(asset.request_id)?.selection_reason,
       warnings: [...asset.warnings],
     })),
     warnings: [...acquisition.warnings],
@@ -328,7 +494,8 @@ export function renderVisualReviewMarkdown(review: VisualReviewArtifact): string
   const rows = review.items.map((item) => {
     const deps = item.runtime_dependencies.length > 0 ? ` deps=${item.runtime_dependencies.join(",")}` : "";
     const license = item.license ? ` license=${item.license}` : " license=unknown";
-    return `- ${item.asset_id}: ${item.path} (${item.provider}/${item.asset_type})${license}${deps}; ${item.usage_reason}`;
+    const selection = item.selection_reason ? `; selection=${item.selection_reason}` : "";
+    return `- ${item.asset_id}: ${item.path} (${item.provider}/${item.asset_type})${license}${deps}; usage=${item.usage_reason}${selection}`;
   });
   const warnings = review.warnings.map((warning) => `- ${warning}`);
   return `# Visual Review\n\n## Assets\n${rows.join("\n") || "- none"}\n\n## Warnings\n${warnings.join("\n") || "- none"}\n`;
@@ -474,6 +641,7 @@ async function acquireCandidate(
   projectPath: string,
   request: VisualRequestArtifact["requests"][number],
   candidate: VisualCandidate,
+  stageContents: (relativePath: string, value: string | Uint8Array) => string,
 ): Promise<{ item: VisualAcquisitionItem; asset: AssetManifestEntry }> {
   if (!candidate.renderable) throw new Error(`${candidate.id} is not renderable`);
   if (candidate.cost && !/^free|unknown$/i.test(candidate.cost) && !candidate.license) {
@@ -486,14 +654,14 @@ async function acquireCandidate(
   const ext = extensionFor(candidate, bytes);
   const assetId = `visual-${safeId(request.id)}`;
   const relativePath = join(directoryFor(candidate.asset_type), `${assetId}${ext}`);
-  const destination = join(projectPath, relativePath);
-  mkdirSync(join(projectPath, directoryFor(candidate.asset_type)), { recursive: true });
+  let stagedPath: string;
   if (ext === ".svg") {
-    writeFileSync(destination, sanitizeSvg(bytes.toString("utf8"), candidate.id));
+    stagedPath = stageContents(relativePath, sanitizeSvg(bytes.toString("utf8"), candidate.id));
   } else {
-    writeFileSync(destination, bytes);
+    stagedPath = stageContents(relativePath, bytes);
   }
-  const hash = sha256(readFileSync(destination));
+  validateStagedAsset(stagedPath, ext, candidate.id);
+  const hash = sha256(readFileSync(stagedPath));
   const runtimeDependencies = runtimeDependenciesFor(candidate, ext);
   const acquiredAt = new Date().toISOString();
   return {
@@ -536,10 +704,26 @@ async function acquireCandidate(
   };
 }
 
+function validateStagedAsset(path: string, extension: string, candidateId: string): void {
+  const bytes = readFileSync(path);
+  if (bytes.byteLength === 0) throw new Error(`${candidateId} produced an empty asset`);
+  if (extension === ".json") {
+    try {
+      JSON.parse(Buffer.from(bytes).toString("utf8"));
+    } catch {
+      throw new Error(`${candidateId} produced invalid JSON`);
+    }
+  }
+}
+
 async function candidateBytes(projectPath: string, candidate: VisualCandidate): Promise<BinaryBuffer> {
   if (candidate.local_path) {
-    const source = join(projectPath, candidate.local_path);
-    if (!existsSync(source)) throw new Error(`${candidate.id}.local_path is missing: ${candidate.local_path}`);
+    let source: string;
+    try {
+      source = resolveExistingProjectPath(projectPath, candidate.local_path, `${candidate.id}.local_path ${candidate.local_path}`);
+    } catch (error) {
+      throw new Error(`${candidate.id}.local_path must be a project-local file: ${errorMessage(error)}`);
+    }
     const temp = readFileSync(source);
     return Buffer.from(temp);
   }
@@ -571,11 +755,6 @@ function runtimeDependenciesFor(candidate: VisualCandidate, ext: string): string
   if ((candidate.asset_type === "animated_icon" || candidate.asset_type === "lottie" || candidate.asset_type === "sticker") && ext === ".json") dependencies.add("lottie_web_5_12_2");
   if (ext === ".lottie") dependencies.add("dotlottie_web_0_76_0");
   return [...dependencies];
-}
-
-function selectCandidate(selectedCandidateId: string | undefined, candidates: VisualCandidate[]): VisualCandidate | undefined {
-  if (selectedCandidateId) return candidates.find((candidate) => candidate.id === selectedCandidateId);
-  return candidates.find((candidate) => candidate.recommended && candidate.renderable) ?? candidates.find((candidate) => candidate.renderable);
 }
 
 function defaultProvidersFor(type: VisualAssetType): VisualProvider[] {
@@ -616,8 +795,4 @@ function errorMessage(error: unknown): string {
 
 function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, "utf8"));
-}
-
-function writeJson(path: string, value: unknown) {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }

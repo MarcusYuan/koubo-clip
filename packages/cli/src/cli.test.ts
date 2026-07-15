@@ -2,15 +2,19 @@ import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { main } from "./cli";
 import { createProject } from "./project";
+
+const packageVersion = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../../package.json"), "utf8")).version;
 
 test("prints help", async () => {
   let output = "";
   const code = await main(["--help"], { stdout: (text) => (output = text) });
   expect(code).toBe(0);
   expect(output).toContain("koubo-clip doctor");
+  expect(output).toContain("koubo-clip capabilities --json");
   expect(output).toContain("skills path");
   expect(output).toContain("skills install --target codex|claude|hermes");
   expect(output).toContain("project source-frames <project>");
@@ -18,6 +22,58 @@ test("prints help", async () => {
   expect(output).toContain("project music-catalog");
   expect(output).toContain("project visual-catalog");
   expect(output).toContain("project enrich-plan");
+});
+
+test("prints the package version without loading provider environment", async () => {
+  const previousCwd = process.cwd();
+  const old = process.env.MINIMAX_API_KEY;
+  delete process.env.MINIMAX_API_KEY;
+  const dir = mkdtempSync(join(tmpdir(), "koubo-version-env-"));
+  writeFileSync(join(dir, ".env"), "MINIMAX_API_KEY=must-not-load-for-version\n");
+  process.chdir(dir);
+  try {
+    let output = "";
+    const code = await main(["--version"], { stdout: (text) => (output = text) });
+    expect(code).toBe(0);
+    expect(output).toBe(packageVersion);
+    expect(process.env.MINIMAX_API_KEY).toBe(undefined);
+  } finally {
+    process.chdir(previousCwd);
+    if (old === undefined) delete process.env.MINIMAX_API_KEY;
+    else process.env.MINIMAX_API_KEY = old;
+  }
+});
+
+test("capabilities reports stable software contracts without probing or loading secrets", async () => {
+  const previousCwd = process.cwd();
+  const old = process.env.LORDICON_API_KEY;
+  delete process.env.LORDICON_API_KEY;
+  const dir = mkdtempSync(join(tmpdir(), "koubo-capabilities-env-"));
+  writeFileSync(join(dir, ".env"), "LORDICON_API_KEY=must-not-load-for-capabilities\n");
+  process.chdir(dir);
+  try {
+    let output = "";
+    const code = await main(["capabilities", "--json"], { stdout: (text) => (output = text) });
+    expect(code).toBe(0);
+    expect(process.env.LORDICON_API_KEY).toBe(undefined);
+    expect(output.includes("must-not-load-for-capabilities")).toBe(false);
+    const json = JSON.parse(output);
+    expect(json.contract_version).toBe("1.0");
+    expect(json.cli_version).toBe(packageVersion);
+    expect(json.project_commands).toContain("status");
+    expect(json.features.structured_project_status).toBe(true);
+    expect(json.features.render_result).toBe(true);
+    expect(json.features.structured_inspection).toBe(true);
+    expect(json.provider_modes.standalone.providers).toBe("cli-managed");
+    expect(json.provider_modes.platform.providers).toBe("host-managed");
+    expect(json.provider_modes.standalone.artifact_contract).toBe("shared");
+    expect(json.artifact_schema_versions["artifact-manifest.json"]).toBe("1.0");
+    expect(json.error_codes).toContain("ASSET_USAGE_PLAN_CONFLICT");
+  } finally {
+    process.chdir(previousCwd);
+    if (old === undefined) delete process.env.LORDICON_API_KEY;
+    else process.env.LORDICON_API_KEY = old;
+  }
 });
 
 test("prints project help before requiring a project path", async () => {
@@ -227,6 +283,25 @@ test("project command errors stay json", async () => {
   const code = await main(["project", "explore", "demo", "--asr", "wat"], { stderr: (text) => (error = text) });
   expect(code).toBe(1);
   expect(JSON.parse(error).error.code).toBe("PROJECT_COMMAND_FAILED");
+});
+
+test("project status is routed as a read-only public command", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-cli-status-"));
+  const source = join(dir, "source.mp4");
+  const project = join(dir, "project");
+  writeFileSync(source, "status fixture bytes");
+  const created = createProject([source], { projectPath: project, providerMode: "platform" });
+  if (!created.ok) throw new Error(created.error.message);
+  const manifestPath = join(project, "artifact-manifest.json");
+  const before = readFileSync(manifestPath, "utf8");
+  let output = "";
+  const code = await main(["project", "status", project, "--json"], { stdout: (text) => (output = text) });
+  expect(code).toBe(0);
+  const json = JSON.parse(output);
+  expect(json.command).toBe("project.status");
+  expect(json.data.manifest_state).toBe("tracked");
+  expect(json.data.provider_execution_mode).toBe("platform");
+  expect(readFileSync(manifestPath, "utf8")).toBe(before);
 });
 
 test("source-frames reports a portable missing request error", async () => {

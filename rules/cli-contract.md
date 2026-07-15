@@ -6,7 +6,9 @@
 
 ## CLI 负责
 
+- `koubo-clip --version` 和稳定、secret-free 的 `capabilities --json` 软件合同。
 - `koubo-clip doctor` 环境检查。
+- CLI 独占写入的公开 `artifact-manifest.json`、只读 `project status --json`、artifact lineage 与 stage attempts。
 - Project creation 和 canonical output directories。
 - Provider execution mode handling：`standalone` 和 `platform`。
 - FFmpeg/ffprobe probing 和 media metadata。
@@ -29,7 +31,7 @@
 - 从 transcript timings 生成 subtitles。
 - Deterministic render assembly：cuts、fades、embedded captions、registry elements、SFX、music mix，以及 v1.1 兼容 card templates。
 - 支持 visual enrichment 的 HyperFrames single-composition recut rendering。
-- Artifact inspection 和 report generation。
+- Commit-last render、`render-result.json`、structured `inspection.json` 和派生 report generation。
 - 通过 JSON support commands 向 skills 和 agents 暴露 CLI-owned facts。
 
 ## Provider Execution Mode
@@ -71,8 +73,11 @@ koubo-clip project create <video> --provider-mode platform
 具体 flags 可以演进，但 command families 应保持稳定：
 
 ```bash
+koubo-clip --version
+koubo-clip capabilities --json
 koubo-clip doctor
 koubo-clip project create <video>
+koubo-clip project status <project> --json
 koubo-clip project explore <project> --asr auto
 koubo-clip project source-frames <project>
 koubo-clip project review <project>
@@ -94,7 +99,7 @@ koubo-clip project inspect <project>
 koubo-clip generate <video>
 ```
 
-Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`project source-frames` 校验 `source-frame-request.json`，按 request 顺序抽取 source-local JPEG 并返回 manifest path、数量、总 byte size 和稳定 warnings；`project proposal` 校验 `production-proposal.json` 并生成用户确认 markdown，但不生成执行 artifacts；`project element-catalog` 返回完整 vendored HyperFrames 元素目录；`project focus-candidates` 校验 normalized semantic intents、candidate element types 和所需证据；`project focus-frames` 把 cleaned output-timeline candidate timing 经 EDL 映射为 source-local frame evidence；`project focus-grounding` 返回 coordinates 与 evidence 的绑定校验结果；`project focus-review` 返回 `proposed_elements[]`；`project enrich-plan` 返回 `source_mode`、`element_usage[]`、`qa_checks[]` 和 `warnings[]`；`project inspect` 在已知时返回 `source_mode`、`element_usage[]`、`inspection_checks[]`，并为 visual cards/elements 返回基于 final output timeline 的兼容 `inspection_frames[]`。
+Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`capabilities` 描述命令、schema、feature flags、provider-mode 语义和 render/inspect 所需 artifact keys，不探测当前机器；`project status` 只读返回 artifact/stage 状态、blockers、remediation、next commands、canonical deliverable 和最后 checkpoint。`project source-frames` 校验 `source-frame-request.json`，按 request 顺序抽取 source-local JPEG 并返回 manifest path、数量、总 byte size 和稳定 warnings；`project proposal` 校验 `production-proposal.json` 并生成用户确认 markdown，但不生成执行 artifacts；`project element-catalog` 返回完整 vendored HyperFrames 元素目录；`project focus-candidates` 校验 normalized semantic intents、candidate element types 和所需证据；`project focus-frames` 把 cleaned output-timeline candidate timing 经 EDL 映射为 source-local frame evidence；`project focus-grounding` 返回 coordinates 与 evidence 的绑定校验结果；`project focus-review` 返回 `proposed_elements[]`；`project enrich-plan` 返回 `source_mode`、`element_usage[]`、`qa_checks[]` 和 `warnings[]`；`project inspect` 只消费 current render result 的 canonical output，在已知时返回 `source_mode`、`element_usage[]`、`inspection_checks[]`，并为 visual cards/elements 返回基于 final output timeline 的兼容 `inspection_frames[]`。
 
 ## Source Frames 合同
 
@@ -103,7 +108,7 @@ Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`p
 - Source path 按字符串安全、realpath containment、regular file 和 read access 的顺序校验。URL、绝对路径、`..`、缺失/不可读文件和解析到 project 外部的 symlink 都被拒绝。
 - 图片按固定三档编码：最长边 1280/`q:v 4`、最长边 1280/`q:v 6`、最长边 960/`q:v 6`；不放大小图。只有有效 JPEG 超过单图上限时才进入下一档。
 - ffprobe 必须确认首个视频流是 `mjpeg` 且尺寸为正并不超过当前档位。单图最多 `1_500_000` bytes，批次最多 `30_000_000` bytes；manifest 记录 size 和 SHA-256。
-- V0 使用 delete-first，不引入 atomic staging 或 request hash。在正常可写 filesystem 上，重跑先使旧 manifest 失效并清理本命令管理的 `.source-frames/`，全部 request 成功且 batch size 合规后才最后写 `source-frames.json`。Host 只可在最近一次 `project source-frames` 返回成功后把 manifest 视为 authoritative。Cleanup 本身因 filesystem 权限失败时旧文件可能物理残留，但命令返回 `PROJECT_SOURCE_FRAMES_FAILED`，host 必须忽略该残留 manifest。
+- Source-frame writer 必须 commit-last：先完成 request/source 校验，在 managed staging path 生成并验证全部 JPEG、batch size 和 SHA-256，再原子替换公共 `.source-frames/` 与 `source-frames.json`，最后提交 artifact manifest success。失败不得先删除或半覆盖旧 evidence；partial staging 可以保留诊断，但不得标为 current。Host 只使用 `project status` 的 lineage 状态，不按文件残留判断权威性。
 - 完全重复的 `source_id + time_seconds` 不去重，仍按 request 顺序抽取；warning 固定为 `SOURCE_FRAME_DUPLICATE_TIME: <currentId> duplicates <firstId> at <sourceId>@<time_seconds>s`，同一 key 始终引用首次出现的 id。
 - Request 和 manifest 只接受合同声明的结构化字段，未知字段不能夹带额外 path/URL/provider/token metadata；artifact paths 使用 POSIX project-relative path。`transcript_quote` 和 `reason` 只做 trim 后非空校验，不扫描其文本内容，正常台词或理由可以包含 URL。Warnings、errors 和日志不得泄漏 project/source 绝对路径、provider key 或 raw provider payload。命令结果的 `data.project_path` 是保留现有 CLI 兼容性的唯一例外。
 - Source frames 在 ASR/explore 后、制作方案前生成，只是只读素材理解证据。它们不读取 EDL、不做 output-timeline 映射，也不替代确认后的 focus evidence 或 render 后 inspection frames。
@@ -125,8 +130,9 @@ Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`p
 - 可 render 的 EDL 必须先校验再 render。
 - Enrichment elements/cards/music 必须在 final render 前按 post-cut output timeline 校验。
 - `enrichment-plan.json` v1.2 包含 `profile` 和 `elements[]`；`profile.source_mode` 控制 `talking_head_avatar`、`screen_recording` 或 `mixed` 默认值。`elements[].element_type` 可以是 `visual_asset`，但必须引用已通过 visual acquisition/review 或 manifest provenance 校验的本地 asset。v1.1 `captions/cards/music` 与 legacy v1.0 `slots[]` 仅作为兼容输入。
+- `enrichment-plan.json` 是唯一 canonical visual/audio usage plan。新简化交接只能写独立 `asset-usage-plan.json`；旧 `project.json.asset_usage_plan` / `edit-plan.json.asset_usage_plan` 只作为一次性迁移输入。`project enrich-plan` 校验后物化 canonical plan 并消费或归档 active compatibility input；render 只读取 current canonical plan。Canonical 与任一 compatibility source 同时存在、或多个 compatibility sources 同时存在时，以 `ASSET_USAGE_PLAN_CONFLICT` fail closed，不隐式 merge。
 - Elements/cards 可以包含 normalized `target_rect` 和 `anchor_point`；CLI 校验坐标并保留到 `storyboard.json`。对 screen recordings，只要使用这些字段，就必须同时提供 `coordinate_source_frame` 和可追溯的 frame evidence；没有 grounding 就失败。
-- `storyboard.json` 由 CLI 从已校验 artifacts 物化；skills 不能手写它作为事实来源。`storyboard.json.qa_checks[]` 同时是合成检查清单，inspect 必须优先按它抽帧和报告；不要新增独立 `inspection-plan.json`。
+- `storyboard.json` 由 CLI 从已校验 artifacts 物化；skills 不能手写它作为事实来源。它只有 lineage current 且被本次 `render-result.json.inputs[]` 绑定时，才是该次 enriched render 的 executable 和 QA checklist。Inspect 必须先验证 current render result 与 canonical output，再使用该结果绑定的 storyboard checks 抽帧和报告；不要新增独立 `inspection-plan.json`。
 - 缺失 HyperFrames 是需要 registry/caption visual recut plans 的 blocker；不要静默替换 renderer 或生成假 final。
 - Pure music/SFX-only enrichment 可以不依赖 HyperFrames，直接使用 FFmpeg。
 - Music acquisition 可以联网；render assembly 不可以联网。MiniMax、Freesound、Pixabay 等 provider output 必须先下载或解码为 `assets/music/*`，再通过 `asset-manifest.json` 和 `enrichment-plan.music[]` 使用。
@@ -162,4 +168,4 @@ CLI failures 应使用稳定 code。Provider mode 相关 blocker 至少包含 `c
 - `SOURCE_FRAME_IMAGE_INVALID`: ffprobe、JPEG codec、尺寸、stat 或 hash 校验失败。
 - `SOURCE_FRAME_IMAGE_TOO_LARGE`: 最后一档 JPEG 仍超过单图上限。
 - `SOURCE_FRAME_BATCH_TOO_LARGE`: 合规 JPEG 总量超过批次上限。
-- `PROJECT_SOURCE_FRAMES_FAILED`: cleanup、directory preparation 或 manifest write 等未预期命令失败；message 固定为 `source frames command failed`，不得传播包含真实路径的底层错误。
+- `PROJECT_SOURCE_FRAMES_FAILED`: staging/directory preparation、public artifact replacement 或 manifest commit 等未预期命令失败；message 固定为 `source frames command failed`，不得传播包含真实路径的底层错误。

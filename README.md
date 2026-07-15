@@ -60,17 +60,40 @@ raw talking-head footage
   -> explore: transcription, media probing, material analysis
   -> source-frames: sample semantic evidence on the source timeline
   -> review: cleanup candidates and risk review
-  -> proposal: cuts, captions, visuals, music, and SFX plan
-  -> user confirmation
+  -> proposal: 2-4 complete options, each with direction, edit execution, and asset needs
+  -> user confirms one option exactly once
+  -> confirmed edit plan + selection fingerprint
   -> visual/music/focus artifacts: acquire or import local assets
-  -> enrich-plan: validate the final render plan
-  -> render: local MP4 rendering
-  -> inspect: frame sampling and artifact checks
+  -> enrich-plan: validate the single canonical render plan
+  -> render-result: render locally and register the canonical MP4
+  -> inspection: frame sampling, artifact checks, and report
 ```
 
 Before the proposal, the agent may select up to 20 source times from the transcript and material report, and the CLI creates project-local JPEGs for a vision-capable host to understand the original footage. These read-only source frames do not imply user approval. Before confirmation, koubo-clip does not create the edit plan, focus/visual/music execution artifacts, or a render. A standalone workflow without vision may explicitly mark the omission and continue transcript-only; missing platform vision is a host-workflow blocker. The frame-extraction command itself never calls a vision model or provider.
 
-The render step only consumes files or stable references already landed in the current project directory. Provider URLs, temporary download links, and API keys are not valid final render inputs.
+`project proposal --json` returns a proposal fingerprint and selection fingerprints keyed by option id. After the user confirms, `edit-plan.json` binds that decision with `confirmed_option_id` and the matching fingerprint. Changing the selected option makes downstream artifacts explicitly stale. The EDL is a CLI-derived checkpoint; when a consumer finds it stale and the authoritative inputs are complete, the same deterministic compiler rebuilds it automatically.
+
+Render only consumes files or stable references already landed in the current project and the current canonical `enrichment-plan.json`. A simplified platform handoff may write standalone `asset-usage-plan.json`, but `project enrich-plan` must normalize it once before render. It is never a direct render input and is never implicitly merged with canonical or other legacy usage sources. Provider URLs, temporary download links, and API keys are not valid final render inputs.
+
+## Artifact State And Recovery
+
+Each project has a CLI-owned `artifact-manifest.json` that records artifact roles, schemas, fingerprints, direct input lineage, and stage attempts. A file's existence does not prove success. Artifact state is `missing`, `pending_validation`, `current`, `stale`, or `invalid`.
+
+`standalone` and `platform` share the same artifact keys, lineage, and status contract. Only provider execution differs: local CLI versus host/platform. In both modes, results must first become validated project artifacts.
+
+Hosts and agents use these public commands to discover and resume the workflow:
+
+```bash
+koubo-clip --version
+koubo-clip capabilities --json
+koubo-clip project status <project> --json
+```
+
+`capabilities` describes supported commands, schemas, feature flags, and provider-mode semantics; it does not probe the current machine. Environment checks remain the job of `doctor`. Read-only `project status` returns artifact/stage state, blockers, remediation, next commands, exact render inputs, the canonical deliverable, and the last successful checkpoint. Do not scan the directory, compare mtimes, or infer state from Markdown, a storyboard, or the presence of `final.mp4`.
+
+A project without a manifest is reported as `legacy_untracked`: structurally valid external authoritative inputs become `pending_validation`, while old derived results whose lineage cannot be proven are `stale` with `LINEAGE_UNPROVEN`. Follow the validator or consumer returned by status to establish new lineage incrementally; the source directory does not need to be rebuilt.
+
+Render success is represented by current `render-result.json`, whose `canonical_output_key` explicitly selects the clean or final MP4. Inspect checks only that output and writes current `inspection.json`. `report.md` is a rebuildable human view derived from inspection; its absence does not invalidate otherwise-current machine completion.
 
 ## Current Capabilities
 
@@ -79,7 +102,7 @@ The render step only consumes files or stable references already landed in the c
 - Visual enrichment: supports icons, animated icons, images, B-roll, UI components, templates, transparent annotations, and HyperFrames elements.
 - Audio: supports local music, MiniMax, Freesound, Pixabay, low-volume ducking, and SFX.
 - Composition: uses HyperFrames visual recut and FFmpeg to assemble the final MP4.
-- Inspection: uses storyboard QA, inspection frames, and reports to check output.
+- Inspection: uses structured render results, inspection artifacts, storyboard QA, inspection frames, and reports to check output.
 
 Some visual and music capabilities depend on network access, API keys, user-provided files, or host-agent MCP handoff. The CLI imports confirmed assets into the project and records source, license, hash, and warnings.
 
@@ -89,6 +112,8 @@ npm install:
 
 ```bash
 npm install -g koubo-clip
+koubo-clip --version
+koubo-clip capabilities --json
 koubo-clip doctor
 koubo-clip skills install --target codex
 ```
@@ -98,7 +123,7 @@ Then give the video to an agent with the installed skill and ask it to create th
 ```text
 Use koubo-clip to process ./raw.mp4.
 Analyze the material first and give me a production proposal.
-After I confirm, write the edit plan and visual/music artifacts, render final.mp4, and inspect the result.
+I will confirm one complete option; then write the fingerprint-bound edit plan and visual/music artifacts, render the canonical MP4, and inspect it.
 ```
 
 For source development:
@@ -121,10 +146,10 @@ koubo-clip project review koubo-clips/raw
 After `review`, the CLI does not generate a production plan as a black box. The agent or user must write `production-proposal.json` first, then run:
 
 ```bash
-koubo-clip project proposal koubo-clips/raw
+koubo-clip project proposal koubo-clips/raw --json
 ```
 
-`project proposal` validates `production-proposal.json` and writes `production-proposal.md`. After confirming the plan, continue by writing `edit-plan.json`, visual/music artifacts, and `enrichment-plan.json`, then run render/inspect.
+`project proposal --json` validates `production-proposal.json`, writes `production-proposal.md`, and returns a selection fingerprint for every option. Each option already combines its business direction, edit execution plan, and asset requirements, so the user confirms exactly once. After confirmation, write the option id and fingerprint into `edit-plan.json`, prepare visual/music artifacts and canonical `enrichment-plan.json`, then run render/inspect.
 
 ## Install
 
@@ -288,7 +313,7 @@ Use koubo-clip to analyze this talking-head video:
 remove pauses, waiting gaps, filler words, false starts, and repeated takes.
 Add readable captions and add images, icons, UI components, or motion at key explanation points.
 If it helps the publish quality, add low-volume background music and necessary SFX.
-Give me the production proposal first; after I confirm, render final.mp4 and output the inspection report.
+Give me a production proposal with complete options first; after one confirmation, render the canonical MP4 and output structured inspection plus the human report.
 ```
 
 The agent reads the koubo-clip skill, calls the CLI, presents the proposal, then prepares visual/music assets, renders, and inspects after user confirmation.
@@ -296,6 +321,14 @@ The agent reads the koubo-clip skill, calls the CLI, presents the proposal, then
 ## Manual CLI Flow
 
 Agents usually call the CLI automatically. For manual troubleshooting, run the flow by stages.
+
+Discover the software contract first. When resuming an existing project, use read-only status:
+
+```bash
+bun run koubo-clip -- --version
+bun run koubo-clip -- capabilities --json
+bun run koubo-clip -- project status koubo-clips/video --json
+```
 
 The first half is generated directly by the CLI:
 
@@ -312,7 +345,7 @@ The following commands read artifacts already written by the agent or user. They
 
 ```bash
 # Requires production-proposal.json
-bun run koubo-clip -- project proposal koubo-clips/video
+bun run koubo-clip -- project proposal koubo-clips/video --json
 
 # Optional: inspect available visual elements
 bun run koubo-clip -- project element-catalog koubo-clips/video
@@ -362,7 +395,9 @@ Common files in the project directory:
 - `.source-frames/`
 - `review-package.md` / `review-package.json`
 - `production-proposal.md` / `production-proposal.json`
+- `artifact-manifest.json`
 - `edit-plan.json`
+- `asset-usage-plan.json` (simplified/compatibility input only)
 - `focus-*`
 - `visual-*`
 - `music-*`
@@ -371,19 +406,22 @@ Common files in the project directory:
 - `storyboard.json`
 - `renders/clean.mp4`
 - `renders/final.mp4`
+- `render-result.json`
+- `inspection.json`
 - `.inspection/`
 - `report.md`
 
-`storyboard.json.qa_checks[]` is both the composition checklist and inspection checklist. `project inspect` samples frames from it and outputs `inspection_checks[]`.
+`storyboard.json.qa_checks[]` is both the composition checklist and inspection checklist, but the storyboard is consumable only while its lineage is current. `project inspect` samples the canonical output from the current render result and outputs `inspection_checks[]`.
 
 ## Project Status
 
-- Current version: `0.0.1`.
+- Use `koubo-clip --version` as the installed version source; the README does not hard-code it.
 - Current package status: published to npm.
 - Current recommended development mode: use Bun from the source repository.
 - npm package: `koubo-clip`.
 - Visual assets, music, and some provider capabilities depend on network access, API keys, user assets, or host MCP handoff.
 - Rendering depends on FFmpeg, ffprobe, npx, and HyperFrames resources.
+- The public artifact/state discovery surface is `capabilities --json` plus `project status --json`.
 
 ## Development
 

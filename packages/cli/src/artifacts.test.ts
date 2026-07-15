@@ -81,7 +81,7 @@ test("enrichment artifacts validate slots and safe asset paths", () => {
       { id: "music", type: "music_segment", start: 0, end: 2, asset_id: "m1", volume: 0.2, fade_seconds: 0.2, ducking: true, reason: "bed" },
     ],
   });
-  expect(plan.slots.length).toBe(2);
+  expect(plan.slots?.length).toBe(2);
   expect(plan.profile.source_mode).toBe("talking_head_avatar");
   expect(() => parseEnrichmentPlan({ version: "1.0", cards: [], music: [] })).toThrow("require slots");
   expect(() =>
@@ -177,6 +177,7 @@ test("visual acquisition artifacts validate metadata urls but keep final paths l
         reason: "spoken alarm should be visible as an icon",
         output_usage: "small upper-third icon",
         selected_candidate_id: "alarm-iconify-mdi-alarm",
+        selection_reason: "best semantic match with a clear silhouette",
         start: 1,
         end: 2,
         zone: "upper_third",
@@ -184,6 +185,8 @@ test("visual acquisition artifacts validate metadata urls but keep final paths l
     ],
   });
   expect(request.requests[0]?.semantic_query).toBe("alarm clock");
+  expect(request.requests[0]?.selection_reason).toBe("best semantic match with a clear silhouette");
+  expect(() => parseVisualRequest({ ...request, requests: [{ ...request.requests[0], selection_reason: "   " }] })).toThrow("must not be blank");
 
   const candidates = parseVisualCandidates({
     version: "1.0",
@@ -196,8 +199,10 @@ test("visual acquisition artifacts validate metadata urls but keep final paths l
         title: "mdi:alarm",
         semantic_query: "alarm clock",
         preview_url: "https://api.iconify.design/mdi/alarm.svg",
+        preview_path: ".visual-previews/alarm.png",
         source_url: "https://icon-sets.iconify.design/mdi/alarm/",
         download_url: "https://api.iconify.design/mdi/alarm.svg",
+        local_path: "assets/icons/alarm.svg",
         license: "Apache-2.0",
         license_url: "https://example.com/license",
         renderable: true,
@@ -209,6 +214,22 @@ test("visual acquisition artifacts validate metadata urls but keep final paths l
     warnings: [],
   });
   expect(candidates.candidates[0]?.provider).toBe("iconify");
+  expect(candidates.candidates[0]?.preview_path).toBe(".visual-previews/alarm.png");
+
+  for (const unsafePath of ["   ", "/tmp/alarm.png", "C:/alarm.png", "https://example.com/alarm.png", "assets\\alarm.png", "assets/../alarm.png"]) {
+    expect(() =>
+      parseVisualCandidates({
+        ...candidates,
+        candidates: [{ ...candidates.candidates[0], preview_path: unsafePath }],
+      }),
+    ).toThrow();
+    expect(() =>
+      parseVisualCandidates({
+        ...candidates,
+        candidates: [{ ...candidates.candidates[0], local_path: unsafePath }],
+      }),
+    ).toThrow();
+  }
 
   const acquisition = parseVisualAcquisition({
     version: "1.0",
@@ -247,12 +268,14 @@ test("visual acquisition artifacts validate metadata urls but keep final paths l
         license: "Apache-2.0",
         runtime_dependencies: [],
         usage_reason: "spoken alarm should be visible as an icon",
+        selection_reason: "best semantic match with a clear silhouette",
         warnings: [],
       },
     ],
     warnings: [],
   });
   expect(review.items[0]?.asset_id).toBe("visual-alarm");
+  expect(parseVisualReview(JSON.parse(JSON.stringify(review)))).toEqual(review);
 
   expect(() => parseVisualAcquisition({ version: "1.0", assets: [{ ...acquisition.assets[0], path: "https://example.com/alarm.svg" }], warnings: [] })).toThrow("project-relative");
   expect(() => parseVisualCandidates({ version: "1.0", candidates: [{ ...candidates.candidates[0], provider: "random" }], warnings: [] })).toThrow("provider");
@@ -318,6 +341,508 @@ test("production proposal validates options and forbids premature asset refs", (
       options: [{ ...proposal.options[0], images: { ...proposal.options[0]!.images, path: "assets/images/a.png" } }],
     }),
   ).toThrow("must not appear before confirmed asset acquisition");
+});
+
+test("project metadata normalizes missing contract version as legacy", () => {
+  expect(artifacts.parseProjectMetadata({ provider_execution_mode: "standalone" }).contract_version).toBe("legacy");
+  expect(artifacts.parseProjectMetadata({ contract_version: "1.0", provider_execution_mode: "platform" }).contract_version).toBe("1.0");
+  expect(() => artifacts.parseProjectMetadata({ contract_version: "2.0", provider_execution_mode: "standalone" })).toThrow("contract_version");
+});
+
+test("production proposal v1.1 consumes business direction, execution plan, and asset requirements", () => {
+  const proposal = parseProductionProposal({
+    version: "1.1",
+    source_mode: "mixed",
+    presentation_intent: "short_form",
+    goal_summary: "turn the source into a concise sales video",
+    material_summary: "product demo with a spoken walkthrough",
+    recommended_option_id: "sales_conversion",
+    options: [
+      {
+        id: "sales_conversion",
+        label: "强卖货转化版",
+        recommended: true,
+        reason: "the source contains a clear product payoff",
+        cleanup: { cut_candidate_ids: ["c-001"], keep_strategy: "keep proof and CTA", risks: [] },
+        subtitles: { enabled: true, style: "anchor", conflict_notes: [] },
+        visuals: { direction: "restrained product cues", viewer_job: "see the key feature", requires_grounding: true, notes: [] },
+        images: { needed: false, reason: "the source already shows the product", missing_assets: [] },
+        music: { source: "none", ducking: true, notes: [] },
+        sfx: { enabled: false, usage: "none", restraint: "no decorative effects" },
+        requires_confirmation: ["final duration"],
+        business_direction: {
+          direction_id: "sales_conversion",
+          title: "强卖货转化版",
+          suitable_for: "private-domain conversion",
+          editing_strategy: "lead with payoff, retain proof, close with CTA",
+          expected_duration: "25-40s",
+          asset_style: "strong captions and restrained icons",
+          risks: ["sales tone may reduce authenticity"],
+        },
+        edit_execution_plan: {
+          objective: "drive qualified inquiries",
+          target_audience: "buyers comparing the product",
+          final_duration: "30-40s",
+          narrative_structure: [{ beat: "hook", purpose: "show the payoff", source_hint: "0.0-4.0" }],
+          keep_segments: [{ source_id: "src-1", start: 0.5, end: 4.5, reason: "contains the core proof" }],
+          remove_segments: [{ candidate_id: "c-001", reason: "long pause" }],
+          reorder_segments: [],
+          text_overlays: [{ start: 0.5, end: 2.5, text: "核心卖点", purpose: "reinforce the hook" }],
+          visual_asset_slots: [],
+          music_slots: [],
+          sfx_slots: [],
+          image_slots: [],
+          user_confirmation_summary: "cut the pause, keep the proof, and use restrained captions",
+        },
+        asset_requirements: {
+          visual_asset_slots: [
+            {
+              slot_id: "feature_icon",
+              kind: "visual_asset",
+              purpose: "reinforce the product feature",
+              query: "simple product feature icon",
+              required: false,
+              suggested_time: 1.2,
+              duration_hint: 2.5,
+              placement_hint: "top-right small",
+              provider_hint: "Iconify",
+            },
+          ],
+          music_slots: [],
+          sfx_slots: [],
+          image_slots: [],
+        },
+      },
+    ],
+  });
+
+  expect(proposal.version).toBe("1.1");
+  if (proposal.version !== "1.1") throw new Error("expected v1.1 proposal");
+  expect(proposal.options[0]?.business_direction.direction_id).toBe("sales_conversion");
+  expect(proposal.options[0]?.edit_execution_plan.keep_segments[0]?.source_id).toBe("src-1");
+  expect(proposal.options[0]?.asset_requirements.visual_asset_slots[0]?.slot_id).toBe("feature_icon");
+
+  expect(() => parseProductionProposal({ ...proposal, options: [{ ...proposal.options[0], asset_requirements: undefined }] })).toThrow("asset_requirements");
+  expect(() =>
+    parseProductionProposal({
+      ...proposal,
+      options: [
+        {
+          ...proposal.options[0],
+          asset_requirements: {
+            ...proposal.options[0]!.asset_requirements,
+            visual_asset_slots: [{ ...proposal.options[0]!.asset_requirements.visual_asset_slots[0], asset_id: "already-acquired" }],
+          },
+        },
+      ],
+    }),
+  ).toThrow("asset_id is not allowed");
+});
+
+test("production proposal v1.0 remains an explicit legacy parse path", () => {
+  const proposal = parseProductionProposal({
+    version: "1.0",
+    source_mode: "talking_head_avatar",
+    presentation_intent: "knowledge_explainer",
+    goal_summary: "legacy proposal",
+    material_summary: "legacy material",
+    recommended_option_id: "legacy",
+    options: [
+      {
+        id: "legacy",
+        label: "Legacy",
+        reason: "existing project compatibility",
+        cleanup: { cut_candidate_ids: [], keep_strategy: "keep", risks: [] },
+        subtitles: { enabled: true, style: "anchor", conflict_notes: [] },
+        visuals: { direction: "none", viewer_job: "listen", requires_grounding: false, notes: [] },
+        images: { needed: false, reason: "none", missing_assets: [] },
+        music: { source: "none", ducking: false, notes: [] },
+        sfx: { enabled: false, usage: "none", restraint: "none" },
+        requires_confirmation: [],
+      },
+    ],
+  });
+  expect(proposal.version).toBe("1.0");
+  expect("business_direction" in proposal.options[0]!).toBe(false);
+});
+
+test("edit plan requires proposal selection binding only for the current contract", () => {
+  const fingerprint = `sha256:${"a".repeat(64)}`;
+  const current = artifacts.parseEditPlan({
+    contract_version: "1.0",
+    confirmed_option_id: "sales_conversion",
+    proposal_selection_fingerprint: fingerprint,
+    decisions: [],
+  });
+  expect(current.contract_version).toBe("1.0");
+  expect(current.confirmed_option_id).toBe("sales_conversion");
+  expect(current.proposal_selection_fingerprint).toBe(fingerprint);
+
+  const legacy = artifacts.parseEditPlan({ decisions: [] });
+  expect(legacy.contract_version).toBe("legacy");
+  expect(legacy.confirmed_option_id).toBe(undefined);
+  expect(() => artifacts.parseEditPlan({ contract_version: "1.0", confirmed_option_id: "sales_conversion", decisions: [] })).toThrow(
+    "proposal_selection_fingerprint",
+  );
+  expect(() =>
+    artifacts.parseEditPlan({ contract_version: "1.0", confirmed_option_id: "sales_conversion", proposal_selection_fingerprint: "sha256-demo", decisions: [] }),
+  ).toThrow("sha256:<64 hex>");
+});
+
+test("artifact manifest validates records, lineage references, and stage attempts", () => {
+  const projectFingerprint = `sha256:${"1".repeat(64)}`;
+  const editFingerprint = `sha256:${"2".repeat(64)}`;
+  const inputFingerprint = `sha256:${"3".repeat(64)}`;
+  const value = {
+    contract_version: "1.0",
+    artifacts: {
+      project: {
+        key: "project",
+        path: "project.json",
+        role: "authoritative_input",
+        schema_version: "1.0",
+        fingerprint: projectFingerprint,
+        authored_by: "cli",
+        produced_by_command: "project.create",
+        producer_cli_version: "0.0.1",
+        command_contract_version: "1.0",
+        inputs: [],
+        produced_at: "2026-07-15T00:00:00.000Z",
+      },
+      "edit-plan": {
+        key: "edit-plan",
+        path: "edit-plan.json",
+        role: "authoritative_input",
+        schema_version: "1.0",
+        fingerprint: editFingerprint,
+        authored_by: "agent",
+        validated_by_command: "project.compile-edl",
+        producer_cli_version: "0.0.1",
+        command_contract_version: "1.0",
+        inputs: [{ key: "project", fingerprint: projectFingerprint }],
+        validated_at: "2026-07-15T00:01:00.000Z",
+      },
+    },
+    stage_attempts: {
+      "project.compile-edl": {
+        stage: "project.compile-edl",
+        command: "project.render",
+        input_fingerprint: inputFingerprint,
+        status: "failed",
+        started_at: "2026-07-15T00:02:00.000Z",
+        completed_at: "2026-07-15T00:02:01.000Z",
+        failure_code: "EDIT_PLAN_INVALID",
+        remediation: "fix edit-plan.json and rerun project render",
+      },
+    },
+    updated_at: "2026-07-15T00:02:01.000Z",
+  };
+
+  const manifest = artifacts.parseArtifactManifest(value);
+  expect(manifest.artifacts["edit-plan"]?.inputs[0]?.fingerprint).toBe(projectFingerprint);
+  expect(manifest.stage_attempts["project.compile-edl"]?.failure_code).toBe("EDIT_PLAN_INVALID");
+
+  const rejectedInputAttempt = artifacts.parseArtifactManifest({
+    ...value,
+    stage_attempts: {
+      "project.compile-edl": {
+        ...value.stage_attempts["project.compile-edl"],
+        inputs: [{ key: "unvalidated-edit-plan", fingerprint: editFingerprint }],
+      },
+    },
+  });
+  expect(rejectedInputAttempt.stage_attempts["project.compile-edl"]?.inputs?.[0]?.key).toBe("unvalidated-edit-plan");
+
+  expect(() =>
+    artifacts.parseArtifactManifest({
+      ...value,
+      artifacts: { ...value.artifacts, project: { ...value.artifacts.project, path: "../project.json" } },
+    }),
+  ).toThrow("must not contain ..");
+  expect(() =>
+    artifacts.parseArtifactManifest({
+      ...value,
+      artifacts: { ...value.artifacts, project: { ...value.artifacts.project, fingerprint: "sha256-not-valid" } },
+    }),
+  ).toThrow("sha256:<64 hex>");
+  expect(() =>
+    artifacts.parseArtifactManifest({
+      ...value,
+      stage_attempts: { "project.compile-edl": { ...value.stage_attempts["project.compile-edl"], remediation: undefined } },
+    }),
+  ).toThrow("remediation");
+
+  expect(() =>
+    artifacts.parseArtifactManifest({
+      ...value,
+      artifacts: {
+        ...value.artifacts,
+        "edit-plan": {
+          ...value.artifacts["edit-plan"],
+          inputs: [{ key: "missing-input", fingerprint: projectFingerprint }],
+        },
+      },
+    }),
+  ).toThrow("references missing artifact key missing-input");
+
+  expect(() =>
+    artifacts.parseArtifactManifest({
+      ...value,
+      artifacts: {
+        ...value.artifacts,
+        project: {
+          ...value.artifacts.project,
+          inputs: [{ key: "edit-plan", fingerprint: editFingerprint }],
+        },
+      },
+    }),
+  ).toThrow("artifact dependency cycle: project -> edit-plan -> project");
+
+  const failedAttempt = value.stage_attempts["project.compile-edl"];
+  expect(() =>
+    artifacts.parseArtifactManifest({
+      ...value,
+      stage_attempts: {
+        "project.compile-edl": {
+          ...failedAttempt,
+          output_artifact_keys: ["edit-plan"],
+        },
+      },
+    }),
+  ).toThrow("failed attempt must not include output_artifact_keys");
+
+  expect(() =>
+    artifacts.parseArtifactManifest({
+      ...value,
+      stage_attempts: {
+        "project.compile-edl": {
+          ...failedAttempt,
+          status: "success",
+          failure_code: undefined,
+          remediation: undefined,
+          artifact: "edit-plan",
+          output_artifact_keys: ["edit-plan"],
+        },
+      },
+    }),
+  ).toThrow("successful attempt must not include artifact or failure fields");
+
+  expect(() =>
+    artifacts.parseArtifactManifest({
+      ...value,
+      stage_attempts: {
+        "project.compile-edl": {
+          ...failedAttempt,
+          status: "success",
+          failure_code: undefined,
+          remediation: undefined,
+          output_artifact_keys: ["missing-output"],
+        },
+      },
+    }),
+  ).toThrow("references missing artifact key missing-output");
+
+  expect(
+    artifacts.parseArtifactManifest({
+      ...value,
+      stage_attempts: {
+        "project.compile-edl": {
+          ...failedAttempt,
+          status: "success",
+          failure_code: undefined,
+          remediation: undefined,
+          output_artifact_keys: ["edit-plan"],
+        },
+      },
+    }).stage_attempts["project.compile-edl"]?.status,
+  ).toBe("success");
+});
+
+test("artifact manifest requires matching file hashes for physical records but not human views", () => {
+  const fingerprint = `sha256:${"a".repeat(64)}`;
+  const otherFingerprint = `sha256:${"b".repeat(64)}`;
+  const physicalRecord = {
+    key: "asset:demo",
+    path: "assets/demo.bin",
+    role: "execution_result",
+    schema_version: "bytes-v1",
+    fingerprint,
+    authored_by: "cli",
+    produced_by_command: "project.render",
+    producer_cli_version: "0.0.1",
+    command_contract_version: "1.0",
+    inputs: [],
+    produced_at: "2026-07-15T00:00:00.000Z",
+  };
+  const manifest = {
+    contract_version: "1.0",
+    artifacts: { "asset:demo": physicalRecord },
+    stage_attempts: {},
+    updated_at: "2026-07-15T00:00:00.000Z",
+  };
+
+  for (const schemaVersion of ["bytes-v1", "image/jpeg", "audio/wav", "video/mp4", "media-v1", "media/probed-v1"]) {
+    expect(() =>
+      artifacts.parseArtifactManifest({
+        ...manifest,
+        artifacts: { "asset:demo": { ...physicalRecord, schema_version: schemaVersion } },
+      }),
+    ).toThrow(`file_sha256 is required for physical schema ${schemaVersion}`);
+  }
+
+  expect(() =>
+    artifacts.parseArtifactManifest({
+      ...manifest,
+      artifacts: { "asset:demo": { ...physicalRecord, file_sha256: otherFingerprint } },
+    }),
+  ).toThrow("file_sha256 must match fingerprint for physical schema bytes-v1");
+
+  expect(
+    artifacts.parseArtifactManifest({
+      ...manifest,
+      artifacts: { "asset:demo": { ...physicalRecord, file_sha256: fingerprint } },
+    }).artifacts["asset:demo"]?.file_sha256,
+  ).toBe(fingerprint);
+
+  expect(
+    artifacts.parseArtifactManifest({
+      ...manifest,
+      artifacts: {
+        "asset:demo": {
+          ...physicalRecord,
+          path: "views/demo.jpg",
+          role: "human_view",
+          schema_version: "image/jpeg",
+        },
+      },
+    }).artifacts["asset:demo"]?.file_sha256,
+  ).toBe(undefined);
+});
+
+test("render result separates inputs and outputs and owns canonical output selection", () => {
+  const fingerprint = `sha256:${"4".repeat(64)}`;
+  const value = {
+    contract_version: "1.0",
+    input_fingerprint: fingerprint,
+    inputs: [{ key: "edl", fingerprint }],
+    outputs: [
+      { key: "subtitles", role: "derived", path: "subtitles.srt", sha256: `sha256:${"5".repeat(64)}` },
+      {
+        key: "render-output:clean",
+        role: "execution_result",
+        path: "renders/clean.mp4",
+        sha256: `sha256:${"6".repeat(64)}`,
+        duration_seconds: 5,
+        probe: { probe_ok: true, video_codec: "h264" },
+      },
+    ],
+    canonical_output_key: "render-output:clean",
+    enrichment_applied: false,
+    clean_output_path: "renders/clean.mp4",
+    producer_cli_version: "0.0.1",
+    completed_at: "2026-07-15T00:03:00.000Z",
+  };
+  const result = artifacts.parseRenderResult(value);
+  expect(result.outputs[1]?.path).toBe("renders/clean.mp4");
+  expect(result.canonical_output_key).toBe("render-output:clean");
+  expect(() => artifacts.parseRenderResult({ ...value, canonical_output_key: "render-output:missing" })).toThrow("canonical_output_key");
+  expect(() => artifacts.parseRenderResult({ ...value, clean_output_path: "/tmp/clean.mp4" })).toThrow("project-relative");
+  expect(() => artifacts.parseRenderResult({ ...value, outputs: [{ ...value.outputs[1], sha256: "sha256-demo" }] })).toThrow("sha256:<64 hex>");
+});
+
+test("inspection artifact binds checks and summaries to the inspected render bytes", () => {
+  const value = {
+    contract_version: "1.0",
+    render_result_fingerprint: `sha256:${"7".repeat(64)}`,
+    canonical_output_key: "render-output:clean",
+    canonical_output_path: "renders/clean.mp4",
+    canonical_output_sha256: `sha256:${"8".repeat(64)}`,
+    canonical_output_duration_seconds: 5,
+    canonical_output_probe: { probe_ok: true, video_codec: "h264" },
+    expected_duration_seconds: 5,
+    captions_present: true,
+    enrichment_applied: false,
+    removed_ranges: [
+      { candidate_id: "c-001", source_id: "src-1", start: 1, end: 2, type: "pause", reason: "long pause", text: "" },
+    ],
+    retained_risks: [{ reason: "source contains baked-in captions" }],
+    summaries: { enrichment: [], blocks: [], elements: [], audio: [], assets: [] },
+    checks: [
+      {
+        id: "duration",
+        source_element_id: "render-output:clean",
+        kind: "element",
+        start: 0,
+        end: 5,
+        expected: "render duration matches EDL",
+        frame_times: [2.5],
+        frame_paths: [".inspection/duration.jpg"],
+        status: "sampled",
+        warnings: [],
+        needs_human_review: true,
+      },
+    ],
+    warnings: [],
+    blockers: [],
+    producer_cli_version: "0.0.1",
+    inspected_at: "2026-07-15T00:04:00.000Z",
+  };
+  const inspection = artifacts.parseInspection(value);
+  expect(inspection.checks[0]?.frame_paths).toEqual([".inspection/duration.jpg"]);
+  expect(inspection.removed_ranges[0]?.candidate_id).toBe("c-001");
+  expect(() =>
+    artifacts.parseInspection({
+      ...value,
+      checks: [{ ...value.checks[0], frame_paths: ["/tmp/duration.jpg"] }],
+    }),
+  ).toThrow("project-relative");
+  expect(() => artifacts.parseInspection({ ...value, canonical_output_sha256: "sha256-demo" })).toThrow("sha256:<64 hex>");
+});
+
+test("music acquisition and review managed JSON use real parsers", () => {
+  const request = {
+    version: "1.0",
+    id: "bed",
+    source: "local",
+    reason: "quiet background bed",
+    local_path: "assets/incoming/bed.wav",
+    target_duration_seconds: 8,
+  };
+  const acquisition = artifacts.parseMusicAcquisition({
+    version: "1.0",
+    request,
+    acquired: true,
+    asset: { id: "bed", path: "assets/music/bed.wav", type: "music", source: "imported", duration_seconds: 8, hash: "legacy-asset-hash" },
+    recommendation: { start: 0, end: 8, volume: 0.12, fade_seconds: 0.5, ducking: true, offset_seconds: 0, loop: false },
+    warnings: [],
+  });
+  expect(acquisition.asset?.path).toBe("assets/music/bed.wav");
+
+  const review = artifacts.parseMusicReview({
+    version: "1.0",
+    request_id: "bed",
+    status: "ready",
+    asset_id: "bed",
+    provider: "local",
+    path: "assets/music/bed.wav",
+    duration_seconds: 8,
+    license: "user-provided",
+    warnings: [],
+    recommended_music_segment: {
+      id: "bed",
+      type: "music_segment",
+      start: 0,
+      end: 8,
+      asset_id: "bed",
+      volume: 0.12,
+      fade_seconds: 0.5,
+      ducking: true,
+      reason: "quiet background bed",
+    },
+  });
+  expect(review.status).toBe("ready");
+  expect(() => artifacts.parseMusicReview({ ...review, path: "https://example.com/bed.wav" })).toThrow("project-relative");
+  expect(() => artifacts.parseMusicAcquisition({ version: "1.0", request, acquired: true, warnings: [] })).toThrow("asset");
 });
 
 test("enrichment v1.1 validates profile, captions, cards, and music", () => {
@@ -536,6 +1061,20 @@ test("enrichment v1.2 accepts HyperFrames elements and rejects invalid element c
       elements: [{ id: "bad", source: "agent", element_id: "shimmer-sweep", element_type: "registry_component", start: 0, end: 1, params: { nested: { nope: true } }, reason: "bad" }],
     }),
   ).toThrow("params.nested");
+});
+
+test("current enrichment parser output is safe to persist and parse again", () => {
+  const first = parseEnrichmentPlan({
+    version: "1.2",
+    profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor" },
+    captions: { enabled: false, identity: "anchor", emphasis: [] },
+    cards: [],
+    music: [],
+    elements: [],
+  });
+
+  expect(first.slots).toBe(undefined);
+  expect(parseEnrichmentPlan(JSON.parse(JSON.stringify(first)))).toEqual(first);
 });
 
 test("source mode controls enrichment defaults without overriding explicit card choices", () => {

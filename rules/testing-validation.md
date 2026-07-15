@@ -48,7 +48,7 @@ Media probing、EDL、subtitle 或 render behavior 变更：
 - generic workflow 没有强制依赖 host-specific agent platform names。
 - 没有指示 agents 把手写 FFmpeg、HTML、Remotion 或 GSAP 当成正常工作流。
 - 没有在应由 CLI JSON command 暴露时，重复 CLI-owned schemas、thresholds 或 artifact layouts。
-- 没有允许在缺少真实 output artifact 和 inspection result 时声称完成。
+- 没有允许在缺少 current `render-result.json`、其 hash/probe 匹配的 canonical output 和绑定同一 render fingerprint 的 current `inspection.json` 时声称完成。
 
 ## 报告
 

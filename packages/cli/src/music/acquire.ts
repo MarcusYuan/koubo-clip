@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, extname, join, resolve } from "node:path";
+import * as nodeFs from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { basename, extname, join, relative, resolve, sep } from "node:path";
 import {
   type AssetManifestArtifact,
   type AssetManifestEntry,
@@ -14,6 +15,9 @@ import { MUSIC_EXTENSIONS, probeAudioDuration, resolveLibraryTrack } from "./lib
 import { acquireFreesoundMusic } from "./providers/freesound";
 import { acquireMinimaxMusic, type MusicProviderResult } from "./providers/minimax";
 import { acquirePixabayMusic } from "./providers/pixabay";
+import { resolveExistingProjectPath, resolveProjectOutputPath } from "../project-paths";
+
+const fsRuntime = nodeFs as unknown as { realpathSync(path: string): string };
 
 export type MusicAcquisitionArtifact = {
   version: "1.0";
@@ -55,19 +59,47 @@ export type MusicReviewArtifact = {
   };
 };
 
-export async function acquireMusicAsset(projectPath: string): Promise<MusicAcquisitionArtifact> {
-  const request = parseMusicRequest(JSON.parse(readFileSync(join(projectPath, projectArtifacts.musicRequest), "utf8")));
+export type PreparedMusicAcquisition = {
+  acquisition: MusicAcquisitionArtifact;
+  asset_manifest?: AssetManifestArtifact;
+  staged_asset_path?: string;
+  final_asset_path?: string;
+};
+
+export async function acquireMusicAsset(
+  projectPath: string,
+  input: MusicRequestArtifact,
+  stagingDirectory: string,
+): Promise<PreparedMusicAcquisition> {
+  const request = parseMusicRequest(input);
   if (request.source === "none") {
-    return { version: "1.0", request, acquired: false, warnings: ["music request explicitly skipped"] };
+    return {
+      acquisition: { version: "1.0", request, acquired: false, warnings: ["music request explicitly skipped"] },
+    };
   }
 
-  mkdirSync(join(projectPath, "assets", "music"), { recursive: true });
-  const outputPath = join(projectPath, "assets", "music", `${safeFileName(request.id)}${outputExt(request)}`);
+  const projectRoot = resolve(projectPath);
+  const stagingRoot = resolveProjectOutputPath(projectPath, stagingDirectory, "music staging directory");
+  mkdirSync(stagingRoot, { recursive: true });
+  const realProjectRoot = fsRuntime.realpathSync(projectRoot);
+  const realStagingRoot = resolveExistingProjectPath(projectPath, relative(projectRoot, stagingRoot), "music staging directory");
+  assertContainedPath(realProjectRoot, realStagingRoot, "music staging directory must resolve inside the project");
+  const existingManifestPath = join(projectPath, projectArtifacts.assetManifest);
+  const existingManifest: AssetManifestArtifact = existsSync(existingManifestPath)
+    ? parseAssetManifest(JSON.parse(readFileSync(resolveExistingProjectPath(projectPath, projectArtifacts.assetManifest, "asset manifest"), "utf8")))
+    : { assets: [] };
+  const outputPath = join(stagingRoot, `${safeFileName(request.id)}${outputExt(request)}`);
   const providerResult = await acquireBySource(projectPath, request, outputPath);
-  const duration = probeAudioDuration(providerResult.output_path) ?? providerResult.duration_seconds;
+  const stagedAssetPath = fsRuntime.realpathSync(providerResult.output_path);
+  assertContainedPath(realStagingRoot, stagedAssetPath, "music provider output escaped the staging directory");
+  const stagedAssetStat = statSync(stagedAssetPath);
+  if (!stagedAssetStat.isFile() || stagedAssetStat.size <= 0) throw new Error("music provider output is not a non-empty file");
+  const duration = probeAudioDuration(stagedAssetPath);
+  if (!duration || duration <= 0) throw new Error("music provider output could not be probed as audio");
   const target = request.target_duration_seconds;
-  const energy = analyzeMusicEnergy(providerResult.output_path, target);
-  const relativePath = relativeProjectPath(projectPath, providerResult.output_path);
+  const energy = analyzeMusicEnergy(stagedAssetPath, target);
+  const relativePath = join("assets", "music", basename(stagedAssetPath)).replaceAll("\\", "/");
+  const finalAssetPath = resolveProjectOutputPath(projectPath, relativePath, "music asset output");
   const asset: AssetManifestEntry = {
     id: request.id,
     path: relativePath,
@@ -85,7 +117,7 @@ export async function acquireMusicAsset(projectPath: string): Promise<MusicAcqui
     cost_usd: providerResult.cost_usd,
     reason: request.reason,
     duration_seconds: duration,
-    hash: sha256(providerResult.output_path),
+    hash: sha256(stagedAssetPath),
     mood: request.mood,
     loop: energy.needs_loop,
     volume: request.volume ?? 0.12,
@@ -93,22 +125,29 @@ export async function acquireMusicAsset(projectPath: string): Promise<MusicAcqui
     ducking: request.ducking ?? true,
   };
   const warnings = acquisitionWarnings(request, asset);
-  writeAssetManifest(projectPath, asset);
+  const assetManifest = parseAssetManifest({
+    assets: [...existingManifest.assets.filter((item) => item.id !== asset.id), asset],
+  });
   return {
-    version: "1.0",
-    request,
-    acquired: true,
-    asset,
-    recommendation: {
-      start: 0,
-      end: Math.max(0.01, request.target_duration_seconds ?? duration ?? 30),
-      volume: asset.volume ?? 0.12,
-      fade_seconds: asset.fade_seconds ?? 0.5,
-      ducking: asset.ducking ?? true,
-      offset_seconds: energy.recommended_offset_seconds,
-      loop: energy.needs_loop,
+    acquisition: {
+      version: "1.0",
+      request,
+      acquired: true,
+      asset,
+      recommendation: {
+        start: 0,
+        end: Math.max(0.01, request.target_duration_seconds ?? duration),
+        volume: asset.volume ?? 0.12,
+        fade_seconds: asset.fade_seconds ?? 0.5,
+        ducking: asset.ducking ?? true,
+        offset_seconds: energy.recommended_offset_seconds,
+        loop: energy.needs_loop,
+      },
+      warnings,
     },
-    warnings,
+    asset_manifest: assetManifest,
+    staged_asset_path: stagedAssetPath,
+    final_asset_path: finalAssetPath,
   };
 }
 
@@ -172,7 +211,11 @@ async function acquireBySource(projectPath: string, request: MusicRequestArtifac
 }
 
 function acquireLocal(projectPath: string, request: MusicRequestArtifact, outputPath: string): MusicProviderResult {
-  const sourcePath = request.library_track ? resolveLibraryTrack(request.library_track) : request.local_path ? join(projectPath, request.local_path) : undefined;
+  const sourcePath = request.library_track
+    ? resolveLibraryTrack(request.library_track)
+    : request.local_path
+      ? resolveExistingProjectPath(projectPath, request.local_path, "local music source")
+      : undefined;
   if (!sourcePath) throw new Error("local music request requires local_path or library_track");
   if (!existsSync(sourcePath)) throw new Error(`local music source missing: ${request.library_track ?? request.local_path}`);
   if (!MUSIC_EXTENSIONS.has(extname(sourcePath).toLowerCase())) throw new Error(`unsupported music extension: ${extname(sourcePath)}`);
@@ -188,13 +231,6 @@ function acquireLocal(projectPath: string, request: MusicRequestArtifact, output
   };
 }
 
-function writeAssetManifest(projectPath: string, asset: AssetManifestEntry): void {
-  const manifestPath = join(projectPath, projectArtifacts.assetManifest);
-  const existing: AssetManifestArtifact = existsSync(manifestPath) ? parseAssetManifest(JSON.parse(readFileSync(manifestPath, "utf8"))) : { assets: [] };
-  const assets = [...existing.assets.filter((item) => item.id !== asset.id), asset];
-  writeFileSync(manifestPath, `${JSON.stringify({ assets }, null, 2)}\n`);
-}
-
 function acquisitionWarnings(request: MusicRequestArtifact, asset: AssetManifestEntry): string[] {
   const warnings: string[] = [];
   if (request.source_mode === "screen_recording" && request.presentation_intent !== "short_form") warnings.push("screen_recording music should stay off unless publishing/packaging needs it");
@@ -207,11 +243,9 @@ function outputExt(request: MusicRequestArtifact): string {
   return request.source === "local" && request.local_path ? extname(request.local_path) || ".mp3" : ".mp3";
 }
 
-function relativeProjectPath(projectPath: string, path: string): string {
-  const resolvedProject = resolve(projectPath);
-  const resolvedPath = resolve(path);
-  if (!resolvedPath.startsWith(`${resolvedProject}/`)) throw new Error(`music output is outside project: ${basename(path)}`);
-  return resolvedPath.slice(resolvedProject.length + 1);
+function assertContainedPath(root: string, path: string, message: string): void {
+  const fromRoot = relative(resolve(root), resolve(path));
+  if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || fromRoot.startsWith(sep) || /^[a-z]:[\\/]/i.test(fromRoot)) throw new Error(message);
 }
 
 function sha256(path: string): string {

@@ -6,13 +6,21 @@ OUT_DIR="$ROOT/dist/koubo-clip"
 PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
 TARBALL="$ROOT/dist/koubo-clip-$PLATFORM-$ARCH.tgz"
+VERSION="$(node -p "require('$ROOT/package.json').version")"
 
 rm -rf "$OUT_DIR" "$TARBALL"
 mkdir -p "$OUT_DIR/bin" "$OUT_DIR/resources" "$OUT_DIR/skills"
 
-bun build --compile --outfile "$OUT_DIR/bin/koubo-clip" "$ROOT/packages/cli/src/cli.ts"
+bun build --compile --define "KOUBO_CLIP_BUILD_VERSION=\"$VERSION\"" --outfile "$OUT_DIR/bin/koubo-clip" "$ROOT/packages/cli/src/cli.ts"
 cp -R "$ROOT/packages/cli/vendor/hyperframes" "$OUT_DIR/resources/hyperframes"
 cp -R "$ROOT/skills/koubo-clip" "$OUT_DIR/skills/koubo-clip"
+
+ACTUAL_VERSION="$("$OUT_DIR/bin/koubo-clip" --version)"
+if [[ "$ACTUAL_VERSION" != "$VERSION" ]]; then
+  echo "compiled CLI version mismatch: expected $VERSION, got $ACTUAL_VERSION" >&2
+  exit 1
+fi
+"$OUT_DIR/bin/koubo-clip" capabilities --json >/dev/null
 
 cat > "$OUT_DIR/INSTALL.md" <<'EOF'
 # koubo-clip internal package
@@ -28,6 +36,8 @@ This package contains:
 ## Quick check
 
 ```bash
+./bin/koubo-clip --version
+./bin/koubo-clip capabilities --json
 ./bin/koubo-clip --help
 ./bin/koubo-clip doctor
 ./bin/koubo-clip skills path --json

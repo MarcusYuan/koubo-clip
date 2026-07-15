@@ -4,11 +4,16 @@ import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import * as nodePath from "node:path";
-import { basename, extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import {
   type AnalysisArtifact,
   type AnalysisCandidate,
+  type AssetUsagePlanArtifact,
+  type AssetUsagePosition,
   type AssetManifestArtifact,
+  type ArtifactFingerprintReference,
+  type ArtifactManifest,
+  type ArtifactRecord,
   type CommandResult,
   type EdlArtifact,
   type EdlEntry,
@@ -28,6 +33,8 @@ import {
   type ProductionProposalArtifact,
   type ProductionProposalOption,
   type ProjectMetadataArtifact,
+  type RenderResult,
+  type InspectionArtifact,
   type ProviderExecutionMode,
   type SourceFrame,
   type SourceFrameRequestArtifact,
@@ -40,6 +47,8 @@ import {
   type VisualRequestArtifact,
   type VisualReviewArtifact,
   parseAssetManifest,
+  parseAssetUsagePlan,
+  parseArtifactManifest,
   parseFocusCandidates,
   parseFocusFrames,
   parseFocusGrounding,
@@ -51,6 +60,10 @@ import {
   parseMusicRequest,
   parseProductionProposal,
   parseProjectMetadata,
+  parseRenderResult,
+  parseInspection,
+  parseMusicAcquisition,
+  parseMusicReview,
   parseReviewPackage,
   parseSourceFrameRequest,
   parseSourcesManifest,
@@ -61,6 +74,40 @@ import {
   parseVisualReview,
   projectArtifacts,
 } from "./artifacts";
+import {
+  artifactReference,
+  assetManifestFingerprintProjection,
+  atomicReplaceFile,
+  commitProjectStage,
+  commitProjectStageFailure,
+  editPlanFingerprintProjection,
+  inputFingerprint,
+  manifestPath,
+  proposalFingerprint,
+  proposalSelectionFingerprint,
+  proposalSelectionFingerprints,
+  proposalSelectionProjection,
+  proposalSelectionVirtualPath,
+  projectMetadataFingerprintProjection,
+  readProjectArtifactManifest,
+  recordFileArtifact,
+  recordArtifactValue,
+  recordJsonArtifact,
+  semanticFileFingerprint,
+  renderResultFingerprintProjection,
+  inspectionFingerprintProjection,
+  musicAcquisitionFingerprintProjection,
+  visualAcquisitionFingerprintProjection,
+} from "./project-lineage";
+import {
+  atomicWriteJson,
+  atomicWriteText,
+  fileBytesFingerprint,
+  semanticJsonFingerprint,
+  type Fingerprint,
+} from "./artifact-lifecycle";
+import { resolveExistingProjectPath, resolveProjectOutputPath } from "./project-paths";
+import { cliVersion } from "./bundle-paths";
 import {
   assertRenderableHyperframesBlockForCard,
   defaultHyperframesBlockForCard,
@@ -93,14 +140,15 @@ import {
 import { acquireMusicAsset, buildMusicReview, renderMusicReviewMarkdown, type MusicAcquisitionArtifact, type MusicReviewArtifact } from "./music/acquire";
 import { buildMusicCatalog, buildPlatformMusicCatalog, renderMusicCatalogMarkdown, type MusicCatalogArtifact } from "./music/catalog";
 import {
-  acquireVisualAssets,
   buildPlatformVisualCatalog,
   buildVisualCatalog,
   buildVisualReview,
+  prepareVisualAssets,
   renderVisualCandidatesMarkdown,
   renderVisualCatalogMarkdown,
   renderVisualReviewMarkdown,
   searchVisualAssets,
+  type PreparedVisualAcquisition,
   type VisualCatalogArtifact,
 } from "./visual/acquire";
 
@@ -136,6 +184,7 @@ type EnrichmentStoryboard = {
     emphasis: EnrichmentPlanArtifact["captions"]["emphasis"];
   };
   qa_checks: ProjectQaCheck[];
+  asset_summary: ProjectAssetSummary[];
   cards: StoryboardCard[];
   elements: StoryboardElement[];
   music: EnrichmentMusic[];
@@ -175,6 +224,8 @@ export type ProjectProposalData = {
   recommended_option_id: string;
   recommended_option: ProjectProposalOptionSummary;
   options: ProjectProposalOptionSummary[];
+  proposal_fingerprint: Fingerprint;
+  option_selection_fingerprints: Record<string, Fingerprint>;
   warnings: string[];
   next_required_artifacts: string[];
 };
@@ -206,6 +257,7 @@ export type ProjectEnrichPlanData = {
   warnings: string[];
   block_usage: ProjectEnrichmentBlockUsage[];
   element_usage: ProjectEnrichmentElementUsage[];
+  audio_usage: ProjectAudioUsage;
   cdn_dependencies: HyperframesDependencySummary[];
   asset_summary: ProjectAssetSummary[];
   qa_checks: ProjectQaCheck[];
@@ -339,7 +391,14 @@ export type ProjectRenderData = {
   subtitles_path: string;
   clean_render_path: string;
   final_render_path?: string;
+  render_result_path: string;
+  canonical_output_key: string;
+  input_fingerprint: Fingerprint;
   enrichment_applied: boolean;
+  asset_summary: ProjectAssetSummary[];
+  element_usage: ProjectEnrichmentElementUsage[];
+  audio_usage: ProjectAudioUsage;
+  warnings: string[];
   expected_duration_seconds: number;
 };
 
@@ -356,6 +415,7 @@ export type ProjectInspectData = {
   enrichment_summary: string[];
   block_usage: ProjectEnrichmentBlockUsage[];
   element_usage: ProjectEnrichmentElementUsage[];
+  audio_usage: ProjectAudioUsage;
   cdn_dependencies: HyperframesDependencySummary[];
   asset_summary: ProjectAssetSummary[];
   music_review?: MusicReviewArtifact;
@@ -363,6 +423,8 @@ export type ProjectInspectData = {
   inspection_frames: string[];
   warnings: string[];
   report_path: string;
+  inspection_path: string;
+  render_result_fingerprint: Fingerprint;
 };
 
 export type ProjectQaCheckStatus = "sampled" | "warning" | "blocker";
@@ -434,6 +496,11 @@ export type ProjectAssetSummary = {
   dimensions?: { width: number; height: number };
 };
 
+export type ProjectAudioUsage = {
+  music: Array<{ id: string; asset_id: string; start: number; end: number; volume: number; ducking: boolean; fade_seconds: number; reason: string }>;
+  sfx: Array<{ id: string; asset_id?: string; sfx_id?: string; start: number; end: number; volume: number; reason: string }>;
+};
+
 type AssetManifestEntrySummary = Pick<ProjectAssetSummary, "id" | "path" | "type" | "source" | "provider" | "license" | "duration_seconds">;
 
 export type InspectionRemovedRange = {
@@ -481,6 +548,7 @@ export function createProject(
   inputPaths: string[],
   options: { projectPath?: string; providerMode?: ProviderExecutionMode } = {},
 ): CommandResult<"project.create", ProjectCreateData> {
+  const startedAt = new Date().toISOString();
   try {
     if (inputPaths.length === 0) throw new Error("project create requires at least one video");
     const providerMode = options.providerMode ?? "standalone";
@@ -516,6 +584,58 @@ export function createProject(
     const sourcesPath = join(projectPath, projectArtifacts.sources);
     const projectMetadataPath = writeProjectMetadata(projectPath, providerMode);
     writeJson(sourcesPath, { sources });
+    const recordedAt = new Date().toISOString();
+    const projectMetadata = parseProjectMetadata(readProjectJson(projectPath, projectArtifacts.project, "project metadata"));
+    const sourcesManifest = parseSourcesManifest(readProjectJson(projectPath, projectArtifacts.sources, "sources manifest"));
+    const projectRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "project",
+      path: projectArtifacts.project,
+      role: "authoritative_input",
+      schema_version: "1.0",
+      authored_by: "cli",
+      command: "project.create",
+      mode: "produced",
+      value: projectMetadataFingerprintProjection(projectMetadata),
+      recorded_at: recordedAt,
+    });
+    const sourceRecords = sourcesManifest.sources.map((source) =>
+      recordFileArtifact({
+        project_path: projectPath,
+        key: `source:${source.source_id}`,
+        path: source.project_path,
+        role: "authoritative_input",
+        schema_version: "bytes-v1",
+        authored_by: "cli",
+        command: "project.create",
+        mode: "produced",
+        recorded_at: recordedAt,
+      }),
+    );
+    const sourceReferences = sourceRecords.map(artifactReference);
+    const sourcesRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "sources",
+      path: projectArtifacts.sources,
+      role: "authoritative_input",
+      schema_version: "1.0",
+      authored_by: "cli",
+      command: "project.create",
+      mode: "produced",
+      inputs: sourceReferences,
+      value: sourcesManifest,
+      recorded_at: recordedAt,
+    });
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "project.create",
+      command: "project.create",
+      input_fingerprint: inputFingerprint(sourceReferences),
+      inputs: sourceReferences,
+      records: [projectRecord, ...sourceRecords, sourcesRecord],
+      started_at: startedAt,
+      completed_at: recordedAt,
+    });
     return ok("project.create", { project_path: projectPath, project_metadata_path: projectMetadataPath, provider_mode: providerMode, sources_path: sourcesPath, source_count: sources.length });
   } catch (error) {
     return fail("project.create", "PROJECT_CREATE_FAILED", error);
@@ -530,24 +650,117 @@ export function exploreProject(
     const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
     const asr = options.asr ?? "auto";
     const manifest = readManifest(projectPath);
+    assertExploreSourceBoundary(projectPath, manifest);
     const transcriptPath = join(projectPath, projectArtifacts.transcriptJson);
     if (!existsSync(transcriptPath)) {
       if (providerMode === "platform" && asr === "auto") throw platformProviderBlocked("asr", projectArtifacts.transcriptJson, "platform mode requires transcript.json before project explore --asr auto", "Host/platform must write transcript.json into the TaskWorkspace/project before explore, or rerun with --asr external/off to avoid CLI-owned ASR.", { asr, accepted_asr: ["external", "off"], required_artifact: projectArtifacts.transcriptJson });
       if (asr === "off" || asr === "external") throw new Error(`missing transcript.json for --asr ${asr}`);
       return transcribeProject(projectPath, manifest, options.asrProvider).then((transcript) => {
         writeJson(transcriptPath, transcript);
-        return finishExploreProject(projectPath, manifest, transcriptPath);
+        return finishExploreProject(projectPath, manifest, transcriptPath, "cli");
       }).catch((error) => fail("project.explore", "PROJECT_EXPLORE_FAILED", error));
     }
 
-    return Promise.resolve(finishExploreProject(projectPath, manifest, transcriptPath));
+    return Promise.resolve(finishExploreProject(projectPath, manifest, transcriptPath, "agent"));
   } catch (error) {
     return Promise.resolve(fail("project.explore", "PROJECT_EXPLORE_FAILED", error));
   }
 }
 
-function finishExploreProject(projectPath: string, manifest: SourcesManifest, transcriptPath: string): CommandResult<"project.explore", ProjectExploreData> {
-  const transcript = clampTranscriptToSources(parseTranscript(readJson(transcriptPath), manifest), manifest);
+function finishExploreProject(
+  projectPath: string,
+  manifest: SourcesManifest,
+  transcriptPath: string,
+  transcriptAuthor: "cli" | "agent",
+): CommandResult<"project.explore", ProjectExploreData> {
+  const startedAt = new Date().toISOString();
+  const recordedAt = new Date().toISOString();
+  const lifecycleManifest = readProjectArtifactManifest(projectPath);
+  const records: ArtifactRecord[] = [];
+  const projectMetadata = readProjectMetadata(projectPath);
+  if (!projectMetadata) {
+    throw lifecycleCommandError(
+      "PROJECT_METADATA_MISSING",
+      "project.json is required before project explore",
+      "project",
+      "Restore project.json or create a new project from the source media.",
+      "project.explore",
+    );
+  }
+
+  let sourceRecords: ArtifactRecord[];
+  let sourcesRecord: ArtifactRecord;
+  if (lifecycleManifest) {
+    const projectRecord = assertArtifactRecordCurrent(
+      projectPath,
+      lifecycleManifest,
+      "project",
+      semanticJsonFingerprint(projectMetadataFingerprintProjection(projectMetadata)),
+      new Set(),
+      new Set(),
+      "project.explore",
+    );
+    assertArtifactRecordContract(
+      projectRecord,
+      {
+        path: projectArtifacts.project,
+        role: "authoritative_input",
+        schema_version: projectMetadata.contract_version ?? "legacy",
+      },
+      "project.explore",
+    );
+    ({ source_records: sourceRecords, sources_record: sourcesRecord } = assertCurrentSourceLineage(
+      projectPath,
+      manifest,
+      lifecycleManifest,
+      "project.explore",
+    ));
+  } else {
+    const projectRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "project",
+      path: projectArtifacts.project,
+      role: "authoritative_input",
+      schema_version: projectMetadata.contract_version ?? "legacy",
+      authored_by: "cli",
+      command: "project.explore",
+      mode: "validated",
+      value: projectMetadataFingerprintProjection(projectMetadata),
+      recorded_at: recordedAt,
+    });
+    sourceRecords = manifest.sources.map((source) => {
+      projectSourceFingerprint(projectPath, source.source_id, source.project_path, "project.explore");
+      return recordFileArtifact({
+        project_path: projectPath,
+        key: `source:${source.source_id}`,
+        path: source.project_path,
+        role: "authoritative_input",
+        schema_version: "bytes-v1",
+        authored_by: "cli",
+        command: "project.explore",
+        mode: "validated",
+        recorded_at: recordedAt,
+      });
+    });
+    const sourceReferences = sourceRecords.map(artifactReference);
+    sourcesRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "sources",
+      path: projectArtifacts.sources,
+      role: "authoritative_input",
+      schema_version: "1.0",
+      authored_by: "cli",
+      command: "project.explore",
+      mode: "validated",
+      inputs: sourceReferences,
+      value: manifest,
+      file_sha256: projectFileBytesFingerprint(projectPath, projectArtifacts.sources, "sources manifest"),
+      recorded_at: recordedAt,
+    });
+    records.push(projectRecord, ...sourceRecords, sourcesRecord);
+  }
+
+  const transcript = clampTranscriptToSources(parseTranscript(readProjectJson(projectPath, projectArtifacts.transcriptJson, "transcript"), manifest), manifest);
   writeJson(transcriptPath, transcript);
 
   const analysis = detectCandidates(transcript);
@@ -555,8 +768,76 @@ function finishExploreProject(projectPath: string, manifest: SourcesManifest, tr
   writeJson(analysisPath, analysis);
 
   const materialReportPath = join(projectPath, projectArtifacts.materialReport);
-  writeFileSync(materialReportPath, renderMaterialReport(manifest, transcript, analysis));
-  writeFileSync(join(projectPath, projectArtifacts.transcriptMarkdown), renderTranscriptMarkdown(transcript));
+  const transcriptMarkdownPath = join(projectPath, projectArtifacts.transcriptMarkdown);
+  atomicWriteText(materialReportPath, renderMaterialReport(manifest, transcript, analysis));
+  atomicWriteText(transcriptMarkdownPath, renderTranscriptMarkdown(transcript));
+
+  const sourceReferences = sourceRecords.map(artifactReference);
+  const transcriptRecord = recordJsonArtifact({
+    project_path: projectPath,
+    key: "transcript",
+    path: projectArtifacts.transcriptJson,
+    role: "authoritative_input",
+    schema_version: "1.0",
+    authored_by: transcriptAuthor,
+    command: "project.explore",
+    mode: transcriptAuthor === "cli" ? "produced" : "validated",
+    inputs: [artifactReference(sourcesRecord)],
+    value: transcript,
+    file_sha256: fileBytesFingerprint(transcriptPath),
+    recorded_at: recordedAt,
+  });
+  const analysisRecord = recordJsonArtifact({
+    project_path: projectPath,
+    key: "analysis",
+    path: projectArtifacts.analysis,
+    role: "derived",
+    schema_version: "1.0",
+    authored_by: "cli",
+    command: "project.explore",
+    mode: "produced",
+    inputs: [artifactReference(transcriptRecord)],
+    value: analysis,
+    file_sha256: fileBytesFingerprint(analysisPath),
+    recorded_at: recordedAt,
+  });
+  const viewRecords = [
+    recordFileArtifact({
+      project_path: projectPath,
+      key: "material-report",
+      path: projectArtifacts.materialReport,
+      role: "human_view",
+      schema_version: "markdown-v1",
+      authored_by: "cli",
+      command: "project.explore",
+      mode: "produced",
+      inputs: [artifactReference(analysisRecord)],
+      recorded_at: recordedAt,
+    }),
+    recordFileArtifact({
+      project_path: projectPath,
+      key: "transcript-view",
+      path: projectArtifacts.transcriptMarkdown,
+      role: "human_view",
+      schema_version: "markdown-v1",
+      authored_by: "cli",
+      command: "project.explore",
+      mode: "produced",
+      inputs: [artifactReference(transcriptRecord)],
+      recorded_at: recordedAt,
+    }),
+  ];
+  const stageInputs = [artifactReference(sourcesRecord), ...sourceReferences, artifactReference(transcriptRecord)];
+  commitProjectStage({
+    project_path: projectPath,
+    stage: "project.explore",
+    command: "project.explore",
+    input_fingerprint: inputFingerprint(stageInputs),
+    inputs: stageInputs,
+    records: [...records, transcriptRecord, analysisRecord, ...viewRecords],
+    started_at: startedAt,
+    completed_at: recordedAt,
+  });
 
   return ok("project.explore", {
     project_path: projectPath,
@@ -569,11 +850,19 @@ function finishExploreProject(projectPath: string, manifest: SourcesManifest, tr
 }
 
 export function reviewProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.review", ProjectReviewData> {
+  const startedAt = new Date().toISOString();
   try {
     resolveProjectProviderMode(projectPath, options.providerMode);
     const manifest = readManifest(projectPath);
-    const transcript = parseTranscript(readJson(join(projectPath, projectArtifacts.transcriptJson)), manifest);
-    const analysis = parseAnalysis(readJson(join(projectPath, projectArtifacts.analysis)), manifest);
+    const transcript = parseTranscript(readProjectJson(projectPath, projectArtifacts.transcriptJson, "transcript"), manifest);
+    const analysis = parseAnalysis(readProjectJson(projectPath, projectArtifacts.analysis, "analysis"), manifest);
+    const { transcript_record: transcriptRecord, analysis_record: analysisRecord } = assertCurrentMaterialLineage(
+      projectPath,
+      manifest,
+      transcript,
+      analysis,
+      "project.review",
+    );
     const unresolved =
       transcript.timing_granularity === "word"
         ? isChinese(transcript.language) && transcript.timing_validated !== true
@@ -588,7 +877,45 @@ export function reviewProject(projectPath: string, options: ProviderModeOption =
     const reviewJsonPath = join(projectPath, projectArtifacts.reviewJson);
     const reviewMarkdownPath = join(projectPath, projectArtifacts.reviewMarkdown);
     writeJson(reviewJsonPath, reviewPackage);
-    writeFileSync(reviewMarkdownPath, renderReviewMarkdown(reviewPackage, transcript.timing_granularity));
+    atomicWriteText(reviewMarkdownPath, renderReviewMarkdown(reviewPackage, transcript.timing_granularity));
+    const recordedAt = new Date().toISOString();
+    const inputs = [artifactReference(transcriptRecord), artifactReference(analysisRecord)];
+    const reviewRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "review-package",
+      path: projectArtifacts.reviewJson,
+      role: "derived",
+      schema_version: "1.0",
+      authored_by: "cli",
+      command: "project.review",
+      mode: "produced",
+      inputs,
+      value: reviewPackage,
+      file_sha256: fileBytesFingerprint(reviewJsonPath),
+      recorded_at: recordedAt,
+    });
+    const reviewViewRecord = recordFileArtifact({
+      project_path: projectPath,
+      key: "review-package-view",
+      path: projectArtifacts.reviewMarkdown,
+      role: "human_view",
+      schema_version: "markdown-v1",
+      authored_by: "cli",
+      command: "project.review",
+      mode: "produced",
+      inputs: [artifactReference(reviewRecord)],
+      recorded_at: recordedAt,
+    });
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "project.review",
+      command: "project.review",
+      input_fingerprint: inputFingerprint(inputs),
+      inputs,
+      records: [reviewRecord, reviewViewRecord],
+      started_at: startedAt,
+      completed_at: recordedAt,
+    });
     return ok("project.review", {
       project_path: projectPath,
       review_package_path: reviewMarkdownPath,
@@ -602,18 +929,104 @@ export function reviewProject(projectPath: string, options: ProviderModeOption =
 }
 
 export function proposalProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.proposal", ProjectProposalData> {
+  const startedAt = new Date().toISOString();
   try {
     resolveProjectProviderMode(projectPath, options.providerMode);
     const manifest = readManifest(projectPath);
-    const review = parseReviewPackage(readJson(join(projectPath, projectArtifacts.reviewJson)), manifest);
+    const transcript = parseTranscript(readProjectJson(projectPath, projectArtifacts.transcriptJson, "transcript"), manifest);
+    const analysis = parseAnalysis(readProjectJson(projectPath, projectArtifacts.analysis, "analysis"), manifest);
+    const materialLineage = assertCurrentMaterialLineage(
+      projectPath,
+      manifest,
+      transcript,
+      analysis,
+      "project.proposal",
+    );
+    const review = parseReviewPackage(readProjectJson(projectPath, projectArtifacts.reviewJson, "review package"), manifest);
+    const reviewRecord = assertArtifactRecordCurrent(
+      projectPath,
+      materialLineage.manifest,
+      "review-package",
+      semanticJsonFingerprint(review),
+      new Set(),
+      new Set(),
+      "project.proposal",
+    );
+    assertArtifactRecordContract(
+      reviewRecord,
+      { path: projectArtifacts.reviewJson, role: "derived", schema_version: "1.0" },
+      "project.proposal",
+    );
+    assertArtifactInputs(
+      reviewRecord,
+      [artifactReference(materialLineage.transcript_record), artifactReference(materialLineage.analysis_record)],
+      "project.proposal",
+    );
     const proposalPath = join(projectPath, projectArtifacts.productionProposal);
-    const proposal = parseProductionProposal(readJson(proposalPath));
+    const proposal = parseProductionProposal(readProjectJson(projectPath, projectArtifacts.productionProposal, "production proposal"));
     validateProductionProposalAgainstReview(proposal, review);
     const warnings = productionProposalWarnings(proposal);
     const markdownPath = join(projectPath, projectArtifacts.productionProposalMarkdown);
-    writeFileSync(markdownPath, renderProductionProposalMarkdown(proposal, warnings));
+    atomicWriteText(markdownPath, renderProductionProposalMarkdown(proposal, warnings));
     const summaries = proposal.options.map(productionProposalOptionSummary);
     const recommendedOption = proposal.options.find((option) => option.id === proposal.recommended_option_id)!;
+    const proposal_fingerprint = proposalFingerprint(proposal);
+    const option_selection_fingerprints = proposalSelectionFingerprints(proposal);
+    const reviewReference = artifactReference(reviewRecord);
+    const recordedAt = new Date().toISOString();
+    const proposalRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "production-proposal",
+      path: projectArtifacts.productionProposal,
+      role: "authoritative_input",
+      schema_version: proposal.version,
+      authored_by: "agent",
+      command: "project.proposal",
+      mode: "validated",
+      inputs: [reviewReference],
+      value: proposal,
+      file_sha256: fileBytesFingerprint(proposalPath),
+      recorded_at: recordedAt,
+    });
+    const proposalReference = artifactReference(proposalRecord);
+    const selectionRecords = proposal.options.map((option) =>
+      recordJsonArtifact({
+        project_path: projectPath,
+        key: `proposal-selection:${option.id}`,
+        path: proposalSelectionVirtualPath(option.id),
+        role: "derived",
+        schema_version: proposal.version,
+        authored_by: "cli",
+        command: "project.proposal",
+        mode: "produced",
+        inputs: [proposalReference],
+        value: proposalSelectionProjection(proposal, option.id),
+        recorded_at: recordedAt,
+      }),
+    );
+    const markdownRecord = recordFileArtifact({
+      project_path: projectPath,
+      key: "production-proposal-view",
+      path: projectArtifacts.productionProposalMarkdown,
+      role: "human_view",
+      schema_version: "markdown-v1",
+      authored_by: "cli",
+      command: "project.proposal",
+      mode: "produced",
+      inputs: [proposalReference],
+      recorded_at: recordedAt,
+    });
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "project.proposal",
+      command: "project.proposal",
+      input_fingerprint: inputFingerprint([reviewReference]),
+      inputs: [reviewReference],
+      records: [proposalRecord, ...selectionRecords, markdownRecord],
+      replace_record_prefixes: ["proposal-selection:"],
+      started_at: startedAt,
+      completed_at: recordedAt,
+    });
     return ok("project.proposal", {
       project_path: projectPath,
       proposal_path: proposalPath,
@@ -623,6 +1036,8 @@ export function proposalProject(projectPath: string, options: ProviderModeOption
       recommended_option_id: proposal.recommended_option_id,
       recommended_option: productionProposalOptionSummary(recommendedOption),
       options: summaries,
+      proposal_fingerprint,
+      option_selection_fingerprints,
       warnings,
       next_required_artifacts: nextRequiredArtifactsForProposal(recommendedOption),
     });
@@ -634,7 +1049,8 @@ export function proposalProject(projectPath: string, options: ProviderModeOption
 export function enrichPlanProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.enrich-plan", ProjectEnrichPlanData> {
   try {
     resolveProjectProviderMode(projectPath, options.providerMode);
-    const { plan, assets, duration, warnings } = validateEnrichmentPlan(projectPath);
+    const { plan, assets, duration, warnings, normalized } = validateEnrichmentPlan(projectPath, undefined, undefined, { normalizeUsage: true });
+    if (!normalized) commitCanonicalEnrichmentValidation(projectPath, plan, assets);
     const visualCount = plan.cards.length;
     const musicCount = plan.music.length;
     const hyperframes = summarizeHyperframesBlocks(plan, assets);
@@ -654,6 +1070,7 @@ export function enrichPlanProject(projectPath: string, options: ProviderModeOpti
       warnings,
       block_usage: hyperframes.block_usage,
       element_usage: elementUsage,
+      audio_usage: summarizeAudioUsage(plan),
       cdn_dependencies: hyperframes.cdn_dependencies,
       asset_summary: summarizeAssets(projectPath, assets),
       qa_checks: qaChecks,
@@ -684,15 +1101,64 @@ export function elementCatalogProject(projectPath: string, options: ProviderMode
 }
 
 export function focusCandidatesProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.focus-candidates", ProjectFocusCandidatesData> {
+  const startedAt = new Date().toISOString();
+  let stageInputFingerprint: Fingerprint | undefined;
+  let stageInputs: ArtifactFingerprintReference[] | undefined;
   try {
     resolveProjectProviderMode(projectPath, options.providerMode);
-    const edl = readOrBuildEdl(projectPath);
+    const compiledEdl = compileCurrentEdl(projectPath);
+    const edl = compiledEdl.edl;
     const duration = edlDuration(edl);
     const candidatesPath = join(projectPath, projectArtifacts.focusCandidates);
-    const candidates = parseFocusCandidates(readJson(candidatesPath));
+    const candidates = parseFocusCandidates(readProjectJson(projectPath, projectArtifacts.focusCandidates, "focus candidates"));
+    const edlReference = artifactReference(compiledEdl.edl_record);
+    const candidatesReference: ArtifactFingerprintReference = {
+      key: "focus-candidates",
+      schema_version: candidates.version,
+      fingerprint: semanticJsonFingerprint(candidates),
+    };
+    stageInputs = [edlReference, candidatesReference];
+    stageInputFingerprint = inputFingerprint(stageInputs);
     const warnings = validateFocusCandidates(candidates, duration);
     const markdownPath = join(projectPath, projectArtifacts.focusCandidatesMarkdown);
-    writeFileSync(markdownPath, renderFocusCandidatesMarkdown(candidates, warnings));
+    atomicWriteText(markdownPath, renderFocusCandidatesMarkdown(candidates, warnings));
+    const recordedAt = new Date().toISOString();
+    const candidatesRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "focus-candidates",
+      path: projectArtifacts.focusCandidates,
+      role: "authoritative_input",
+      schema_version: candidates.version,
+      authored_by: "agent",
+      command: "project.focus-candidates",
+      mode: "validated",
+      inputs: [edlReference],
+      value: candidates,
+      file_sha256: fileBytesFingerprint(candidatesPath),
+      recorded_at: recordedAt,
+    });
+    const markdownRecord = recordFileArtifact({
+      project_path: projectPath,
+      key: "focus-candidates-view",
+      path: projectArtifacts.focusCandidatesMarkdown,
+      role: "human_view",
+      schema_version: "markdown-v1",
+      authored_by: "cli",
+      command: "project.focus-candidates",
+      mode: "produced",
+      inputs: [artifactReference(candidatesRecord)],
+      recorded_at: recordedAt,
+    });
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "project.focus-candidates",
+      command: "project.focus-candidates",
+      input_fingerprint: stageInputFingerprint,
+      inputs: stageInputs,
+      records: [candidatesRecord, markdownRecord],
+      started_at: startedAt,
+      completed_at: recordedAt,
+    });
     return ok("project.focus-candidates", {
       project_path: projectPath,
       focus_candidates_path: candidatesPath,
@@ -704,18 +1170,151 @@ export function focusCandidatesProject(projectPath: string, options: ProviderMod
       warnings,
     });
   } catch (error) {
+    if (stageInputFingerprint && existsSync(projectPath)) {
+      try {
+        commitProjectStageFailure({
+          project_path: projectPath,
+          stage: "project.focus-candidates",
+          command: "project.focus-candidates",
+          input_fingerprint: stageInputFingerprint,
+          inputs: stageInputs,
+          failure_code: errorCode(error, "PROJECT_FOCUS_CANDIDATES_FAILED"),
+          failure_message: error instanceof Error ? error.message : String(error),
+          artifact: "focus-candidates",
+          remediation: errorRemediation(error, "Fix focus-candidates.json against the current EDL, then rerun project focus-candidates."),
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+        });
+      } catch {
+        // Preserve the original focus candidate validation failure.
+      }
+    }
     return fail("project.focus-candidates", "PROJECT_FOCUS_CANDIDATES_FAILED", error);
   }
 }
 
 export function focusFramesProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.focus-frames", ProjectFocusFramesData> {
+  const startedAt = new Date().toISOString();
+  let stageInputFingerprint: Fingerprint | undefined;
+  let stageInputs: ArtifactFingerprintReference[] | undefined;
   try {
     resolveProjectProviderMode(projectPath, options.providerMode);
-    const edl = readOrBuildEdl(projectPath);
-    const candidates = parseFocusCandidates(readJson(join(projectPath, projectArtifacts.focusCandidates)));
-    const frames = extractFocusFrames(projectPath, candidates, edl);
-    const framesPath = join(projectPath, projectArtifacts.focusFrames);
-    writeJson(framesPath, { version: "1.0", frames } satisfies FocusFramesArtifact);
+    const compiledEdl = compileCurrentEdl(projectPath);
+    const edl = compiledEdl.edl;
+    const edlReference = artifactReference(compiledEdl.edl_record);
+    const candidatesPath = join(projectPath, projectArtifacts.focusCandidates);
+    const candidates = parseFocusCandidates(readProjectJson(projectPath, projectArtifacts.focusCandidates, "focus candidates"));
+    const lifecycleManifest = readProjectArtifactManifest(projectPath);
+    if (!lifecycleManifest) {
+      throw lifecycleCommandError(
+        "FOCUS_CANDIDATES_PENDING_VALIDATION",
+        "focus-candidates.json must be validated before extracting focus frames",
+        "focus-candidates",
+        "Run project focus-candidates, then retry project focus-frames.",
+        "project.focus-frames",
+      );
+    }
+    const candidatesFingerprint = semanticJsonFingerprint(candidates);
+    const candidatesReference: ArtifactFingerprintReference = {
+      key: "focus-candidates",
+      fingerprint: candidatesFingerprint,
+      schema_version: candidates.version,
+    };
+    const timeline = buildOutputTimeline(edl);
+    const samples: FocusFrameSample[] = candidates.candidates
+      .filter((candidate) => candidate.requires_grounding)
+      .flatMap((candidate) =>
+        focusSampleTimes(candidate).map((time, index) => {
+          const mapped = mapOutputTime(timeline, time, candidate.id);
+          return { candidate, index, mapped };
+        }),
+      );
+    const sourceReferences = [...new Set(samples.map((sample) => sample.mapped.source_id))].map((sourceId) => {
+      const reference = compiledEdl.input_references.find((input) => input.key === `source:${sourceId}`);
+      if (!reference) throw new Error(`artifact manifest is missing current source bytes: ${sourceId}`);
+      return reference;
+    });
+    stageInputs = [edlReference, candidatesReference, ...sourceReferences];
+    stageInputFingerprint = inputFingerprint(stageInputs);
+    const candidatesRecord = requiredArtifactRecord(lifecycleManifest, "focus-candidates");
+    assertArtifactRecordCurrent(
+      projectPath,
+      lifecycleManifest,
+      "focus-candidates",
+      candidatesFingerprint,
+      new Set(),
+      new Set(),
+      "project.focus-frames",
+    );
+    if (!referencesEqual(candidatesRecord.inputs, [edlReference])) {
+      throw lifecycleCommandError(
+        "FOCUS_CANDIDATES_STALE",
+        "focus-candidates.json was not validated against the current EDL",
+        "focus-candidates",
+        "Rerun project focus-candidates, then retry project focus-frames.",
+        "project.focus-frames",
+      );
+    }
+
+    const stagingId = Date.now().toString(36);
+    const stagingDir = resolveProjectOutputPath(projectPath, `.focus-frames-staging-${stagingId}`, "focus frame staging directory");
+    const frames = extractFocusFrames(samples, stagingDir);
+    const framesPath = resolveProjectOutputPath(projectPath, projectArtifacts.focusFrames, "focus frames output");
+    const framesTargetDir = resolveProjectOutputPath(projectPath, join(".focus", "frames"), "focus frame output directory");
+    const artifact = parseFocusFrames({ version: "1.0", frames } satisfies FocusFramesArtifact);
+    const stagedFramesPath = resolveProjectOutputPath(projectPath, `.focus-frames-${stagingId}.json`, "focus frames staged manifest");
+    atomicWriteJson(stagedFramesPath, artifact);
+    parseFocusFrames(readJson(stagedFramesPath));
+    mkdirSync(dirname(framesTargetDir), { recursive: true });
+    const recordedAt = new Date().toISOString();
+    commitManagedPublications(
+      [
+        { staged_path: stagingDir, target_path: framesTargetDir },
+        { staged_path: stagedFramesPath, target_path: framesPath },
+      ],
+      () => {
+        const sourceReferenceById = new Map(sourceReferences.map((reference) => [reference.key.slice("source:".length), reference]));
+        const frameRecords = frames.map((frame) =>
+          recordFileArtifact({
+            project_path: projectPath,
+            key: `focus-frame:${frame.id}`,
+            path: frame.path,
+            role: "evidence",
+            schema_version: "image/jpeg",
+            authored_by: "cli",
+            command: "project.focus-frames",
+            mode: "produced",
+            inputs: [edlReference, artifactReference(candidatesRecord), sourceReferenceById.get(frame.source_id!)!],
+            recorded_at: recordedAt,
+          }),
+        );
+        const framesRecord = recordJsonArtifact({
+          project_path: projectPath,
+          key: "focus-frames",
+          path: projectArtifacts.focusFrames,
+          role: "evidence",
+          schema_version: artifact.version,
+          authored_by: "cli",
+          command: "project.focus-frames",
+          mode: "produced",
+          inputs: [edlReference, artifactReference(candidatesRecord), ...frameRecords.map(artifactReference)],
+          value: artifact,
+          file_sha256: projectFileBytesFingerprint(projectPath, projectArtifacts.focusFrames, "focus frames"),
+          recorded_at: recordedAt,
+        });
+        commitProjectStage({
+          project_path: projectPath,
+          stage: "project.focus-frames",
+          command: "project.focus-frames",
+          input_fingerprint: stageInputFingerprint!,
+          inputs: stageInputs,
+          records: [...frameRecords, framesRecord],
+          replace_record_prefixes: ["focus-frame:"],
+          started_at: startedAt,
+          completed_at: recordedAt,
+        });
+      },
+    );
     return ok("project.focus-frames", {
       project_path: projectPath,
       focus_frames_path: framesPath,
@@ -723,28 +1322,154 @@ export function focusFramesProject(projectPath: string, options: ProviderModeOpt
       frames,
     });
   } catch (error) {
+    if (stageInputFingerprint && existsSync(projectPath)) {
+      try {
+        commitProjectStageFailure({
+          project_path: projectPath,
+          stage: "project.focus-frames",
+          command: "project.focus-frames",
+          input_fingerprint: stageInputFingerprint,
+          inputs: stageInputs,
+          failure_code: errorCode(error, "PROJECT_FOCUS_FRAMES_FAILED"),
+          failure_message: error instanceof Error ? error.message : String(error),
+          artifact: "focus-frames",
+          remediation: errorRemediation(error, "Fix current focus candidates or source media, then rerun project focus-frames."),
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+        });
+      } catch {
+        // Preserve the original focus frame extraction failure.
+      }
+    }
     return fail("project.focus-frames", "PROJECT_FOCUS_FRAMES_FAILED", error);
   }
 }
 
 export function sourceFramesProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.source-frames", ProjectSourceFramesData> {
+  const startedAt = new Date().toISOString();
+  let stageInputFingerprint: Fingerprint | undefined;
+  let stageInputs: ArtifactFingerprintReference[] | undefined;
   try {
     resolveProjectProviderMode(projectPath, options.providerMode);
-    rmSync(join(projectPath, projectArtifacts.sourceFrames), { force: true });
-    rmSync(join(projectPath, ".source-frames"), { recursive: true, force: true });
-
     const request = readSourceFrameRequest(projectPath);
-    const manifest = readSourcesForSourceFrames(projectPath);
+    const sources = readSourcesForSourceFrames(projectPath);
+    stageInputs = [
+      {
+        key: "source-frame-request",
+        schema_version: request.version,
+        fingerprint: semanticJsonFingerprint(request),
+      },
+      ...sources.sources.map((source) => ({
+        key: `source:${source.source_id}`,
+        schema_version: "bytes-v1",
+        fingerprint: sourceFrameInputFingerprint(projectPath, source.source_id, source.project_path),
+      } satisfies ArtifactFingerprintReference)),
+    ];
+    stageInputFingerprint = inputFingerprint(stageInputs);
+    const lifecycleManifest = readProjectArtifactManifest(projectPath);
     const warnings = sourceFrameDuplicateWarnings(request);
-    const frames = extractSourceFrames(projectPath, request, manifest);
+    const stagingId = Date.now().toString(36);
+    const stagingDir = resolveProjectOutputPath(projectPath, `.source-frames-staging-${stagingId}`, "source frame staging directory");
+    const stagedManifestPath = resolveProjectOutputPath(projectPath, `.source-frames-${stagingId}.json`, "source frame staged manifest");
+    const framesTargetPath = resolveProjectOutputPath(projectPath, ".source-frames", "source frame output directory");
+    const manifestTargetPath = resolveProjectOutputPath(projectPath, projectArtifacts.sourceFrames, "source frames output");
+    const frames = extractSourceFrames(projectPath, request, sources, stagingDir);
     validateSourceFrameByteLimits(frames.map((frame) => frame.size_bytes));
     const totalSizeBytes = frames.reduce((sum, frame) => sum + frame.size_bytes, 0);
-    writeJson(join(projectPath, projectArtifacts.sourceFrames), {
+    const artifact = {
       version: "1.0",
       frames,
       frame_count: frames.length,
       total_size_bytes: totalSizeBytes,
-    } satisfies SourceFramesArtifact);
+    } satisfies SourceFramesArtifact;
+    atomicWriteJson(stagedManifestPath, artifact);
+
+    const recordedAt = new Date().toISOString();
+    const sourceRecords = sources.sources.map((source) => {
+      const existing = lifecycleManifest?.artifacts[`source:${source.source_id}`];
+      const currentFingerprint = fileBytesFingerprint(readableProjectSource(projectPath, source.source_id, source.project_path));
+      if (existing && existing.fingerprint === currentFingerprint) return existing;
+      if (existing) throw sourceFrameError("SOURCE_FRAME_SOURCE_CHANGED", `source ${source.source_id} changed after project creation`);
+      return recordFileArtifact({
+        project_path: projectPath,
+        key: `source:${source.source_id}`,
+        path: source.project_path,
+        role: "authoritative_input",
+        schema_version: "bytes-v1",
+        authored_by: "cli",
+        command: "project.source-frames",
+        mode: "validated",
+        recorded_at: recordedAt,
+      });
+    });
+    const sourceReferences = sourceRecords.map(artifactReference);
+    const requestRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "source-frame-request",
+      path: projectArtifacts.sourceFrameRequest,
+      role: "command_request",
+      schema_version: request.version,
+      authored_by: "agent",
+      command: "project.source-frames",
+      mode: "validated",
+      inputs: sourceReferences,
+      value: request,
+      file_sha256: projectFileBytesFingerprint(projectPath, projectArtifacts.sourceFrameRequest, "source frame request"),
+      recorded_at: recordedAt,
+    });
+    const requestReference = artifactReference(requestRecord);
+    const frameRecords = frames.map((frame) => {
+      const fingerprint = `sha256:${frame.sha256}` as Fingerprint;
+      return recordArtifactValue({
+        project_path: projectPath,
+        key: `source-frame:${frame.id}`,
+        path: frame.path,
+        role: "evidence",
+        schema_version: "image/jpeg",
+        authored_by: "cli",
+        command: "project.source-frames",
+        mode: "produced",
+        inputs: [requestReference, artifactReference(sourceRecords.find((record) => record.key === `source:${frame.source_id}`)!)],
+        fingerprint,
+        file_sha256: fingerprint,
+        recorded_at: recordedAt,
+      });
+    });
+    const sourceFramesRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "source-frames",
+      path: projectArtifacts.sourceFrames,
+      role: "evidence",
+      schema_version: artifact.version,
+      authored_by: "cli",
+      command: "project.source-frames",
+      mode: "produced",
+      inputs: [requestReference, ...frameRecords.map(artifactReference)],
+      value: artifact,
+      file_sha256: fileBytesFingerprint(stagedManifestPath),
+      recorded_at: recordedAt,
+    });
+    stageInputs = [requestReference, ...sourceReferences];
+    stageInputFingerprint = inputFingerprint(stageInputs);
+    commitManagedPublications(
+      [
+        { staged_path: stagingDir, target_path: framesTargetPath },
+        { staged_path: stagedManifestPath, target_path: manifestTargetPath },
+      ],
+      () => {
+        commitProjectStage({
+          project_path: projectPath,
+          stage: "project.source-frames",
+          command: "project.source-frames",
+          input_fingerprint: stageInputFingerprint!,
+          inputs: stageInputs,
+          records: [...sourceRecords.filter((record) => !lifecycleManifest?.artifacts[record.key]), requestRecord, ...frameRecords, sourceFramesRecord],
+          replace_record_prefixes: ["source-frame:"],
+          started_at: startedAt,
+          completed_at: recordedAt,
+        });
+      },
+    );
     return ok("project.source-frames", {
       project_path: projectPath,
       source_frame_request_path: projectArtifacts.sourceFrameRequest,
@@ -754,19 +1479,143 @@ export function sourceFramesProject(projectPath: string, options: ProviderModeOp
       warnings,
     });
   } catch (error) {
+    if (stageInputFingerprint && existsSync(projectPath)) {
+      try {
+        commitProjectStageFailure({
+          project_path: projectPath,
+          stage: "project.source-frames",
+          command: "project.source-frames",
+          input_fingerprint: stageInputFingerprint,
+          inputs: stageInputs,
+          failure_code: errorCode(error, "PROJECT_SOURCE_FRAMES_FAILED"),
+          failure_message: error instanceof Error ? error.message : String(error),
+          artifact: "source-frames",
+          remediation: errorRemediation(error, "Fix source-frame-request.json or source media, then rerun project source-frames."),
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+        });
+      } catch {
+        // Preserve the original extraction failure.
+      }
+    }
     if (isSourceFrameError(error) || isProviderModeError(error)) return fail("project.source-frames", "PROJECT_SOURCE_FRAMES_FAILED", error);
     return fail("project.source-frames", "PROJECT_SOURCE_FRAMES_FAILED", new Error("source frames command failed"));
   }
 }
 
+function sourceFrameInputFingerprint(projectPath: string, _sourceId: string, projectRelativePath: string): Fingerprint {
+  try {
+    return projectFileBytesFingerprint(projectPath, projectRelativePath, "source media");
+  } catch {
+    throw sourceFrameError("SOURCE_FRAME_SOURCE_NOT_FOUND", "source media is not readable");
+  }
+}
+
 export function focusGroundingProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.focus-grounding", ProjectFocusGroundingData> {
+  const startedAt = new Date().toISOString();
+  let stageInputFingerprint: Fingerprint | undefined;
+  let stageInputs: ArtifactFingerprintReference[] | undefined;
   try {
     resolveProjectProviderMode(projectPath, options.providerMode);
-    const candidates = parseFocusCandidates(readJson(join(projectPath, projectArtifacts.focusCandidates)));
-    const frames = parseFocusFrames(readJson(join(projectPath, projectArtifacts.focusFrames)));
+    compileCurrentEdl(projectPath);
+    const candidatesPath = join(projectPath, projectArtifacts.focusCandidates);
+    const framesPath = join(projectPath, projectArtifacts.focusFrames);
+    const candidates = parseFocusCandidates(readProjectJson(projectPath, projectArtifacts.focusCandidates, "focus candidates"));
+    const frames = parseFocusFrames(readProjectJson(projectPath, projectArtifacts.focusFrames, "focus frames"));
     const groundingPath = join(projectPath, projectArtifacts.focusGrounding);
-    const grounding = parseFocusGrounding(readJson(groundingPath));
+    const grounding = parseFocusGrounding(readProjectJson(projectPath, projectArtifacts.focusGrounding, "focus grounding"));
+    const lifecycleManifest = readProjectArtifactManifest(projectPath);
+    if (!lifecycleManifest) throw new Error("artifact manifest is required for focus grounding validation");
+    const candidateReference: ArtifactFingerprintReference = {
+      key: "focus-candidates",
+      fingerprint: semanticJsonFingerprint(candidates),
+      schema_version: candidates.version,
+    };
+    const framesReference: ArtifactFingerprintReference = {
+      key: "focus-frames",
+      fingerprint: semanticJsonFingerprint(frames),
+      schema_version: frames.version,
+    };
+    const groundingReference: ArtifactFingerprintReference = {
+      key: "focus-grounding",
+      fingerprint: semanticJsonFingerprint(grounding),
+      schema_version: grounding.version,
+    };
+    stageInputs = [candidateReference, framesReference, groundingReference];
+    stageInputFingerprint = inputFingerprint(stageInputs);
+    const groundingFrameReferences = [...new Set(grounding.groundings.map((item) => item.frame_id))].map((frameId) => {
+      const frame = frames.frames.find((item) => item.id === frameId);
+      if (!frame) throw new Error(`focus grounding references unknown frame_id: ${frameId}`);
+      return {
+        key: `focus-frame:${frameId}`,
+        fingerprint: projectFileBytesFingerprint(projectPath, frame.path, `focus frame ${frame.id}`),
+        schema_version: "image/jpeg",
+      } satisfies ArtifactFingerprintReference;
+    });
+    stageInputs = [candidateReference, framesReference, ...groundingFrameReferences, groundingReference];
+    stageInputFingerprint = inputFingerprint(stageInputs);
+    const candidatesRecord = assertArtifactRecordCurrent(
+      projectPath,
+      lifecycleManifest,
+      "focus-candidates",
+      candidateReference.fingerprint,
+      new Set(),
+      new Set(),
+      "project.focus-grounding",
+    );
+    const framesRecord = assertArtifactRecordCurrent(
+      projectPath,
+      lifecycleManifest,
+      "focus-frames",
+      framesReference.fingerprint,
+      new Set(),
+      new Set(),
+      "project.focus-grounding",
+    );
+    const groundingFrameRecords = groundingFrameReferences.map((reference) => {
+      return assertArtifactRecordCurrent(
+        projectPath,
+        lifecycleManifest,
+        reference.key,
+        reference.fingerprint,
+        new Set(),
+        new Set(),
+        "project.focus-grounding",
+      );
+    });
+    stageInputs = [
+      artifactReference(candidatesRecord),
+      artifactReference(framesRecord),
+      ...groundingFrameRecords.map(artifactReference),
+      groundingReference,
+    ];
+    stageInputFingerprint = inputFingerprint(stageInputs);
     const review = buildFocusReview(projectPath, candidates, frames, grounding, false);
+    const recordedAt = new Date().toISOString();
+    const groundingRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "focus-grounding",
+      path: projectArtifacts.focusGrounding,
+      role: "authoritative_input",
+      schema_version: grounding.version,
+      authored_by: "agent",
+      command: "project.focus-grounding",
+      mode: "validated",
+      inputs: [artifactReference(candidatesRecord), artifactReference(framesRecord), ...groundingFrameRecords.map(artifactReference)],
+      value: grounding,
+      file_sha256: fileBytesFingerprint(groundingPath),
+      recorded_at: recordedAt,
+    });
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "project.focus-grounding",
+      command: "project.focus-grounding",
+      input_fingerprint: stageInputFingerprint,
+      inputs: stageInputs,
+      records: [groundingRecord],
+      started_at: startedAt,
+      completed_at: recordedAt,
+    });
     return ok("project.focus-grounding", {
       project_path: projectPath,
       focus_grounding_path: groundingPath,
@@ -777,43 +1626,212 @@ export function focusGroundingProject(projectPath: string, options: ProviderMode
       warnings: review.warnings,
     });
   } catch (error) {
+    if (stageInputFingerprint && existsSync(projectPath)) {
+      try {
+        commitProjectStageFailure({
+          project_path: projectPath,
+          stage: "project.focus-grounding",
+          command: "project.focus-grounding",
+          input_fingerprint: stageInputFingerprint,
+          inputs: stageInputs,
+          failure_code: errorCode(error, "PROJECT_FOCUS_GROUNDING_FAILED"),
+          failure_message: error instanceof Error ? error.message : String(error),
+          artifact: "focus-grounding",
+          remediation: errorRemediation(error, "Fix focus-grounding.json against current frame evidence, then rerun project focus-grounding."),
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+        });
+      } catch {
+        // Preserve the original focus grounding validation failure.
+      }
+    }
     return fail("project.focus-grounding", "PROJECT_FOCUS_GROUNDING_FAILED", error);
   }
 }
 
 export function focusReviewProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.focus-review", ProjectFocusReviewData> {
+  const startedAt = new Date().toISOString();
+  let stageInputFingerprint: Fingerprint | undefined;
+  let stageInputs: ArtifactFingerprintReference[] | undefined;
   try {
     resolveProjectProviderMode(projectPath, options.providerMode);
-    const candidates = parseFocusCandidates(readJson(join(projectPath, projectArtifacts.focusCandidates)));
-    const frames = parseFocusFrames(readJson(join(projectPath, projectArtifacts.focusFrames)));
-    const grounding = parseFocusGrounding(readJson(join(projectPath, projectArtifacts.focusGrounding)));
+    compileCurrentEdl(projectPath);
+    const candidates = parseFocusCandidates(readProjectJson(projectPath, projectArtifacts.focusCandidates, "focus candidates"));
+    const frames = parseFocusFrames(readProjectJson(projectPath, projectArtifacts.focusFrames, "focus frames"));
+    const grounding = parseFocusGrounding(readProjectJson(projectPath, projectArtifacts.focusGrounding, "focus grounding"));
+    const lifecycleManifest = readProjectArtifactManifest(projectPath);
+    if (!lifecycleManifest) throw new Error("artifact manifest is required for focus review");
+    const candidatesReference: ArtifactFingerprintReference = {
+      key: "focus-candidates",
+      fingerprint: semanticJsonFingerprint(candidates),
+      schema_version: candidates.version,
+    };
+    const framesReference: ArtifactFingerprintReference = {
+      key: "focus-frames",
+      fingerprint: semanticJsonFingerprint(frames),
+      schema_version: frames.version,
+    };
+    const groundingReference: ArtifactFingerprintReference = {
+      key: "focus-grounding",
+      fingerprint: semanticJsonFingerprint(grounding),
+      schema_version: grounding.version,
+    };
+    stageInputs = [candidatesReference, framesReference, groundingReference];
+    stageInputFingerprint = inputFingerprint(stageInputs);
+    const candidatesRecord = assertArtifactRecordCurrent(
+      projectPath,
+      lifecycleManifest,
+      "focus-candidates",
+      candidatesReference.fingerprint,
+      new Set(),
+      new Set(),
+      "project.focus-review",
+    );
+    const framesRecord = assertArtifactRecordCurrent(
+      projectPath,
+      lifecycleManifest,
+      "focus-frames",
+      framesReference.fingerprint,
+      new Set(),
+      new Set(),
+      "project.focus-review",
+    );
+    const groundingRecord = assertArtifactRecordCurrent(
+      projectPath,
+      lifecycleManifest,
+      "focus-grounding",
+      groundingReference.fingerprint,
+      new Set(),
+      new Set(),
+      "project.focus-review",
+    );
     const review = buildFocusReview(projectPath, candidates, frames, grounding, true);
     const reviewPath = join(projectPath, projectArtifacts.focusReview);
     const markdownPath = join(projectPath, projectArtifacts.focusReviewMarkdown);
-    writeJson(reviewPath, review);
-    writeFileSync(markdownPath, renderFocusReviewMarkdown(candidates, review));
+    const stagedReviewPath = join(projectPath, `.focus-review-${Date.now().toString(36)}.json`);
+    const stagedMarkdownPath = join(projectPath, `.focus-review-${Date.now().toString(36)}.md`);
+    atomicWriteJson(stagedReviewPath, review);
+    const parsedReview = parseFocusReview(readJson(stagedReviewPath));
+    atomicWriteText(stagedMarkdownPath, renderFocusReviewMarkdown(candidates, parsedReview));
+    atomicReplaceFile(stagedReviewPath, reviewPath);
+    atomicReplaceFile(stagedMarkdownPath, markdownPath);
+
+    const recordedAt = new Date().toISOString();
+    const reviewRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "focus-review",
+      path: projectArtifacts.focusReview,
+      role: "derived",
+      schema_version: parsedReview.version,
+      authored_by: "cli",
+      command: "project.focus-review",
+      mode: "produced",
+      inputs: [artifactReference(candidatesRecord), artifactReference(framesRecord), artifactReference(groundingRecord)],
+      value: parsedReview,
+      file_sha256: fileBytesFingerprint(reviewPath),
+      recorded_at: recordedAt,
+    });
+    const reviewViewRecord = recordFileArtifact({
+      project_path: projectPath,
+      key: "focus-review-view",
+      path: projectArtifacts.focusReviewMarkdown,
+      role: "human_view",
+      schema_version: "markdown-v1",
+      authored_by: "cli",
+      command: "project.focus-review",
+      mode: "produced",
+      inputs: [artifactReference(candidatesRecord), artifactReference(reviewRecord)],
+      recorded_at: recordedAt,
+    });
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "project.focus-review",
+      command: "project.focus-review",
+      input_fingerprint: stageInputFingerprint,
+      inputs: stageInputs,
+      records: [reviewRecord, reviewViewRecord],
+      started_at: startedAt,
+      completed_at: recordedAt,
+    });
     return ok("project.focus-review", {
       project_path: projectPath,
       focus_review_path: reviewPath,
       focus_review_markdown_path: markdownPath,
-      item_count: review.items.length,
-      proposed_element_count: review.proposed_elements.length,
-      proposed_elements: review.proposed_elements,
-      warnings: review.warnings,
+      item_count: parsedReview.items.length,
+      proposed_element_count: parsedReview.proposed_elements.length,
+      proposed_elements: parsedReview.proposed_elements,
+      warnings: parsedReview.warnings,
     });
   } catch (error) {
+    if (stageInputFingerprint && existsSync(projectPath)) {
+      try {
+        commitProjectStageFailure({
+          project_path: projectPath,
+          stage: "project.focus-review",
+          command: "project.focus-review",
+          input_fingerprint: stageInputFingerprint,
+          inputs: stageInputs,
+          failure_code: errorCode(error, "PROJECT_FOCUS_REVIEW_FAILED"),
+          failure_message: error instanceof Error ? error.message : String(error),
+          artifact: "focus-review",
+          remediation: errorRemediation(error, "Repair current focus grounding evidence, then rerun project focus-review."),
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+        });
+      } catch {
+        // Preserve the original focus review failure.
+      }
+    }
     return fail("project.focus-review", "PROJECT_FOCUS_REVIEW_FAILED", error);
   }
 }
 
 export function musicCatalogProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.music-catalog", ProjectMusicCatalogData> {
+  const startedAt = new Date().toISOString();
   try {
     const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
     const catalog = providerMode === "platform" ? buildPlatformMusicCatalog() : buildMusicCatalog();
     const catalogPath = join(projectPath, projectArtifacts.musicCatalog);
     const markdownPath = join(projectPath, projectArtifacts.musicCatalogMarkdown);
-    writeJson(catalogPath, catalog);
-    writeFileSync(markdownPath, renderMusicCatalogMarkdown(catalog));
+    atomicWriteJson(catalogPath, catalog);
+    atomicWriteText(markdownPath, renderMusicCatalogMarkdown(catalog));
+    const recordedAt = new Date().toISOString();
+    const catalogRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "music-catalog",
+      path: projectArtifacts.musicCatalog,
+      role: "derived",
+      schema_version: "1.0",
+      authored_by: "cli",
+      command: "project.music-catalog",
+      mode: "produced",
+      value: catalog,
+      file_sha256: fileBytesFingerprint(catalogPath),
+      recorded_at: recordedAt,
+    });
+    const viewRecord = recordFileArtifact({
+      project_path: projectPath,
+      key: "music-catalog-view",
+      path: projectArtifacts.musicCatalogMarkdown,
+      role: "human_view",
+      schema_version: "markdown-v1",
+      authored_by: "cli",
+      command: "project.music-catalog",
+      mode: "produced",
+      inputs: [artifactReference(catalogRecord)],
+      recorded_at: recordedAt,
+    });
+    const stageInputs: ArtifactFingerprintReference[] = [];
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "project.music-catalog",
+      command: "project.music-catalog",
+      input_fingerprint: inputFingerprint(stageInputs),
+      inputs: stageInputs,
+      records: [catalogRecord, viewRecord],
+      started_at: startedAt,
+      completed_at: recordedAt,
+    });
     return ok("project.music-catalog", {
       project_path: projectPath,
       music_catalog_path: catalogPath,
@@ -826,54 +1844,302 @@ export function musicCatalogProject(projectPath: string, options: ProviderModeOp
   }
 }
 
-export async function musicAcquireProject(projectPath: string, options: ProviderModeOption = {}): Promise<CommandResult<"project.music-acquire", ProjectMusicAcquireData>> {
+type MusicPublishRuntime = {
+  renameSync(sourcePath: string, targetPath: string): void;
+};
+
+type StagedMusicCommitEvidence = {
+  request_file_sha256: Fingerprint;
+  asset_file_sha256?: Fingerprint;
+  asset_manifest?: AssetManifestArtifact;
+  asset_manifest_file_sha256?: Fingerprint;
+  acquisition_file_sha256: Fingerprint;
+  review_file_sha256: Fingerprint;
+  review_view_file_sha256: Fingerprint;
+};
+
+let musicStagingSequence = 0;
+
+export async function musicAcquireProject(
+  projectPath: string,
+  options: ProviderModeOption = {},
+  publishRuntime: MusicPublishRuntime = nodeFs as unknown as MusicPublishRuntime,
+): Promise<CommandResult<"project.music-acquire", ProjectMusicAcquireData>> {
+  const startedAt = new Date().toISOString();
+  let stageInputs: ArtifactFingerprintReference[] | undefined;
+  let stageInputFingerprint: Fingerprint | undefined;
   try {
     const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
+    const requestPath = join(projectPath, projectArtifacts.musicRequest);
+    const request = parseMusicRequest(readProjectJson(projectPath, projectArtifacts.musicRequest, "music request"));
+    const requestReference = musicRequestMemberReference(request);
+    stageInputs = [requestReference];
+    stageInputFingerprint = inputFingerprint(stageInputs);
     if (providerMode === "platform") assertPlatformMusicAcquisitionAllowed(projectPath, "music-acquire");
-    const acquisition = await acquireMusicAsset(projectPath);
-    const review = buildMusicReview(acquisition);
+    const stagingRoot = resolveProjectOutputPath(
+      projectPath,
+      join(
+        ".koubo-clip",
+        "staging",
+        "music-acquire",
+        `${Date.now().toString(36)}-${musicStagingSequence++}-${safeFileName(request.id)}`,
+      ),
+      "music acquisition staging directory",
+    );
+    const prepared = await acquireMusicAsset(projectPath, request, join(stagingRoot, "asset"));
+    const acquisition = parseMusicAcquisition(prepared.acquisition);
+    const review = parseMusicReview(buildMusicReview(acquisition));
     const acquisitionPath = join(projectPath, projectArtifacts.musicAcquisition);
     const reviewPath = join(projectPath, projectArtifacts.musicReview);
     const reviewMarkdownPath = join(projectPath, projectArtifacts.musicReviewMarkdown);
-    writeJson(acquisitionPath, acquisition);
-    writeJson(reviewPath, review);
-    writeFileSync(reviewMarkdownPath, renderMusicReviewMarkdown(review));
+    const stagedAcquisitionPath = join(stagingRoot, projectArtifacts.musicAcquisition);
+    const stagedReviewPath = join(stagingRoot, projectArtifacts.musicReview);
+    const stagedReviewMarkdownPath = join(stagingRoot, projectArtifacts.musicReviewMarkdown);
+    atomicWriteJson(stagedAcquisitionPath, acquisition);
+    atomicWriteJson(stagedReviewPath, review);
+    atomicWriteText(stagedReviewMarkdownPath, renderMusicReviewMarkdown(review));
+    const validatedAcquisition = parseMusicAcquisition(readJson(stagedAcquisitionPath));
+    const validatedReview = parseMusicReview(readJson(stagedReviewPath));
+    if (semanticJsonFingerprint(validatedAcquisition.request) !== semanticJsonFingerprint(request)) {
+      throw new Error("staged music acquisition does not match music-request.json");
+    }
+    if (validatedReview.request_id !== request.id) throw new Error("staged music review does not match music-request.json");
+
+    const publications: Array<{ staged_path: string; target_path: string }> = [];
+    let stagedAssetManifestPath: string | undefined;
+    let assetFileSha256: Fingerprint | undefined;
+    let assetManifestFileSha256: Fingerprint | undefined;
+    if (validatedAcquisition.asset) {
+      if (!prepared.staged_asset_path || !prepared.final_asset_path || !prepared.asset_manifest) {
+        throw new Error("staged music acquisition is missing asset publication data");
+      }
+      const safeFinalAssetPath = resolveProjectOutputPath(projectPath, validatedAcquisition.asset.path, "music asset output");
+      if (resolve(prepared.final_asset_path) !== resolve(safeFinalAssetPath)) {
+        throw new Error("staged music asset target does not match music acquisition");
+      }
+      const manifestAsset = prepared.asset_manifest.assets.find((asset) => asset.id === validatedAcquisition.asset?.id);
+      if (!manifestAsset || semanticJsonFingerprint(manifestAsset) !== semanticJsonFingerprint(validatedAcquisition.asset)) {
+        throw new Error("staged asset-manifest does not match music acquisition");
+      }
+      assetFileSha256 = fileBytesFingerprint(prepared.staged_asset_path);
+      if (validatedAcquisition.asset.hash !== `sha256-${assetFileSha256.slice("sha256:".length)}`) {
+        throw new Error("staged music asset hash does not match acquisition metadata");
+      }
+      stagedAssetManifestPath = join(stagingRoot, projectArtifacts.assetManifest);
+      atomicWriteJson(stagedAssetManifestPath, prepared.asset_manifest);
+      const validatedAssetManifest = parseAssetManifest(readJson(stagedAssetManifestPath));
+      if (semanticJsonFingerprint(assetManifestFingerprintProjection(validatedAssetManifest))
+        !== semanticJsonFingerprint(assetManifestFingerprintProjection(prepared.asset_manifest))) {
+        throw new Error("staged asset-manifest changed during validation");
+      }
+      assetManifestFileSha256 = fileBytesFingerprint(stagedAssetManifestPath);
+      publications.push(
+        { staged_path: prepared.staged_asset_path, target_path: prepared.final_asset_path },
+        { staged_path: stagedAssetManifestPath, target_path: join(projectPath, projectArtifacts.assetManifest) },
+      );
+    } else if (prepared.staged_asset_path || prepared.final_asset_path || prepared.asset_manifest) {
+      throw new Error("skipped music acquisition must not publish asset data");
+    }
+
+    const currentRequest = parseMusicRequest(readProjectJson(projectPath, projectArtifacts.musicRequest, "music request"));
+    if (semanticJsonFingerprint(currentRequest) !== semanticJsonFingerprint(request)) {
+      throw new Error("music-request.json changed while acquisition was running");
+    }
+    readProjectArtifactManifest(projectPath);
+    const evidence: StagedMusicCommitEvidence = {
+      request_file_sha256: fileBytesFingerprint(requestPath),
+      asset_file_sha256: assetFileSha256,
+      asset_manifest: prepared.asset_manifest,
+      asset_manifest_file_sha256: assetManifestFileSha256,
+      acquisition_file_sha256: fileBytesFingerprint(stagedAcquisitionPath),
+      review_file_sha256: fileBytesFingerprint(stagedReviewPath),
+      review_view_file_sha256: fileBytesFingerprint(stagedReviewMarkdownPath),
+    };
+    publications.push(
+      { staged_path: stagedAcquisitionPath, target_path: acquisitionPath },
+      { staged_path: stagedReviewPath, target_path: reviewPath },
+      { staged_path: stagedReviewMarkdownPath, target_path: reviewMarkdownPath },
+    );
+    publishMusicCheckpoint(
+      projectPath,
+      publications,
+      () => commitMusicArtifacts(projectPath, "project.music-acquire", startedAt, request, validatedAcquisition, validatedReview, stageInputs!, evidence),
+      publishRuntime,
+    );
+    try {
+      rmSync(stagingRoot, { recursive: true, force: true });
+    } catch {
+      // The public checkpoint and lineage are already committed; stale staging is non-authoritative.
+    }
     return ok("project.music-acquire", {
       project_path: projectPath,
       music_acquisition_path: acquisitionPath,
       music_review_path: reviewPath,
       asset_manifest_path: join(projectPath, projectArtifacts.assetManifest),
-      acquired: acquisition.acquired,
-      asset: acquisition.asset
+      acquired: validatedAcquisition.acquired,
+      asset: validatedAcquisition.asset
         ? {
-            id: acquisition.asset.id,
-            path: acquisition.asset.path,
-            type: acquisition.asset.type,
-            source: acquisition.asset.source,
-            provider: acquisition.asset.provider,
-            license: acquisition.asset.license,
-            duration_seconds: acquisition.asset.duration_seconds,
+            id: validatedAcquisition.asset.id,
+            path: validatedAcquisition.asset.path,
+            type: validatedAcquisition.asset.type,
+            source: validatedAcquisition.asset.source,
+            provider: validatedAcquisition.asset.provider,
+            license: validatedAcquisition.asset.license,
+            duration_seconds: validatedAcquisition.asset.duration_seconds,
           }
         : undefined,
-      warnings: acquisition.warnings,
+      warnings: validatedAcquisition.warnings,
     });
   } catch (error) {
+    if (stageInputFingerprint && existsSync(projectPath)) {
+      try {
+        commitProjectStageFailure({
+          project_path: projectPath,
+          stage: "project.music-acquire",
+          command: "project.music-acquire",
+          input_fingerprint: stageInputFingerprint,
+          inputs: stageInputs,
+          failure_code: errorCode(error, "PROJECT_MUSIC_ACQUIRE_FAILED"),
+          failure_message: error instanceof Error ? error.message : String(error),
+          artifact: "music-acquisition",
+          remediation: errorRemediation(error, "Fix music-request.json or provider fulfillment, then rerun project music-acquire."),
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+        });
+      } catch {
+        // Preserve the acquisition failure.
+      }
+    }
     return fail("project.music-acquire", "PROJECT_MUSIC_ACQUIRE_FAILED", error);
   }
 }
 
+function publishMusicCheckpoint(
+  projectPath: string,
+  publications: Array<{ staged_path: string; target_path: string }>,
+  commitLineage: () => void,
+  runtime: MusicPublishRuntime,
+): void {
+  const stagedPaths = new Set<string>();
+  const targetPaths = new Set<string>();
+  for (const publication of publications) {
+    const stagedPath = resolveExistingProjectPath(
+      projectPath,
+      publication.staged_path,
+      "music checkpoint staged file",
+    );
+    const targetPath = resolveProjectOutputPath(
+      projectPath,
+      publication.target_path,
+      "music checkpoint target",
+    );
+    if (stagedPaths.has(stagedPath) || targetPaths.has(targetPath)) throw new Error("music checkpoint contains duplicate publication paths");
+    stagedPaths.add(stagedPath);
+    targetPaths.add(targetPath);
+    if (!existsSync(stagedPath) || !statSync(stagedPath).isFile()) throw new Error("music checkpoint staged file is missing");
+    if (existsSync(targetPath) && !statSync(targetPath).isFile()) throw new Error("music checkpoint target must be a regular file");
+    mkdirSync(dirname(targetPath), { recursive: true });
+  }
+
+  const published: Array<{ staged_path: string; target_path: string; backup_path?: string }> = [];
+  try {
+    for (const publication of publications) {
+      const stagedPath = resolveExistingProjectPath(
+        projectPath,
+        publication.staged_path,
+        "music checkpoint staged file",
+      );
+      const targetPath = resolveProjectOutputPath(
+        projectPath,
+        publication.target_path,
+        "music checkpoint target",
+      );
+      let backupPath: string | undefined;
+      if (existsSync(targetPath)) {
+        backupPath = musicPublicationBackupPath(targetPath);
+        runtime.renameSync(targetPath, backupPath);
+      }
+      published.push({ staged_path: stagedPath, target_path: targetPath, backup_path: backupPath });
+      runtime.renameSync(stagedPath, targetPath);
+    }
+    commitLineage();
+  } catch (error) {
+    for (const publication of [...published].reverse()) {
+      if (existsSync(publication.target_path)) {
+        try {
+          runtime.renameSync(publication.target_path, publication.staged_path);
+        } catch {
+          try {
+            unlinkSync(publication.target_path);
+          } catch {
+            // Continue restoring the last committed checkpoint.
+          }
+        }
+      }
+      if (publication.backup_path && existsSync(publication.backup_path)) {
+        try {
+          runtime.renameSync(publication.backup_path, publication.target_path);
+        } catch {
+          // Preserve the original publication failure; status can expose an incomplete rollback.
+        }
+      }
+    }
+    throw error;
+  }
+
+  for (const publication of published) {
+    if (!publication.backup_path || !existsSync(publication.backup_path)) continue;
+    try {
+      unlinkSync(publication.backup_path);
+    } catch {
+      // The committed checkpoint is authoritative; a leftover backup is diagnostic only.
+    }
+  }
+}
+
+function musicPublicationBackupPath(targetPath: string): string {
+  let sequence = 0;
+  let candidate = `${targetPath}.previous-music-${Date.now().toString(36)}-${sequence}`;
+  while (existsSync(candidate)) candidate = `${targetPath}.previous-music-${Date.now().toString(36)}-${++sequence}`;
+  return candidate;
+}
+
 export async function musicReviewProject(projectPath: string, options: ProviderModeOption = {}): Promise<CommandResult<"project.music-review", ProjectMusicReviewData>> {
+  const startedAt = new Date().toISOString();
+  let stageInputs: ArtifactFingerprintReference[] | undefined;
+  let stageInputFingerprint: Fingerprint | undefined;
   try {
     const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
+    const request = parseMusicRequest(readProjectJson(projectPath, projectArtifacts.musicRequest, "music request"));
+    const requestReference = musicRequestMemberReference(request);
+    stageInputs = [requestReference];
+    stageInputFingerprint = inputFingerprint(stageInputs);
     const acquisitionPath = join(projectPath, projectArtifacts.musicAcquisition);
     if (providerMode === "platform" && !existsSync(acquisitionPath)) assertPlatformMusicAcquisitionAllowed(projectPath, "music-review");
-    const acquisition = existsSync(acquisitionPath) ? (readJson(acquisitionPath) as MusicAcquisitionArtifact) : await acquireMusicAsset(projectPath);
-    const review = buildMusicReview(acquisition);
+    if (!existsSync(acquisitionPath)) {
+      throw lifecycleCommandError(
+        "MUSIC_ACQUISITION_MISSING",
+        `${projectArtifacts.musicAcquisition} is missing`,
+        projectArtifacts.musicAcquisition,
+        "Run project music-acquire before project music-review.",
+        "project.music-review",
+      );
+    }
+    const acquisition = parseMusicAcquisition(readProjectJson(projectPath, projectArtifacts.musicAcquisition, "music acquisition"));
+    if (semanticJsonFingerprint(acquisition.request) !== semanticJsonFingerprint(request)) throw new Error("music-acquisition.json does not match current music-request.json");
+    const acquisitionReference: ArtifactFingerprintReference = {
+      key: "music-acquisition",
+      schema_version: acquisition.version,
+      fingerprint: semanticJsonFingerprint(musicAcquisitionFingerprintProjection(acquisition)),
+    };
+    stageInputs = [requestReference, acquisitionReference];
+    stageInputFingerprint = inputFingerprint(stageInputs);
+    const review = parseMusicReview(buildMusicReview(acquisition));
     const reviewPath = join(projectPath, projectArtifacts.musicReview);
     const reviewMarkdownPath = join(projectPath, projectArtifacts.musicReviewMarkdown);
-    if (!existsSync(acquisitionPath)) writeJson(acquisitionPath, acquisition);
-    writeJson(reviewPath, review);
-    writeFileSync(reviewMarkdownPath, renderMusicReviewMarkdown(review));
+    atomicWriteJson(reviewPath, review);
+    atomicWriteText(reviewMarkdownPath, renderMusicReviewMarkdown(review));
+    commitMusicArtifacts(projectPath, "project.music-review", startedAt, request, acquisition, review, stageInputs);
     return ok("project.music-review", {
       project_path: projectPath,
       music_review_path: reviewPath,
@@ -881,18 +2147,250 @@ export async function musicReviewProject(projectPath: string, options: ProviderM
       review,
     });
   } catch (error) {
+    if (stageInputFingerprint && existsSync(projectPath)) {
+      try {
+        commitProjectStageFailure({
+          project_path: projectPath,
+          stage: "project.music-review",
+          command: "project.music-review",
+          input_fingerprint: stageInputFingerprint,
+          inputs: stageInputs,
+          failure_code: errorCode(error, "PROJECT_MUSIC_REVIEW_FAILED"),
+          failure_message: error instanceof Error ? error.message : String(error),
+          artifact: "music-review",
+          remediation: errorRemediation(error, "Repair the current music acquisition, then rerun project music-review."),
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+        });
+      } catch {
+        // Preserve the review failure.
+      }
+    }
     return fail("project.music-review", "PROJECT_MUSIC_REVIEW_FAILED", error);
   }
 }
 
+function musicRequestMemberReference(request: ReturnType<typeof parseMusicRequest>): ArtifactFingerprintReference {
+  return {
+    key: `music-request:${request.id}`,
+    schema_version: request.version,
+    fingerprint: semanticJsonFingerprint(request),
+  };
+}
+
+function commitMusicArtifacts(
+  projectPath: string,
+  command: "project.music-acquire" | "project.music-review",
+  startedAt: string,
+  request: ReturnType<typeof parseMusicRequest>,
+  acquisition: ReturnType<typeof parseMusicAcquisition>,
+  review: ReturnType<typeof parseMusicReview>,
+  stageInputs: ArtifactFingerprintReference[],
+  evidence?: StagedMusicCommitEvidence,
+): void {
+  const recordedAt = new Date().toISOString();
+  const requestPath = join(projectPath, projectArtifacts.musicRequest);
+  const requestMemberRecord = recordJsonArtifact({
+    project_path: projectPath,
+    key: `music-request:${request.id}`,
+    path: `${projectArtifacts.musicRequest}#music-request:${request.id}`,
+    role: "command_request",
+    schema_version: request.version,
+    authored_by: "agent",
+    command,
+    mode: "validated",
+    value: request,
+    recorded_at: recordedAt,
+  });
+  const requestRecord = recordJsonArtifact({
+    project_path: projectPath,
+    key: "music-request",
+    path: projectArtifacts.musicRequest,
+    role: "command_request",
+    schema_version: request.version,
+    authored_by: "agent",
+    command,
+    mode: "validated",
+    value: request,
+    file_sha256: evidence?.request_file_sha256 ?? fileBytesFingerprint(requestPath),
+    recorded_at: recordedAt,
+  });
+  const assetRecords: ArtifactRecord[] = acquisition.asset
+    ? [evidence?.asset_file_sha256
+        ? recordArtifactValue({
+          project_path: projectPath,
+          key: `asset:${acquisition.asset.id}`,
+          path: acquisition.asset.path,
+          role: "execution_result",
+          schema_version: "bytes-v1",
+          authored_by: "cli",
+          command,
+          mode: "produced",
+          inputs: [artifactReference(requestMemberRecord)],
+          fingerprint: evidence.asset_file_sha256,
+          file_sha256: evidence.asset_file_sha256,
+          recorded_at: recordedAt,
+        })
+        : (() => {
+          const fingerprint = fileBytesFingerprint(projectAssetPath(projectPath, acquisition.asset!.path));
+          return recordArtifactValue({
+            project_path: projectPath,
+            key: `asset:${acquisition.asset!.id}`,
+            path: acquisition.asset!.path,
+            role: "execution_result",
+            schema_version: "bytes-v1",
+            authored_by: "cli",
+            command,
+            mode: "produced",
+            inputs: [artifactReference(requestMemberRecord)],
+            fingerprint,
+            file_sha256: fingerprint,
+            recorded_at: recordedAt,
+          });
+        })()]
+    : [];
+  const assetManifestPath = join(projectPath, projectArtifacts.assetManifest);
+  const assetManifest = evidence?.asset_manifest
+    ?? (acquisition.asset && existsSync(assetManifestPath) ? parseAssetManifest(readProjectJson(projectPath, projectArtifacts.assetManifest, "asset manifest")) : undefined);
+  const assetManifestRecord = acquisition.asset && assetManifest
+    ? recordJsonArtifact({
+        project_path: projectPath,
+        key: "asset-manifest",
+        path: projectArtifacts.assetManifest,
+        role: "execution_result",
+        schema_version: "1.0",
+        authored_by: "cli",
+        command,
+        mode: "produced",
+        inputs: assetRecords.map(artifactReference),
+        value: assetManifestFingerprintProjection(assetManifest),
+        file_sha256: evidence?.asset_manifest_file_sha256 ?? fileBytesFingerprint(assetManifestPath),
+        recorded_at: recordedAt,
+      })
+    : undefined;
+  const acquisitionPath = join(projectPath, projectArtifacts.musicAcquisition);
+  const acquisitionRecord = recordJsonArtifact({
+    project_path: projectPath,
+    key: "music-acquisition",
+    path: projectArtifacts.musicAcquisition,
+    role: "execution_result",
+    schema_version: acquisition.version,
+    authored_by: "cli",
+    command,
+    mode: "produced",
+    inputs: [artifactReference(requestMemberRecord), ...assetRecords.map(artifactReference)],
+    value: musicAcquisitionFingerprintProjection(acquisition),
+    file_sha256: evidence?.acquisition_file_sha256 ?? fileBytesFingerprint(acquisitionPath),
+    recorded_at: recordedAt,
+  });
+  const reviewPath = join(projectPath, projectArtifacts.musicReview);
+  const reviewRecord = recordJsonArtifact({
+    project_path: projectPath,
+    key: "music-review",
+    path: projectArtifacts.musicReview,
+    role: "derived",
+    schema_version: review.version,
+    authored_by: "cli",
+    command,
+    mode: "produced",
+    inputs: [artifactReference(acquisitionRecord)],
+    value: review,
+    file_sha256: evidence?.review_file_sha256 ?? fileBytesFingerprint(reviewPath),
+    recorded_at: recordedAt,
+  });
+  const viewRecord = evidence?.review_view_file_sha256
+    ? recordArtifactValue({
+      project_path: projectPath,
+      key: "music-review-view",
+      path: projectArtifacts.musicReviewMarkdown,
+      role: "human_view",
+      schema_version: "markdown-v1",
+      authored_by: "cli",
+      command,
+      mode: "produced",
+      inputs: [artifactReference(reviewRecord)],
+      fingerprint: evidence.review_view_file_sha256,
+      file_sha256: evidence.review_view_file_sha256,
+      recorded_at: recordedAt,
+    })
+    : recordFileArtifact({
+      project_path: projectPath,
+      key: "music-review-view",
+      path: projectArtifacts.musicReviewMarkdown,
+      role: "human_view",
+      schema_version: "markdown-v1",
+      authored_by: "cli",
+      command,
+      mode: "produced",
+      inputs: [artifactReference(reviewRecord)],
+      recorded_at: recordedAt,
+    });
+  commitProjectStage({
+    project_path: projectPath,
+    stage: command,
+    command,
+    input_fingerprint: inputFingerprint(stageInputs),
+    inputs: stageInputs,
+    records: [requestRecord, requestMemberRecord, ...assetRecords, ...(assetManifestRecord ? [assetManifestRecord] : []), acquisitionRecord, reviewRecord, viewRecord],
+    replace_record_prefixes: [`music-request:`],
+    started_at: startedAt,
+    completed_at: recordedAt,
+  });
+}
+
 export function visualCatalogProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.visual-catalog", ProjectVisualCatalogData> {
+  const startedAt = new Date().toISOString();
+  const stageInputs: ArtifactFingerprintReference[] = [];
+  const stageInputFingerprint = inputFingerprint(stageInputs);
   try {
     const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
     const catalog = providerMode === "platform" ? buildPlatformVisualCatalog() : buildVisualCatalog();
     const catalogPath = join(projectPath, projectArtifacts.visualCatalog);
     const markdownPath = join(projectPath, projectArtifacts.visualCatalogMarkdown);
-    writeJson(catalogPath, catalog);
-    writeFileSync(markdownPath, renderVisualCatalogMarkdown(catalog));
+    const stagingId = Date.now().toString(36);
+    const stagedCatalogPath = join(projectPath, `.visual-catalog-${stagingId}.json`);
+    const stagedMarkdownPath = join(projectPath, `.visual-catalog-${stagingId}.md`);
+    atomicWriteJson(stagedCatalogPath, catalog);
+    atomicWriteText(stagedMarkdownPath, renderVisualCatalogMarkdown(catalog));
+    atomicReplaceFile(stagedCatalogPath, catalogPath);
+    atomicReplaceFile(stagedMarkdownPath, markdownPath);
+
+    const recordedAt = new Date().toISOString();
+    const catalogRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "visual-catalog",
+      path: projectArtifacts.visualCatalog,
+      role: "derived",
+      schema_version: catalog.version,
+      authored_by: "cli",
+      command: "project.visual-catalog",
+      mode: "produced",
+      value: catalog,
+      file_sha256: fileBytesFingerprint(catalogPath),
+      recorded_at: recordedAt,
+    });
+    const viewRecord = recordFileArtifact({
+      project_path: projectPath,
+      key: "visual-catalog-view",
+      path: projectArtifacts.visualCatalogMarkdown,
+      role: "human_view",
+      schema_version: "markdown-v1",
+      authored_by: "cli",
+      command: "project.visual-catalog",
+      mode: "produced",
+      inputs: [artifactReference(catalogRecord)],
+      recorded_at: recordedAt,
+    });
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "project.visual-catalog",
+      command: "project.visual-catalog",
+      input_fingerprint: stageInputFingerprint,
+      inputs: stageInputs,
+      records: [catalogRecord, viewRecord],
+      started_at: startedAt,
+      completed_at: recordedAt,
+    });
     return ok("project.visual-catalog", {
       project_path: projectPath,
       visual_catalog_path: catalogPath,
@@ -901,20 +2399,88 @@ export function visualCatalogProject(projectPath: string, options: ProviderModeO
       runtime_allowlist: catalog.runtime_allowlist,
     });
   } catch (error) {
+    if (existsSync(projectPath)) {
+      try {
+        commitProjectStageFailure({
+          project_path: projectPath,
+          stage: "project.visual-catalog",
+          command: "project.visual-catalog",
+          input_fingerprint: stageInputFingerprint,
+          inputs: stageInputs,
+          failure_code: errorCode(error, "PROJECT_VISUAL_CATALOG_FAILED"),
+          failure_message: error instanceof Error ? error.message : String(error),
+          artifact: "visual-catalog",
+          remediation: errorRemediation(error, "Repair the project provider mode, then rerun project visual-catalog."),
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+        });
+      } catch {
+        // Preserve the original catalog failure.
+      }
+    }
     return fail("project.visual-catalog", "PROJECT_VISUAL_CATALOG_FAILED", error);
   }
 }
 
 export async function visualSearchProject(projectPath: string, options: ProviderModeOption = {}): Promise<CommandResult<"project.visual-search", ProjectVisualSearchData>> {
+  const startedAt = new Date().toISOString();
+  let stageInputs: ArtifactFingerprintReference[] | undefined;
+  let stageInputFingerprint: Fingerprint | undefined;
   try {
     const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
     const requestPath = join(projectPath, projectArtifacts.visualRequest);
-    const request = parseVisualRequest(readJson(requestPath));
-    const candidates = providerMode === "platform" ? readPlatformVisualCandidatesOrBlock(projectPath, "visual-search") : await searchVisualAssets(projectPath);
+    const requestValue = readProjectJson(projectPath, projectArtifacts.visualRequest, "visual request");
+    stageInputs = [{ key: "visual-request", schema_version: "1.0", fingerprint: semanticJsonFingerprint(requestValue) }];
+    stageInputFingerprint = inputFingerprint(stageInputs);
+    const request = parseVisualRequest(requestValue);
+    const inputRecords = visualInputRecords(projectPath, request, undefined, "project.visual-search", providerMode, startedAt);
+    stageInputs = [artifactReference(inputRecords.request), ...inputRecords.request_members.map(artifactReference)];
+    stageInputFingerprint = inputFingerprint(stageInputs);
+    const candidates = parseVisualCandidates(
+      providerMode === "platform" ? readPlatformVisualCandidatesOrBlock(projectPath, "visual-search") : await searchVisualAssets(projectPath),
+    );
     const candidatesPath = join(projectPath, projectArtifacts.visualCandidates);
     const markdownPath = join(projectPath, projectArtifacts.visualCandidatesMarkdown);
-    writeJson(candidatesPath, candidates);
-    writeFileSync(markdownPath, renderVisualCandidatesMarkdown(candidates));
+    const stagingId = Date.now().toString(36);
+    const stagedCandidatesPath = join(projectPath, `.visual-candidates-${stagingId}.json`);
+    const stagedMarkdownPath = join(projectPath, `.visual-candidates-${stagingId}.md`);
+    atomicWriteJson(stagedCandidatesPath, candidates);
+    atomicWriteText(stagedMarkdownPath, renderVisualCandidatesMarkdown(candidates));
+    atomicReplaceFile(stagedCandidatesPath, candidatesPath);
+    atomicReplaceFile(stagedMarkdownPath, markdownPath);
+
+    const recordedAt = new Date().toISOString();
+    const outputRecords = visualInputRecords(projectPath, request, candidates, "project.visual-search", providerMode, recordedAt, true);
+    const candidatesRecord = outputRecords.candidates!;
+    const viewRecord = recordFileArtifact({
+      project_path: projectPath,
+      key: "visual-candidates-view",
+      path: projectArtifacts.visualCandidatesMarkdown,
+      role: "human_view",
+      schema_version: "markdown-v1",
+      authored_by: "cli",
+      command: "project.visual-search",
+      mode: "produced",
+      inputs: [artifactReference(candidatesRecord)],
+      recorded_at: recordedAt,
+    });
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "project.visual-search",
+      command: "project.visual-search",
+      input_fingerprint: stageInputFingerprint,
+      inputs: stageInputs,
+      records: [
+        outputRecords.request,
+        ...outputRecords.request_members,
+        candidatesRecord,
+        ...outputRecords.candidate_members,
+        viewRecord,
+      ],
+      replace_record_prefixes: ["visual-request:", "visual-candidate:"],
+      started_at: startedAt,
+      completed_at: recordedAt,
+    });
     return ok("project.visual-search", {
       project_path: projectPath,
       visual_request_path: requestPath,
@@ -925,23 +2491,209 @@ export async function visualSearchProject(projectPath: string, options: Provider
       warnings: candidates.warnings,
     });
   } catch (error) {
+    if (stageInputFingerprint && existsSync(projectPath)) {
+      try {
+        commitProjectStageFailure({
+          project_path: projectPath,
+          stage: "project.visual-search",
+          command: "project.visual-search",
+          input_fingerprint: stageInputFingerprint,
+          inputs: stageInputs,
+          failure_code: errorCode(error, "PROJECT_VISUAL_SEARCH_FAILED"),
+          failure_message: error instanceof Error ? error.message : String(error),
+          artifact: "visual-candidates",
+          remediation: errorRemediation(error, "Fix visual-request.json or host/provider candidates, then rerun project visual-search."),
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+        });
+      } catch {
+        // Preserve the original search failure.
+      }
+    }
     return fail("project.visual-search", "PROJECT_VISUAL_SEARCH_FAILED", error);
   }
 }
 
 export async function visualAcquireProject(projectPath: string, options: ProviderModeOption = {}): Promise<CommandResult<"project.visual-acquire", ProjectVisualAcquireData>> {
+  const startedAt = new Date().toISOString();
+  let stageInputs: ArtifactFingerprintReference[] | undefined;
+  let stageInputFingerprint: Fingerprint | undefined;
+  let prepared: PreparedVisualAcquisition | undefined;
   try {
     const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
+    const requestPath = join(projectPath, projectArtifacts.visualRequest);
+    const candidatesPath = join(projectPath, projectArtifacts.visualCandidates);
+    const requestValue = readProjectJson(projectPath, projectArtifacts.visualRequest, "visual request");
+    stageInputs = [{ key: "visual-request", schema_version: "1.0", fingerprint: semanticJsonFingerprint(requestValue) }];
+    stageInputFingerprint = inputFingerprint(stageInputs);
     if (providerMode === "platform") assertPlatformVisualAcquisitionAllowed(projectPath);
-    const acquisition = await acquireVisualAssets(projectPath);
-    const request = parseVisualRequest(readJson(join(projectPath, projectArtifacts.visualRequest)));
-    const review = buildVisualReview(acquisition, request);
+    const request = parseVisualRequest(requestValue);
+    const candidates = parseVisualCandidates(readProjectJson(projectPath, projectArtifacts.visualCandidates, "visual candidates"));
+    const preflightRecords = visualInputRecords(projectPath, request, candidates, "project.visual-acquire", providerMode, startedAt);
+    stageInputs = [artifactReference(preflightRecords.request), artifactReference(preflightRecords.candidates!)];
+    stageInputFingerprint = inputFingerprint(stageInputs);
+    const selections = selectedVisualRecords(request, candidates, preflightRecords.request_members, preflightRecords.candidate_members);
+    stageInputs = selections.flatMap((selection) => [artifactReference(selection.request_record), artifactReference(selection.candidate_record)]);
+    stageInputFingerprint = inputFingerprint(stageInputs);
+    prepared = await prepareVisualAssets(projectPath);
+    const acquisition = parseVisualAcquisition(prepared.acquisition);
+    const review = parseVisualReview(buildVisualReview(acquisition, request));
+    const recordedAt = new Date().toISOString();
+    const committedInputs = visualInputRecords(projectPath, request, candidates, "project.visual-acquire", providerMode, recordedAt);
+    const committedSelections = selectedVisualRecords(
+      request,
+      candidates,
+      committedInputs.request_members,
+      committedInputs.candidate_members,
+    );
+    const assetManifestPath = join(projectPath, projectArtifacts.assetManifest);
+    const assetManifest = parseAssetManifest(prepared.asset_manifest);
+    const acquisitionByAssetId = new Map(acquisition.assets.map((asset) => [asset.asset_id, asset]));
+    const lifecycleManifest = readProjectArtifactManifest(projectPath);
+    const assetRecords = assetManifest.assets.map((asset) => {
+      const acquired = acquisitionByAssetId.get(asset.id);
+      const key = `asset:${asset.id}`;
+      if (!acquired) {
+        if (!lifecycleManifest?.artifacts[key]) {
+          throw lifecycleCommandError(
+            "LINEAGE_UNPROVEN",
+            `${key} exists in asset-manifest.json without a committed asset record`,
+            key,
+            "Validate or reacquire the existing asset before visual acquisition.",
+            "project.visual-acquire",
+          );
+        }
+        if (lifecycleManifest.artifacts[key]!.path !== asset.path) {
+          throw lifecycleCommandError(
+            "ARTIFACT_INVALID",
+            `${key} path does not match asset-manifest.json`,
+            key,
+            "Repair asset-manifest.json or reacquire the existing asset.",
+            "project.visual-acquire",
+          );
+        }
+        return assertArtifactRecordCurrent(
+          projectPath,
+          lifecycleManifest,
+          key,
+          fileBytesFingerprint(projectAssetPath(projectPath, asset.path)),
+          new Set(),
+          new Set(),
+          "project.visual-acquire",
+        );
+      }
+      const selected = committedSelections.find(
+        (selection) =>
+          selection.request.id === acquired.request_id && selection.candidate.id === acquired.candidate_id,
+      );
+      if (!selected) throw new Error(`${key} does not match a current selected visual candidate`);
+      const fingerprint = fileBytesFingerprint(prepared!.stagedPath(asset.path));
+      return recordArtifactValue({
+        project_path: projectPath,
+        key,
+        path: asset.path,
+        role: "execution_result",
+        schema_version: "bytes-v1",
+        authored_by: "cli",
+        command: "project.visual-acquire",
+        mode: "produced",
+        inputs: [artifactReference(selected.request_record), artifactReference(selected.candidate_record)],
+        fingerprint,
+        file_sha256: fingerprint,
+        recorded_at: recordedAt,
+      });
+    });
+    const assetManifestRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "asset-manifest",
+      path: projectArtifacts.assetManifest,
+      role: "execution_result",
+      schema_version: "1.0",
+      authored_by: "cli",
+      command: "project.visual-acquire",
+      mode: "produced",
+      inputs: assetRecords.map(artifactReference),
+      value: assetManifestFingerprintProjection(assetManifest),
+      file_sha256: fileBytesFingerprint(prepared.stagedPath(projectArtifacts.assetManifest)),
+      recorded_at: recordedAt,
+    });
     const acquisitionPath = join(projectPath, projectArtifacts.visualAcquisition);
     const reviewPath = join(projectPath, projectArtifacts.visualReview);
     const reviewMarkdownPath = join(projectPath, projectArtifacts.visualReviewMarkdown);
-    writeJson(acquisitionPath, acquisition);
-    writeJson(reviewPath, review);
-    writeFileSync(reviewMarkdownPath, renderVisualReviewMarkdown(review));
+    prepared.stageJson(projectArtifacts.visualAcquisition, acquisition);
+    prepared.stageJson(projectArtifacts.visualReview, review);
+    prepared.stageText(projectArtifacts.visualReviewMarkdown, renderVisualReviewMarkdown(review));
+
+    const acquisitionRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "visual-acquisition",
+      path: projectArtifacts.visualAcquisition,
+      role: "execution_result",
+      schema_version: acquisition.version,
+      authored_by: "cli",
+      command: "project.visual-acquire",
+      mode: "produced",
+      inputs: [
+        ...committedSelections.flatMap((selection) => [artifactReference(selection.request_record), artifactReference(selection.candidate_record)]),
+        ...acquisition.assets.map((asset) => artifactReference(assetRecords.find((record) => record.key === `asset:${asset.asset_id}`)!)),
+      ],
+      value: visualAcquisitionFingerprintProjection(acquisition),
+      file_sha256: fileBytesFingerprint(prepared.stagedPath(projectArtifacts.visualAcquisition)),
+      recorded_at: recordedAt,
+    });
+    const reviewRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "visual-review",
+      path: projectArtifacts.visualReview,
+      role: "derived",
+      schema_version: review.version,
+      authored_by: "cli",
+      command: "project.visual-acquire",
+      mode: "produced",
+      inputs: [artifactReference(acquisitionRecord), ...committedSelections.map((selection) => artifactReference(selection.request_record))],
+      value: review,
+      file_sha256: fileBytesFingerprint(prepared.stagedPath(projectArtifacts.visualReview)),
+      recorded_at: recordedAt,
+    });
+    const reviewViewFingerprint = fileBytesFingerprint(prepared.stagedPath(projectArtifacts.visualReviewMarkdown));
+    const viewRecord = recordArtifactValue({
+      project_path: projectPath,
+      key: "visual-review-view",
+      path: projectArtifacts.visualReviewMarkdown,
+      role: "human_view",
+      schema_version: "markdown-v1",
+      authored_by: "cli",
+      command: "project.visual-acquire",
+      mode: "produced",
+      inputs: [artifactReference(reviewRecord)],
+      fingerprint: reviewViewFingerprint,
+      file_sha256: reviewViewFingerprint,
+      recorded_at: recordedAt,
+    });
+    prepared.publish();
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "project.visual-acquire",
+      command: "project.visual-acquire",
+      input_fingerprint: stageInputFingerprint,
+      inputs: stageInputs,
+      records: [
+        committedInputs.request,
+        ...committedInputs.request_members,
+        committedInputs.candidates!,
+        ...committedInputs.candidate_members,
+        ...assetRecords,
+        assetManifestRecord,
+        acquisitionRecord,
+        reviewRecord,
+        viewRecord,
+      ],
+      replace_record_prefixes: ["visual-request:", "visual-candidate:", "asset:"],
+      started_at: startedAt,
+      completed_at: recordedAt,
+    });
+    prepared.finalize();
+    prepared = undefined;
     return ok("project.visual-acquire", {
       project_path: projectPath,
       visual_acquisition_path: acquisitionPath,
@@ -959,23 +2711,181 @@ export async function visualAcquireProject(projectPath: string, options: Provide
       warnings: acquisition.warnings,
     });
   } catch (error) {
+    if (prepared) {
+      try {
+        prepared.rollback();
+      } catch {
+        // Preserve the original acquisition failure.
+      }
+      prepared = undefined;
+    }
+    if (stageInputFingerprint && existsSync(projectPath)) {
+      try {
+        commitProjectStageFailure({
+          project_path: projectPath,
+          stage: "project.visual-acquire",
+          command: "project.visual-acquire",
+          input_fingerprint: stageInputFingerprint,
+          inputs: stageInputs,
+          failure_code: errorCode(error, "PROJECT_VISUAL_ACQUIRE_FAILED"),
+          failure_message: error instanceof Error ? error.message : String(error),
+          artifact: "visual-acquisition",
+          remediation: errorRemediation(error, "Fix the reviewed visual selection or local asset, then rerun project visual-acquire."),
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+        });
+      } catch {
+        // Preserve the original acquisition failure.
+      }
+    }
     return fail("project.visual-acquire", "PROJECT_VISUAL_ACQUIRE_FAILED", error);
   }
 }
 
 export function visualReviewProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.visual-review", ProjectVisualReviewData> {
+  const startedAt = new Date().toISOString();
+  let stageInputs: ArtifactFingerprintReference[] | undefined;
+  let stageInputFingerprint: Fingerprint | undefined;
   try {
-    resolveProjectProviderMode(projectPath, options.providerMode);
+    const providerMode = resolveProjectProviderMode(projectPath, options.providerMode);
     const acquisitionPath = join(projectPath, projectArtifacts.visualAcquisition);
     if (!existsSync(acquisitionPath)) throw new Error("visual-acquisition.json is required before visual-review");
-    const acquisition = parseVisualAcquisition(readJson(acquisitionPath));
+    const acquisitionValue = readProjectJson(projectPath, projectArtifacts.visualAcquisition, "visual acquisition");
+    stageInputs = [{ key: "visual-acquisition", schema_version: "1.0", fingerprint: semanticJsonFingerprint(acquisitionValue) }];
+    stageInputFingerprint = inputFingerprint(stageInputs);
+    const acquisition = parseVisualAcquisition(acquisitionValue);
     const requestPath = join(projectPath, projectArtifacts.visualRequest);
-    const request = existsSync(requestPath) ? parseVisualRequest(readJson(requestPath)) : undefined;
-    const review = buildVisualReview(acquisition, request);
+    if (!existsSync(requestPath)) throw new Error("visual-request.json is required before visual-review");
+    const request = parseVisualRequest(readProjectJson(projectPath, projectArtifacts.visualRequest, "visual request"));
+    const candidatesPath = join(projectPath, projectArtifacts.visualCandidates);
+    if (!existsSync(candidatesPath)) throw new Error("visual-candidates.json is required before visual-review");
+    const candidates = parseVisualCandidates(readProjectJson(projectPath, projectArtifacts.visualCandidates, "visual candidates"));
+    const acquisitionReference: ArtifactFingerprintReference = {
+      key: "visual-acquisition",
+      schema_version: acquisition.version,
+      fingerprint: semanticJsonFingerprint(visualAcquisitionFingerprintProjection(acquisition)),
+    };
+    stageInputs = [acquisitionReference];
+    stageInputFingerprint = inputFingerprint(stageInputs);
+    const lifecycleManifest = readProjectArtifactManifest(projectPath);
+    if (!lifecycleManifest) throw lifecycleCommandError(
+      "LINEAGE_UNPROVEN",
+      "artifact manifest is required for visual review",
+      "visual-acquisition",
+      "Rerun project visual-acquire before project visual-review.",
+      "project.visual-review",
+    );
+    const acquisitionRecord = assertArtifactRecordCurrent(
+      projectPath,
+      lifecycleManifest,
+      "visual-acquisition",
+      acquisitionReference.fingerprint,
+      new Set(),
+      new Set(),
+      "project.visual-review",
+    );
+    const currentInputRecords = visualInputRecords(
+      projectPath,
+      request,
+      candidates,
+      "project.visual-review",
+      providerMode,
+      startedAt,
+    );
+    const acquisitionMemberRecords = acquisition.assets.flatMap((asset) => {
+      const requestRecord = currentInputRecords.request_members.find((record) => record.key === `visual-request:${asset.request_id}`);
+      const candidateRecord = currentInputRecords.candidate_members.find(
+        (record) => record.key === `visual-candidate:${asset.request_id}:${asset.candidate_id}`,
+      );
+      const requestItem = request.requests.find((item) => item.id === asset.request_id);
+      if (!requestRecord || !candidateRecord || !requestItem) {
+        throw lifecycleCommandError(
+          "ARTIFACT_STALE",
+          `${asset.request_id} or selected candidate ${asset.candidate_id} is missing from current visual inputs`,
+          "visual-acquisition",
+          "Rerun project visual-acquire for the current request and candidate set.",
+          "project.visual-review",
+        );
+      }
+      if (requestItem.selected_candidate_id !== asset.candidate_id) {
+        throw lifecycleCommandError(
+          "ARTIFACT_STALE",
+          `${asset.request_id} no longer selects acquisition candidate ${asset.candidate_id}`,
+          `visual-request:${asset.request_id}`,
+          "Rerun project visual-acquire for the current selected candidate.",
+          "project.visual-review",
+        );
+      }
+      const currentRequestRecord = assertArtifactRecordCurrent(
+        projectPath,
+        lifecycleManifest,
+        requestRecord.key,
+        requestRecord.fingerprint,
+        new Set(),
+        new Set(),
+        "project.visual-review",
+      );
+      const currentCandidateRecord = assertArtifactRecordCurrent(
+        projectPath,
+        lifecycleManifest,
+        candidateRecord.key,
+        candidateRecord.fingerprint,
+        new Set(),
+        new Set(),
+        "project.visual-review",
+      );
+      return [currentRequestRecord, currentCandidateRecord];
+    });
+    stageInputs = [artifactReference(acquisitionRecord), ...acquisitionMemberRecords.map(artifactReference)];
+    stageInputFingerprint = inputFingerprint(stageInputs);
+    const review = parseVisualReview(buildVisualReview(acquisition, request));
     const reviewPath = join(projectPath, projectArtifacts.visualReview);
     const reviewMarkdownPath = join(projectPath, projectArtifacts.visualReviewMarkdown);
-    writeJson(reviewPath, review);
-    writeFileSync(reviewMarkdownPath, renderVisualReviewMarkdown(review));
+    const stagingId = Date.now().toString(36);
+    const stagedReviewPath = join(projectPath, `.visual-review-${stagingId}.json`);
+    const stagedMarkdownPath = join(projectPath, `.visual-review-${stagingId}.md`);
+    atomicWriteJson(stagedReviewPath, review);
+    atomicWriteText(stagedMarkdownPath, renderVisualReviewMarkdown(review));
+    atomicReplaceFile(stagedReviewPath, reviewPath);
+    atomicReplaceFile(stagedMarkdownPath, reviewMarkdownPath);
+
+    const recordedAt = new Date().toISOString();
+    const reviewRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "visual-review",
+      path: projectArtifacts.visualReview,
+      role: "derived",
+      schema_version: review.version,
+      authored_by: "cli",
+      command: "project.visual-review",
+      mode: "produced",
+      inputs: stageInputs,
+      value: review,
+      file_sha256: fileBytesFingerprint(reviewPath),
+      recorded_at: recordedAt,
+    });
+    const viewRecord = recordFileArtifact({
+      project_path: projectPath,
+      key: "visual-review-view",
+      path: projectArtifacts.visualReviewMarkdown,
+      role: "human_view",
+      schema_version: "markdown-v1",
+      authored_by: "cli",
+      command: "project.visual-review",
+      mode: "produced",
+      inputs: [artifactReference(reviewRecord)],
+      recorded_at: recordedAt,
+    });
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "project.visual-review",
+      command: "project.visual-review",
+      input_fingerprint: stageInputFingerprint,
+      inputs: stageInputs,
+      records: [reviewRecord, viewRecord],
+      started_at: startedAt,
+      completed_at: recordedAt,
+    });
     return ok("project.visual-review", {
       project_path: projectPath,
       visual_review_path: reviewPath,
@@ -983,80 +2893,917 @@ export function visualReviewProject(projectPath: string, options: ProviderModeOp
       review,
     });
   } catch (error) {
+    if (stageInputFingerprint && existsSync(projectPath)) {
+      try {
+        commitProjectStageFailure({
+          project_path: projectPath,
+          stage: "project.visual-review",
+          command: "project.visual-review",
+          input_fingerprint: stageInputFingerprint,
+          inputs: stageInputs,
+          failure_code: errorCode(error, "PROJECT_VISUAL_REVIEW_FAILED"),
+          failure_message: error instanceof Error ? error.message : String(error),
+          artifact: "visual-review",
+          remediation: errorRemediation(error, "Rerun project visual-acquire for current inputs, then retry project visual-review."),
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+        });
+      } catch {
+        // Preserve the original review failure.
+      }
+    }
     return fail("project.visual-review", "PROJECT_VISUAL_REVIEW_FAILED", error);
   }
 }
 
+function visualInputRecords(
+  projectPath: string,
+  request: VisualRequestArtifact,
+  candidates: VisualCandidatesArtifact | undefined,
+  command: "project.visual-search" | "project.visual-acquire" | "project.visual-review",
+  providerMode: ProviderExecutionMode,
+  recordedAt: string,
+  candidatesProduced = false,
+): {
+  request: ArtifactRecord;
+  request_members: ArtifactRecord[];
+  candidates?: ArtifactRecord;
+  candidate_members: ArtifactRecord[];
+} {
+  const requestRecord = recordJsonArtifact({
+    project_path: projectPath,
+    key: "visual-request",
+    path: projectArtifacts.visualRequest,
+    role: "command_request",
+    schema_version: request.version,
+    authored_by: "agent",
+    command,
+    mode: "validated",
+    value: request,
+    file_sha256: projectFileBytesFingerprint(projectPath, projectArtifacts.visualRequest, "visual request"),
+    recorded_at: recordedAt,
+  });
+  const requestMembers = request.requests.map((item) =>
+    recordJsonArtifact({
+      project_path: projectPath,
+      key: `visual-request:${item.id}`,
+      path: `${projectArtifacts.visualRequest}#visual-request:${item.id}`,
+      role: "command_request",
+      schema_version: request.version,
+      authored_by: "agent",
+      command,
+      mode: "validated",
+      value: item,
+      recorded_at: recordedAt,
+    }),
+  );
+  if (!candidates) return { request: requestRecord, request_members: requestMembers, candidate_members: [] };
+  const candidateMode = candidatesProduced && providerMode === "standalone" ? "produced" : "validated";
+  const candidateAuthor = candidatesProduced && providerMode === "standalone" ? "cli" : providerMode === "platform" ? "host" : "agent";
+  const candidateMembers = candidates.candidates.map((candidate) => {
+    const requestMember = requestMembers.find((record) => record.key === `visual-request:${candidate.request_id}`);
+    if (!requestMember) throw new Error(`visual candidate ${candidate.id} references unknown request_id: ${candidate.request_id}`);
+    return recordJsonArtifact({
+      project_path: projectPath,
+      key: `visual-candidate:${candidate.request_id}:${candidate.id}`,
+      path: `${projectArtifacts.visualCandidates}#visual-candidate:${candidate.request_id}:${candidate.id}`,
+      role: "evidence",
+      schema_version: candidates.version,
+      authored_by: candidateAuthor,
+      command,
+      mode: candidateMode,
+      inputs: [artifactReference(requestMember)],
+      value: candidate,
+      recorded_at: recordedAt,
+    });
+  });
+  const candidatesRecord = recordJsonArtifact({
+    project_path: projectPath,
+    key: "visual-candidates",
+    path: projectArtifacts.visualCandidates,
+    role: "evidence",
+    schema_version: candidates.version,
+    authored_by: candidateAuthor,
+    command,
+    mode: candidateMode,
+    inputs: [artifactReference(requestRecord), ...requestMembers.map(artifactReference)],
+    value: candidates,
+    file_sha256: projectFileBytesFingerprint(projectPath, projectArtifacts.visualCandidates, "visual candidates"),
+    recorded_at: recordedAt,
+  });
+  return {
+    request: requestRecord,
+    request_members: requestMembers,
+    candidates: candidatesRecord,
+    candidate_members: candidateMembers,
+  };
+}
+
+function selectedVisualRecords(
+  request: VisualRequestArtifact,
+  candidates: VisualCandidatesArtifact,
+  requestRecords: ArtifactRecord[],
+  candidateRecords: ArtifactRecord[],
+): Array<{
+  request: VisualRequestArtifact["requests"][number];
+  candidate: VisualCandidate;
+  request_record: ArtifactRecord;
+  candidate_record: ArtifactRecord;
+}> {
+  return request.requests.map((item) => {
+    if (!item.selected_candidate_id) throw new Error(`${item.id}: selected_candidate_id is required`);
+    const candidate = candidates.candidates.find(
+      (entry) => entry.request_id === item.id && entry.id === item.selected_candidate_id,
+    );
+    if (!candidate) throw new Error(`${item.id}: selected candidate ${item.selected_candidate_id} was not found for this request`);
+    if (!candidate.renderable) throw new Error(`${item.id}: selected candidate ${candidate.id} is not renderable`);
+    const requestRecord = requestRecords.find((record) => record.key === `visual-request:${item.id}`)!;
+    const candidateRecord = candidateRecords.find(
+      (record) => record.key === `visual-candidate:${item.id}:${candidate.id}`,
+    )!;
+    return { request: item, candidate, request_record: requestRecord, candidate_record: candidateRecord };
+  });
+}
+
 export function renderProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.render", ProjectRenderData> {
+  const startedAt = new Date().toISOString();
+  let renderInputFingerprint: Fingerprint | undefined;
+  let renderStageInputs: ArtifactFingerprintReference[] | undefined;
   try {
     resolveProjectProviderMode(projectPath, options.providerMode);
     const manifest = readManifest(projectPath);
-    const transcript = parseTranscript(readJson(join(projectPath, projectArtifacts.transcriptJson)), manifest);
-    const analysis = parseAnalysis(readJson(join(projectPath, projectArtifacts.analysis)), manifest);
-    const editPlan = parseEditPlan(readJson(join(projectPath, projectArtifacts.editPlan)), manifest);
-    const edl = buildEdl(projectPath, manifest, transcript, analysis, editPlan);
+    const transcript = parseTranscript(readProjectJson(projectPath, projectArtifacts.transcriptJson, "transcript"), manifest);
+    const editPlan = readEditPlan(projectPath, manifest);
+    const compiledEdl = compileCurrentEdl(projectPath);
+    const edl = compiledEdl.edl;
     const edlPath = join(projectPath, projectArtifacts.edl);
-    writeJson(edlPath, edl);
-    const subtitlesPath = join(projectPath, projectArtifacts.subtitles);
-    writeFileSync(subtitlesPath, renderSrt(transcript, edl));
-    const cleanRenderPath = resolve(projectPath, "renders", "clean.mp4");
-    renderEdl(projectPath, edl, cleanRenderPath);
-    const enrichment = existsSync(join(projectPath, projectArtifacts.enrichmentPlan)) ? validateEnrichmentPlan(projectPath, edl) : undefined;
-    const finalRenderPath = enrichment ? renderEnrichedVideo(projectPath, cleanRenderPath, subtitlesPath, enrichment.plan, enrichment.assets) : undefined;
+    const enrichment = hasEnrichmentInputs(projectPath, editPlan) ? validateEnrichmentPlan(projectPath, edl, editPlan) : undefined;
+    const preparedLineage = prepareRenderLineage(projectPath, compiledEdl, transcript, enrichment);
+    renderStageInputs = preparedLineage.inputs;
+    renderInputFingerprint = inputFingerprint(renderStageInputs);
+
+    const stagingRoot = resolveProjectOutputPath(
+      projectPath,
+      join(
+        ".render",
+        "staging",
+        `render-${renderInputFingerprint.slice("sha256:".length, "sha256:".length + 16)}-${Date.now().toString(36)}`,
+      ),
+      "render staging directory",
+    );
+    mkdirSync(stagingRoot, { recursive: true });
+    const stagedSubtitlesPath = join(stagingRoot, "subtitles.srt");
+    const stagedCleanPath = join(stagingRoot, "clean.mp4");
+    const stagedFinalPath = enrichment ? join(stagingRoot, "final.mp4") : undefined;
+    const stagedStoryboardPath = enrichment ? join(stagingRoot, "storyboard.json") : undefined;
+    atomicWriteText(stagedSubtitlesPath, renderSrt(transcript, edl));
+    renderEdl(projectPath, edl, stagedCleanPath);
+    const stagedFinal = enrichment
+      ? renderEnrichedVideo(projectPath, stagedCleanPath, stagedSubtitlesPath, enrichment.plan, enrichment.assets, {
+          workDir: join(stagingRoot, "enrichment"),
+          finalPath: stagedFinalPath!,
+          storyboardPath: stagedStoryboardPath!,
+        })
+      : undefined;
+
+    const cleanProbe = probeMedia(stagedCleanPath);
+    if (!cleanProbe.probe_ok) throw new Error(`clean render probe failed: ${cleanProbe.probe_error}`);
+    const finalProbe = stagedFinal ? probeMedia(stagedFinal) : undefined;
+    if (finalProbe && !finalProbe.probe_ok) throw new Error(`final render probe failed: ${finalProbe.probe_error}`);
+
+    const subtitlesPath = resolveProjectOutputPath(projectPath, projectArtifacts.subtitles, "subtitle output");
+    const cleanRenderPath = resolveProjectOutputPath(projectPath, projectArtifacts.cleanRender, "clean render output");
+    const finalRenderPath = stagedFinal ? resolveProjectOutputPath(projectPath, projectArtifacts.finalRender, "final render output") : undefined;
+    const storyboardPath = stagedStoryboardPath ? resolveProjectOutputPath(projectPath, projectArtifacts.storyboard, "storyboard output") : undefined;
+    const cleanHash = fileBytesFingerprint(stagedCleanPath);
+    const finalHash = stagedFinal ? fileBytesFingerprint(stagedFinal) : undefined;
+    const subtitlesHash = fileBytesFingerprint(stagedSubtitlesPath);
+    const storyboardHash = stagedStoryboardPath ? fileBytesFingerprint(stagedStoryboardPath) : undefined;
+
+    atomicReplaceFile(stagedSubtitlesPath, subtitlesPath);
+    atomicReplaceFile(stagedCleanPath, cleanRenderPath);
+    if (stagedStoryboardPath && storyboardPath) atomicReplaceFile(stagedStoryboardPath, storyboardPath);
+    if (stagedFinal && finalRenderPath) atomicReplaceFile(stagedFinal, finalRenderPath);
+
+    const completedAt = new Date().toISOString();
+    const outputs: RenderResult["outputs"] = [
+      { key: "subtitles", role: "derived", path: projectArtifacts.subtitles, sha256: subtitlesHash },
+      {
+        key: "render-output:clean",
+        role: "execution_result",
+        path: projectArtifacts.cleanRender,
+        sha256: cleanHash,
+        duration_seconds: cleanProbe.duration_seconds,
+        probe: cleanProbe,
+      },
+      ...(storyboardHash
+        ? [{ key: "storyboard", role: "derived" as const, path: projectArtifacts.storyboard, sha256: storyboardHash }]
+        : []),
+      ...(finalHash && finalProbe
+        ? [
+            {
+              key: "render-output:final",
+              role: "execution_result" as const,
+              path: projectArtifacts.finalRender,
+              sha256: finalHash,
+              duration_seconds: finalProbe.duration_seconds,
+              probe: finalProbe,
+            },
+          ]
+        : []),
+    ];
+    const canonicalOutputKey = finalHash ? "render-output:final" : "render-output:clean";
+    const renderResult = parseRenderResult({
+      contract_version: "1.0",
+      input_fingerprint: renderInputFingerprint,
+      inputs: preparedLineage.inputs,
+      outputs,
+      canonical_output_key: canonicalOutputKey,
+      enrichment_applied: Boolean(finalHash),
+      clean_output_path: projectArtifacts.cleanRender,
+      producer_cli_version: cliVersion(),
+      completed_at: completedAt,
+    });
+    const renderResultPath = resolveProjectOutputPath(projectPath, projectArtifacts.renderResult, "render result output");
+    atomicWriteJson(renderResultPath, renderResult);
+
+    const outputRecords = renderOutputRecords(projectPath, renderResult, preparedLineage.inputs, completedAt);
+    const renderResultRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "render-result",
+      path: projectArtifacts.renderResult,
+      role: "execution_result",
+      schema_version: "1.0",
+      authored_by: "cli",
+      command: "project.render",
+      mode: "produced",
+      inputs: [...preparedLineage.inputs, ...outputRecords.map(artifactReference)],
+      value: renderResultFingerprintProjection(renderResult),
+      file_sha256: fileBytesFingerprint(renderResultPath),
+      recorded_at: completedAt,
+    });
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "project.render",
+      command: "project.render",
+      input_fingerprint: renderInputFingerprint,
+      inputs: preparedLineage.inputs,
+      records: [...preparedLineage.records, ...outputRecords, renderResultRecord],
+      started_at: startedAt,
+      completed_at: completedAt,
+    });
     return ok("project.render", {
       project_path: projectPath,
       edl_path: edlPath,
       subtitles_path: subtitlesPath,
       clean_render_path: cleanRenderPath,
       final_render_path: finalRenderPath,
-      enrichment_applied: Boolean(finalRenderPath),
+      render_result_path: renderResultPath,
+      canonical_output_key: canonicalOutputKey,
+      input_fingerprint: renderInputFingerprint,
+      enrichment_applied: Boolean(finalHash),
+      asset_summary: enrichment ? summarizeAssets(projectPath, enrichment.assets) : [],
+      element_usage: enrichment ? summarizeHyperframesElements(enrichment.plan) : [],
+      audio_usage: enrichment ? summarizeAudioUsage(enrichment.plan) : emptyAudioUsage(),
+      warnings: enrichment?.warnings ?? [],
       expected_duration_seconds: edlDuration(edl),
     });
   } catch (error) {
+    if (renderInputFingerprint && existsSync(projectPath)) {
+      try {
+        commitProjectStageFailure({
+          project_path: projectPath,
+          stage: "project.render",
+          command: "project.render",
+          input_fingerprint: renderInputFingerprint,
+          inputs: renderStageInputs,
+          failure_code: errorCode(error, "PROJECT_RENDER_FAILED"),
+          failure_message: error instanceof Error ? error.message : String(error),
+          artifact: "render-result",
+          remediation: errorRemediation(error, "Fix the reported render input or media failure, then rerun project render."),
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+        });
+      } catch {
+        // Preserve the original render failure even if the failure checkpoint cannot be committed.
+      }
+    }
     return fail("project.render", "PROJECT_RENDER_FAILED", error);
   }
 }
 
+function prepareRenderLineage(
+  projectPath: string,
+  compiledEdl: ReturnType<typeof compileCurrentEdl>,
+  transcript: TranscriptArtifact,
+  enrichment?: ReturnType<typeof validateEnrichmentPlan>,
+): { inputs: ArtifactFingerprintReference[]; records: ArtifactRecord[] } {
+  const manifest = readProjectArtifactManifest(projectPath);
+  if (!manifest) throw new Error("artifact manifest is missing after EDL compilation");
+  const records: ArtifactRecord[] = [];
+  const inputs: ArtifactFingerprintReference[] = [artifactReference(compiledEdl.edl_record)];
+  const transcriptRecord = requiredArtifactRecord(manifest, "transcript");
+  inputs.push(artifactReference(transcriptRecord));
+  const sourceIds = [...new Set(compiledEdl.edl.entries.map((entry) => entry.source_id))];
+  for (const sourceId of sourceIds) inputs.push(artifactReference(requiredArtifactRecord(manifest, `source:${sourceId}`)));
+
+  if (!enrichment) return { inputs, records };
+  const recordedAt = new Date().toISOString();
+  const referencedAssetIds = new Set([
+    ...enrichment.plan.cards.flatMap((item) => (item.asset_id ? [item.asset_id] : [])),
+    ...enrichment.plan.music.map((item) => item.asset_id),
+    ...enrichment.plan.elements.flatMap((item) => (item.asset_id ? [item.asset_id] : [])),
+  ]);
+  const assetRecords = enrichment.assets.assets
+    .filter((asset) => referencedAssetIds.has(asset.id))
+    .map((asset) => {
+      const key = `asset:${asset.id}`;
+      const existing = manifest.artifacts[key];
+      if (existing) {
+        if (existing.path !== asset.path) throw new Error(`${key} path does not match asset-manifest.json`);
+        return assertArtifactRecordCurrent(projectPath, manifest, key, fileBytesFingerprint(projectAssetPath(projectPath, asset.path)), new Set(), new Set(), "project.render");
+      }
+      const candidate = recordFileArtifact({
+        project_path: projectPath,
+        key,
+        path: asset.path,
+        role: "authoritative_input",
+        schema_version: "bytes-v1",
+        authored_by: asset.source === "bundled" || asset.source === "derived" ? "cli" : asset.source === "imported" ? "host" : "agent",
+        command: "project.render",
+        mode: "validated",
+        recorded_at: recordedAt,
+      });
+      return currentOrReplacementRecord(manifest, candidate, records);
+    });
+  const assetReferences = assetRecords.map(artifactReference);
+  const edlReference = artifactReference(compiledEdl.edl_record);
+  const planPath = join(projectPath, projectArtifacts.enrichmentPlan);
+  const planCandidate = recordJsonArtifact({
+    project_path: projectPath,
+    key: "enrichment-plan",
+    path: projectArtifacts.enrichmentPlan,
+    role: "authoritative_input",
+    schema_version: enrichment.plan.version,
+    authored_by: "agent",
+    command: "project.render",
+    mode: "validated",
+    inputs: [edlReference, ...assetReferences],
+    value: enrichment.plan,
+    file_sha256: fileBytesFingerprint(planPath),
+    recorded_at: recordedAt,
+  });
+  const planRecord = currentOrReplacementRecord(manifest, planCandidate, records);
+  const assetManifestPath = join(projectPath, projectArtifacts.assetManifest);
+  if (existsSync(assetManifestPath)) {
+    const assetManifestCandidate = recordJsonArtifact({
+      project_path: projectPath,
+      key: "asset-manifest",
+      path: projectArtifacts.assetManifest,
+      role: "execution_result",
+      schema_version: "1.0",
+      authored_by: "cli",
+      command: "project.render",
+      mode: "validated",
+      inputs: assetReferences,
+      value: assetManifestFingerprintProjection(enrichment.assets),
+      file_sha256: fileBytesFingerprint(assetManifestPath),
+      recorded_at: recordedAt,
+    });
+    currentOrReplacementRecord(manifest, assetManifestCandidate, records);
+  }
+  inputs.push(artifactReference(planRecord), ...assetReferences);
+  return { inputs, records };
+}
+
+function requiredArtifactRecord(manifest: NonNullable<ReturnType<typeof readProjectArtifactManifest>>, key: string): ArtifactRecord {
+  const record = manifest.artifacts[key];
+  if (!record) throw new Error(`artifact manifest is missing current record: ${key}`);
+  return record;
+}
+
+function renderOutputRecords(
+  projectPath: string,
+  result: RenderResult,
+  renderInputs: ArtifactFingerprintReference[],
+  recordedAt: string,
+): ArtifactRecord[] {
+  return result.outputs.map((output) => {
+    if (output.path.endsWith(".json")) {
+      const path = resolveExistingProjectPath(projectPath, output.path, `render output ${output.key}`);
+      const value = readJson(path);
+      return recordJsonArtifact({
+        project_path: projectPath,
+        key: output.key,
+        path: output.path,
+        role: output.role,
+        schema_version:
+          output.key === "storyboard" && typeof value === "object" && value !== null && "version" in value && typeof value.version === "string"
+            ? value.version
+            : "json-v1",
+        authored_by: "cli",
+        command: "project.render",
+        mode: "produced",
+        inputs: renderInputs,
+        value,
+        file_sha256: fileBytesFingerprint(path),
+        recorded_at: recordedAt,
+      });
+    }
+    return recordFileArtifact({
+      project_path: projectPath,
+      key: output.key,
+      path: output.path,
+      role: output.role,
+      schema_version: output.key === "subtitles" ? "srt" : "bytes-v1",
+      authored_by: "cli",
+      command: "project.render",
+      mode: "produced",
+      inputs: renderInputs,
+      recorded_at: recordedAt,
+    });
+  });
+}
+
+function assertArtifactRecordCurrent(
+  projectPath: string,
+  manifest: ArtifactManifest,
+  key: string,
+  expectedFingerprint?: Fingerprint,
+  visiting = new Set<string>(),
+  verified = new Set<string>(),
+  stage = "project.inspect",
+): ArtifactRecord {
+  const record = manifest.artifacts[key];
+  if (!record) {
+    throw lifecycleCommandError("LINEAGE_UNPROVEN", `artifact manifest is missing ${key}`, key, "Rerun the command that produces or validates this artifact.", stage);
+  }
+  if (expectedFingerprint && record.fingerprint !== expectedFingerprint) {
+    throw lifecycleCommandError("ARTIFACT_STALE", `${key} fingerprint no longer matches its consumer`, key, "Rerun the command that validates or produces this artifact.", stage);
+  }
+  if (verified.has(key)) return record;
+  if (visiting.has(key)) {
+    throw lifecycleCommandError("DEPENDENCY_CYCLE", `artifact lineage contains a cycle at ${key}`, key, "Regenerate the affected artifacts.", stage);
+  }
+  visiting.add(key);
+  const actualFingerprint = currentArtifactFingerprint(projectPath, record, stage);
+  if (actualFingerprint !== record.fingerprint) {
+    throw lifecycleCommandError("ARTIFACT_INVALID", `${key} content does not match its committed fingerprint`, key, "Rerun the command that validates or produces this artifact.", stage);
+  }
+  for (const input of record.inputs) {
+    const dependency = manifest.artifacts[input.key];
+    if (dependency?.role === "human_view") continue;
+    if (dependency && input.schema_version && dependency.schema_version !== input.schema_version) {
+      throw lifecycleCommandError(
+        "DEPENDENCY_SCHEMA_CHANGED",
+        `${input.key} schema no longer matches ${record.key}`,
+        input.key,
+        "Regenerate the affected artifact chain with the current CLI.",
+        stage,
+      );
+    }
+    assertArtifactRecordCurrent(projectPath, manifest, input.key, input.fingerprint, visiting, verified, stage);
+  }
+  visiting.delete(key);
+  verified.add(key);
+  return record;
+}
+
+function assertExploreSourceBoundary(projectPath: string, sources: SourcesManifest): void {
+  const projectMetadata = readProjectMetadata(projectPath);
+  if (!projectMetadata) {
+    throw lifecycleCommandError(
+      "PROJECT_METADATA_MISSING",
+      "project.json is required before project explore",
+      "project",
+      "Restore project.json or create a new project from the source media.",
+      "project.explore",
+    );
+  }
+  const manifest = readProjectArtifactManifest(projectPath);
+  if (!manifest) {
+    for (const source of sources.sources) {
+      projectSourceFingerprint(projectPath, source.source_id, source.project_path, "project.explore");
+    }
+    return;
+  }
+  const projectRecord = assertArtifactRecordCurrent(
+    projectPath,
+    manifest,
+    "project",
+    semanticJsonFingerprint(projectMetadataFingerprintProjection(projectMetadata)),
+    new Set(),
+    new Set(),
+    "project.explore",
+  );
+  assertArtifactRecordContract(
+    projectRecord,
+    {
+      path: projectArtifacts.project,
+      role: "authoritative_input",
+      schema_version: projectMetadata.contract_version ?? "legacy",
+    },
+    "project.explore",
+  );
+  assertCurrentSourceLineage(projectPath, sources, manifest, "project.explore");
+}
+
+function requireProjectArtifactManifest(projectPath: string, stage: string): ArtifactManifest {
+  const manifest = readProjectArtifactManifest(projectPath);
+  if (manifest) return manifest;
+  throw lifecycleCommandError(
+    "LINEAGE_UNPROVEN",
+    "artifact-manifest.json does not establish current upstream lineage",
+    "artifact-manifest",
+    "Run project explore to validate the project source, transcript, and analysis before continuing.",
+    stage,
+  );
+}
+
+function projectSourceFingerprint(
+  projectPath: string,
+  sourceId: string,
+  projectRelativePath: string,
+  stage: string,
+): Fingerprint {
+  try {
+    return fileBytesFingerprint(readableProjectSource(projectPath, sourceId, projectRelativePath));
+  } catch {
+    throw lifecycleCommandError(
+      "SOURCE_NOT_PROJECT_LOCAL",
+      `source ${sourceId} is not a readable project-local file`,
+      `source:${sourceId}`,
+      "Restore the original project-local source or create a new project from the replacement media.",
+      stage,
+    );
+  }
+}
+
+function assertCurrentSourceLineage(
+  projectPath: string,
+  sources: SourcesManifest,
+  manifest: ArtifactManifest,
+  stage: string,
+): {
+  source_records: ArtifactRecord[];
+  sources_record: ArtifactRecord;
+  verified: Set<string>;
+} {
+  const verified = new Set<string>();
+  const sourceRecords = sources.sources.map((source) => {
+    const key = `source:${source.source_id}`;
+    const existing = manifest.artifacts[key];
+    let expectedFingerprint: Fingerprint;
+    try {
+      expectedFingerprint = projectSourceFingerprint(projectPath, source.source_id, source.project_path, stage);
+    } catch (error) {
+      if (!existing) throw error;
+      throw lifecycleCommandError(
+        "SOURCE_CONTENT_CHANGED",
+        `source bytes changed after project creation: ${source.source_id}`,
+        key,
+        "Restore the original project source or create a new project from the replacement media.",
+        stage,
+      );
+    }
+    if (
+      existing
+      && (existing.path !== source.project_path
+        || existing.role !== "authoritative_input"
+        || existing.schema_version !== "bytes-v1"
+        || existing.fingerprint !== expectedFingerprint)
+    ) {
+      throw lifecycleCommandError(
+        "SOURCE_CONTENT_CHANGED",
+        `source bytes changed after project creation: ${source.source_id}`,
+        key,
+        "Restore the original project source or create a new project from the replacement media.",
+        stage,
+      );
+    }
+    return assertArtifactRecordCurrent(
+      projectPath,
+      manifest,
+      key,
+      expectedFingerprint,
+      new Set(),
+      verified,
+      stage,
+    );
+  });
+  const sourceReferences = sourceRecords.map(artifactReference);
+  const sourcesRecord = assertArtifactRecordCurrent(
+    projectPath,
+    manifest,
+    "sources",
+    semanticJsonFingerprint(sources),
+    new Set(),
+    verified,
+    stage,
+  );
+  assertArtifactRecordContract(
+    sourcesRecord,
+    { path: projectArtifacts.sources, role: "authoritative_input", schema_version: "1.0" },
+    stage,
+  );
+  assertArtifactInputs(sourcesRecord, sourceReferences, stage);
+  return { source_records: sourceRecords, sources_record: sourcesRecord, verified };
+}
+
+function assertCurrentMaterialLineage(
+  projectPath: string,
+  sources: SourcesManifest,
+  transcript: TranscriptArtifact,
+  analysis: AnalysisArtifact,
+  stage: string,
+): {
+  manifest: ArtifactManifest;
+  source_records: ArtifactRecord[];
+  sources_record: ArtifactRecord;
+  transcript_record: ArtifactRecord;
+  analysis_record: ArtifactRecord;
+} {
+  const manifest = requireProjectArtifactManifest(projectPath, stage);
+  const sourceLineage = assertCurrentSourceLineage(projectPath, sources, manifest, stage);
+  const sourcesReference = artifactReference(sourceLineage.sources_record);
+  const transcriptRecord = assertArtifactRecordCurrent(
+    projectPath,
+    manifest,
+    "transcript",
+    semanticJsonFingerprint(transcript),
+    new Set(),
+    sourceLineage.verified,
+    stage,
+  );
+  assertArtifactRecordContract(
+    transcriptRecord,
+    { path: projectArtifacts.transcriptJson, role: "authoritative_input", schema_version: "1.0" },
+    stage,
+  );
+  assertArtifactInputs(transcriptRecord, [sourcesReference], stage);
+  const analysisRecord = assertArtifactRecordCurrent(
+    projectPath,
+    manifest,
+    "analysis",
+    semanticJsonFingerprint(analysis),
+    new Set(),
+    sourceLineage.verified,
+    stage,
+  );
+  assertArtifactRecordContract(
+    analysisRecord,
+    { path: projectArtifacts.analysis, role: "derived", schema_version: "1.0" },
+    stage,
+  );
+  assertArtifactInputs(analysisRecord, [artifactReference(transcriptRecord)], stage);
+  return {
+    manifest,
+    source_records: sourceLineage.source_records,
+    sources_record: sourceLineage.sources_record,
+    transcript_record: transcriptRecord,
+    analysis_record: analysisRecord,
+  };
+}
+
+function assertArtifactRecordContract(
+  record: ArtifactRecord,
+  expected: Pick<ArtifactRecord, "path" | "role" | "schema_version">,
+  stage: string,
+): void {
+  if (
+    record.path === expected.path
+    && record.role === expected.role
+    && record.schema_version === expected.schema_version
+  ) return;
+  throw lifecycleCommandError(
+    "MANIFEST_RECORD_MISMATCH",
+    `${record.key} manifest record does not match its artifact contract`,
+    record.key,
+    "Rerun the command that owns this artifact with the current CLI.",
+    stage,
+  );
+}
+
+function assertArtifactInputs(
+  record: ArtifactRecord,
+  expectedInputs: ArtifactFingerprintReference[],
+  stage: string,
+): void {
+  if (referencesEqual(record.inputs, expectedInputs)) return;
+  throw lifecycleCommandError(
+    "ARTIFACT_STALE",
+    `${record.key} does not bind the current upstream artifact set`,
+    record.key,
+    "Rerun the command that owns this artifact before continuing.",
+    stage,
+  );
+}
+
+function currentArtifactFingerprint(projectPath: string, record: ArtifactRecord, stage = "project.inspect"): Fingerprint {
+  if (record.key.startsWith("proposal-selection:")) {
+    const proposal = parseProductionProposal(readProjectJson(projectPath, projectArtifacts.productionProposal, "production proposal"));
+    return proposalSelectionFingerprint(proposal, record.key.slice("proposal-selection:".length));
+  }
+  if (record.path.startsWith(".virtual/")) return record.fingerprint;
+  if (record.path.includes("#")) return fragmentArtifactFingerprint(projectPath, record, stage);
+  const path = currentProjectArtifactPath(projectPath, record.path, record.key, stage);
+  if (record.schema_version === "bytes-v1" || record.schema_version === "image/jpeg" || !record.path.endsWith(".json")) {
+    return fileBytesFingerprint(path);
+  }
+  const value = readJson(path);
+  switch (record.key) {
+    case "project":
+      return semanticJsonFingerprint(projectMetadataFingerprintProjection(parseProjectMetadata(value)));
+    case "sources":
+      return semanticJsonFingerprint(parseSourcesManifest(value));
+    case "transcript":
+      return semanticJsonFingerprint(parseTranscript(value));
+    case "analysis":
+      return semanticJsonFingerprint(parseAnalysis(value));
+    case "review-package":
+      return semanticJsonFingerprint(parseReviewPackage(value));
+    case "production-proposal":
+      return proposalFingerprint(parseProductionProposal(value));
+    case "edit-plan":
+      return semanticJsonFingerprint(editPlanFingerprintProjection(parseEditPlan(value)));
+    case "edl":
+      return semanticJsonFingerprint(parseEdl(value));
+    case "focus-candidates":
+      return semanticJsonFingerprint(parseFocusCandidates(value));
+    case "focus-frames":
+      return semanticJsonFingerprint(parseFocusFrames(value));
+    case "focus-grounding":
+      return semanticJsonFingerprint(parseFocusGrounding(value));
+    case "focus-review":
+      return semanticJsonFingerprint(parseFocusReview(value));
+    case "asset-usage-plan":
+      return semanticJsonFingerprint(parseAssetUsagePlan(value));
+    case "asset-manifest":
+      return semanticJsonFingerprint(assetManifestFingerprintProjection(parseAssetManifest(value)));
+    case "visual-acquisition":
+      return semanticJsonFingerprint(visualAcquisitionFingerprintProjection(parseVisualAcquisition(value)));
+    case "music-acquisition":
+      return semanticJsonFingerprint(musicAcquisitionFingerprintProjection(parseMusicAcquisition(value)));
+    case "enrichment-plan":
+      return semanticJsonFingerprint(parseEnrichmentPlan(value));
+    case "render-result":
+      return semanticJsonFingerprint(renderResultFingerprintProjection(parseRenderResult(value)));
+    case "inspection":
+      return semanticJsonFingerprint(inspectionFingerprintProjection(parseInspection(value)));
+    default:
+      return semanticJsonFingerprint(value);
+  }
+}
+
+function fragmentArtifactFingerprint(projectPath: string, record: ArtifactRecord, stage: string): Fingerprint {
+  const [containerPath] = record.path.split("#", 1);
+  const path = currentProjectArtifactPath(projectPath, containerPath!, record.key, stage);
+  const value = readJson(path);
+  if (record.key.startsWith("music-request:")) return semanticJsonFingerprint(parseMusicRequest(value));
+  if (record.key.startsWith("visual-request:")) {
+    const requestId = record.key.slice("visual-request:".length);
+    const request = parseVisualRequest(value).requests.find((item) => item.id === requestId);
+    if (!request) throw lifecycleCommandError("ARTIFACT_MISSING", `${record.key} is missing from visual-request.json`, record.key, "Rerun project visual-search.", stage);
+    return semanticJsonFingerprint(request);
+  }
+  if (record.key.startsWith("visual-candidate:")) {
+    const candidates = parseVisualCandidates(value);
+    const candidate = candidates.candidates.find((item) => `visual-candidate:${item.request_id}:${item.id}` === record.key);
+    if (!candidate) throw lifecycleCommandError("ARTIFACT_MISSING", `${record.key} is missing from visual-candidates.json`, record.key, "Rerun project visual-search.", stage);
+    return semanticJsonFingerprint(candidate);
+  }
+  throw lifecycleCommandError("ARTIFACT_INVALID", `unsupported fragment artifact: ${record.key}`, record.key, "Regenerate the affected artifact with the current CLI.", stage);
+}
+
+function currentProjectArtifactPath(projectPath: string, projectRelativePath: string, key: string, stage: string): string {
+  const lexicalPath = join(projectPath, projectRelativePath);
+  if (!existsSync(lexicalPath)) {
+    throw lifecycleCommandError("ARTIFACT_MISSING", `${key} is missing`, key, "Rerun the command that produces this artifact.", stage);
+  }
+  try {
+    return resolveExistingProjectPath(projectPath, projectRelativePath, `artifact ${key}`);
+  } catch {
+    throw lifecycleCommandError(
+      "ARTIFACT_INVALID",
+      `${key} is not a readable project-local artifact`,
+      key,
+      "Restore the project-local artifact or rerun the command that produces it.",
+      stage,
+    );
+  }
+}
+
 export function inspectProject(projectPath: string, options: ProviderModeOption = {}): CommandResult<"project.inspect", ProjectInspectData> {
+  const startedAt = new Date().toISOString();
+  let inspectionInputFingerprint: Fingerprint | undefined;
+  let inspectionStageInputs: ArtifactFingerprintReference[] | undefined;
   try {
     resolveProjectProviderMode(projectPath, options.providerMode);
-    const manifest = readManifest(projectPath);
-    const edl = parseEdl(readJson(join(projectPath, projectArtifacts.edl)), manifest);
-    const analysis = parseAnalysis(readJson(join(projectPath, projectArtifacts.analysis)), manifest);
-    const editPlan = parseEditPlan(readJson(join(projectPath, projectArtifacts.editPlan)), manifest);
-    const reviewPath = join(projectPath, projectArtifacts.reviewJson);
-    const unresolvedRisks = existsSync(reviewPath) ? parseReviewPackage(readJson(reviewPath), manifest).unresolved_risks : [];
-    const decisions = inspectDecisions(analysis, editPlan, unresolvedRisks);
-    const outputPath = existsSync(join(projectPath, "renders", "final.mp4")) ? join(projectPath, "renders", "final.mp4") : join(projectPath, "renders", "clean.mp4");
-    if (!existsSync(outputPath)) throw new Error("rendered MP4 is missing");
-    const probe = probeMedia(outputPath);
+    const sources = readManifest(projectPath);
+    const lifecycleManifest = readProjectArtifactManifest(projectPath);
+    if (!lifecycleManifest) throw lifecycleCommandError("RENDER_RESULT_UNTRACKED", "artifact manifest is required before inspection", "render-result", "Rerun project render, then inspect.");
+    const renderResultPath = currentProjectArtifactPath(projectPath, projectArtifacts.renderResult, "render-result", "project.inspect");
+    const renderResult = parseRenderResult(readJson(renderResultPath));
+    if (inputFingerprint(renderResult.inputs) !== renderResult.input_fingerprint) {
+      throw lifecycleCommandError("RENDER_RESULT_INVALID", "render-result input fingerprint does not match its declared inputs", "render-result", "Rerun project render.");
+    }
+    const renderResultRecord = assertArtifactRecordCurrent(projectPath, lifecycleManifest, "render-result");
+    const renderResultReference = artifactReference(renderResultRecord);
+    inspectionStageInputs = [renderResultReference];
+    inspectionInputFingerprint = inputFingerprint(inspectionStageInputs);
+    const renderResultFingerprint = semanticJsonFingerprint(renderResultFingerprintProjection(renderResult));
+    if (renderResultRecord.fingerprint !== renderResultFingerprint) {
+      throw lifecycleCommandError("RENDER_RESULT_STALE", "render-result.json is not the current committed render result", "render-result", "Rerun project render.");
+    }
+    const canonicalOutput = renderResult.outputs.find((output) => output.key === renderResult.canonical_output_key)!;
+    const outputPath = join(projectPath, canonicalOutput.path);
+    const verifiedOutputPath = currentProjectArtifactPath(projectPath, canonicalOutput.path, canonicalOutput.key, "project.inspect");
+    if (fileBytesFingerprint(verifiedOutputPath) !== canonicalOutput.sha256) {
+      throw lifecycleCommandError("RENDER_OUTPUT_HASH_MISMATCH", "canonical render output bytes do not match render-result.json", canonicalOutput.key, "Rerun project render.");
+    }
+    const probe = probeMedia(verifiedOutputPath);
     if (!probe.probe_ok) throw new Error(`rendered MP4 probe failed: ${probe.probe_error}`);
+    if (canonicalOutput.duration_seconds !== undefined && Math.abs(probe.duration_seconds - canonicalOutput.duration_seconds) > 0.05) {
+      throw lifecycleCommandError("RENDER_OUTPUT_PROBE_MISMATCH", "canonical render duration no longer matches render-result.json", canonicalOutput.key, "Rerun project render.");
+    }
+
+    const edl = parseEdl(readProjectJson(projectPath, projectArtifacts.edl, "EDL"), sources);
+    const transcript = parseTranscript(readProjectJson(projectPath, projectArtifacts.transcriptJson, "transcript"), sources);
+    const analysis = parseAnalysis(readProjectJson(projectPath, projectArtifacts.analysis, "analysis"), sources);
+    const editPlan = readEditPlan(projectPath, sources);
+    const unresolvedRisks = transcriptTimingRisks(transcript);
+    const decisions = inspectDecisions(analysis, editPlan, unresolvedRisks);
     const duration = probe.duration_seconds;
     const expected = edlDuration(edl);
-    const subtitlesPath = join(projectPath, projectArtifacts.subtitles);
-    const enrichmentPlanPath = join(projectPath, projectArtifacts.enrichmentPlan);
-    const enrichmentPlan = existsSync(enrichmentPlanPath) ? parseEnrichmentPlan(readJson(enrichmentPlanPath)) : undefined;
-    const assetManifestPath = join(projectPath, projectArtifacts.assetManifest);
-    const assetManifest = existsSync(assetManifestPath) ? parseAssetManifest(readJson(assetManifestPath)) : { assets: [] };
-    const hyperframes = enrichmentPlan ? summarizeHyperframesBlocks(enrichmentPlan, assetManifest) : { block_usage: [], cdn_dependencies: [] };
-    const elementUsage = enrichmentPlan ? summarizeHyperframesElements(enrichmentPlan) : [];
-    const assetSummary = summarizeAssets(projectPath, assetManifest);
-    const musicReviewPath = join(projectPath, projectArtifacts.musicReview);
-    const musicReview = existsSync(musicReviewPath) ? (readJson(musicReviewPath) as MusicReviewArtifact) : undefined;
+    const subtitlesOutput = renderResult.outputs.find((output) => output.key === "subtitles");
+    const subtitlesPath = subtitlesOutput
+      ? currentProjectArtifactPath(projectPath, subtitlesOutput.path, subtitlesOutput.key, "project.inspect")
+      : resolveProjectOutputPath(projectPath, projectArtifacts.subtitles, "subtitle output");
+    const enrichmentPlan = renderResult.enrichment_applied
+      ? parseEnrichmentPlan(readProjectJson(projectPath, projectArtifacts.enrichmentPlan, "enrichment plan"))
+      : undefined;
+    const storyboardOutput = renderResult.outputs.find((output) => output.key === "storyboard");
+    const storyboard = storyboardOutput
+      ? readJson(currentProjectArtifactPath(projectPath, storyboardOutput.path, storyboardOutput.key, "project.inspect")) as EnrichmentStoryboard
+      : undefined;
+    const hyperframes = storyboard
+      ? { block_usage: storyboard.block_usage, cdn_dependencies: storyboard.dependencies }
+      : { block_usage: [], cdn_dependencies: [] };
+    const elementUsage = storyboard?.element_usage ?? [];
+    const audioUsage = enrichmentPlan ? summarizeAudioUsage(enrichmentPlan) : emptyAudioUsage();
+    const assetSummary = storyboard?.asset_summary ?? [];
+    const musicReview = undefined;
     const enrichmentSummary = enrichmentPlan ? summarizeEnrichment(enrichmentPlan, hyperframes.block_usage, elementUsage) : [];
-    const enrichmentApplied = outputPath.endsWith("final.mp4") && Boolean(enrichmentPlan);
+    const enrichmentApplied = renderResult.enrichment_applied;
     const warnings = inspectWarnings(duration, expected, subtitlesPath);
     if (enrichmentPlan) warnings.push(...enrichmentWarnings(enrichmentPlan));
-    if (existsSync(enrichmentPlanPath) && !enrichmentApplied) warnings.push("enrichment-plan.json exists but renders/final.mp4 is missing");
-    const subtitleWarningPath = join(projectPath, ".render", "enrichment", "subtitles-not-burned.txt");
-    if (existsSync(subtitleWarningPath) && readFileSync(subtitleWarningPath, "utf8").trim()) warnings.push("ffmpeg subtitles filter unavailable; subtitles.srt was generated but not burned into final.mp4");
-    const qaChecks = enrichmentPlan ? (readStoryboardQaChecks(projectPath) ?? buildQaChecks(projectPath, enrichmentPlan, assetManifest)) : [];
-    const inspectionChecks = enrichmentApplied ? extractInspectionChecks(projectPath, outputPath, qaChecks) : [];
+    const qaChecks = enrichmentPlan ? (storyboard?.qa_checks ?? []) : [];
+    const inspectionNamespace = renderResultFingerprint.slice("sha256:".length, "sha256:".length + 16);
+    const inspectionChecks = enrichmentApplied ? extractInspectionChecks(projectPath, verifiedOutputPath, qaChecks, inspectionNamespace) : [];
     const inspectionFrames = inspectionChecks.flatMap((check) => check.frame_paths);
-    const reportPath = join(projectPath, projectArtifacts.report);
-    writeFileSync(
-      reportPath,
-      renderInspectReport(
+    const structuredChecks = inspectionChecks.map((check) => ({
+      ...check,
+      frame_paths: check.frame_paths.map((path) => relative(projectPath, path).split(sep).join("/")),
+    }));
+    const inspectedAt = new Date().toISOString();
+    const inspection = parseInspection({
+      contract_version: "1.0",
+      render_result_fingerprint: renderResultFingerprint,
+      canonical_output_key: renderResult.canonical_output_key,
+      canonical_output_path: canonicalOutput.path,
+      canonical_output_sha256: canonicalOutput.sha256,
+      canonical_output_duration_seconds: duration,
+      canonical_output_probe: probe,
+      expected_duration_seconds: expected,
+      captions_present: Boolean(subtitlesOutput && existsSync(subtitlesPath)),
+      enrichment_applied: enrichmentApplied,
+      source_mode: enrichmentPlan?.profile.source_mode,
+      removed_ranges: decisions.removed_ranges,
+      retained_risks: decisions.retained_risks,
+      summaries: {
+        enrichment: enrichmentSummary,
+        blocks: hyperframes.block_usage.map((item) => `${item.card_id}:${item.block_id}`),
+        elements: elementUsage.map((item) => `${item.id}:${item.element_type}:${item.element_id}`),
+        audio: [
+          ...audioUsage.music.map((item) => `${item.id}:music:${item.asset_id}`),
+          ...audioUsage.sfx.map((item) => `${item.id}:sfx:${item.asset_id ?? item.sfx_id ?? "unknown"}`),
+        ],
+        assets: assetSummary.map((item) => `${item.id}:${item.path}`),
+      },
+      checks: structuredChecks,
+      warnings,
+      blockers: [],
+      producer_cli_version: cliVersion(),
+      inspected_at: inspectedAt,
+    });
+    const inspectionPath = resolveProjectOutputPath(projectPath, projectArtifacts.inspection, "inspection output");
+    atomicWriteJson(inspectionPath, inspection);
+    const reportPath = resolveProjectOutputPath(projectPath, projectArtifacts.report, "inspection report output");
+    let reportWritten = false;
+    try {
+      atomicWriteText(
+        reportPath,
+        renderInspectReport(
         outputPath,
         duration,
         expected,
@@ -1065,6 +3812,7 @@ export function inspectProject(projectPath: string, options: ProviderModeOption 
         enrichmentSummary,
         hyperframes.block_usage,
         elementUsage,
+        audioUsage,
         hyperframes.cdn_dependencies,
         assetSummary,
         musicReview,
@@ -1073,14 +3821,76 @@ export function inspectProject(projectPath: string, options: ProviderModeOption 
         warnings,
         decisions.removed_ranges,
         decisions.retained_risks,
+        ),
+      );
+      reportWritten = true;
+    } catch (error) {
+      warnings.push(`report.md could not be written: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    const frameRecords = structuredChecks.flatMap((check) =>
+      check.frame_paths.map((path, index) =>
+        recordFileArtifact({
+          project_path: projectPath,
+          key: `inspection-frame:${check.id}:${index}`,
+          path,
+          role: "evidence",
+          schema_version: "image/jpeg",
+          authored_by: "cli",
+          command: "project.inspect",
+          mode: "produced",
+          inputs: [renderResultReference],
+          recorded_at: inspectedAt,
+        }),
       ),
     );
+    const inspectionRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "inspection",
+      path: projectArtifacts.inspection,
+      role: "execution_result",
+      schema_version: "1.0",
+      authored_by: "cli",
+      command: "project.inspect",
+      mode: "produced",
+      inputs: [renderResultReference, ...frameRecords.map(artifactReference)],
+      value: inspectionFingerprintProjection(inspection),
+      file_sha256: fileBytesFingerprint(inspectionPath),
+      recorded_at: inspectedAt,
+    });
+    const reportRecords = reportWritten
+      ? [
+          recordFileArtifact({
+            project_path: projectPath,
+            key: "report",
+            path: projectArtifacts.report,
+            role: "human_view",
+            schema_version: "markdown-v1",
+            authored_by: "cli",
+            command: "project.inspect",
+            mode: "produced",
+            inputs: [artifactReference(inspectionRecord)],
+            recorded_at: inspectedAt,
+          }),
+        ]
+      : [];
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "project.inspect",
+      command: "project.inspect",
+      input_fingerprint: inspectionInputFingerprint,
+      inputs: inspectionStageInputs,
+      records: [...frameRecords, inspectionRecord, ...reportRecords],
+      replace_record_prefixes: ["inspection-frame:"],
+      started_at: startedAt,
+      completed_at: inspectedAt,
+    });
     return ok("project.inspect", {
       project_path: projectPath,
       output_path: outputPath,
       duration_seconds: duration,
       expected_duration_seconds: expected,
-      captions_present: existsSync(subtitlesPath),
+      captions_present: inspection.captions_present,
       removed_ranges: decisions.removed_ranges,
       retained_risks: decisions.retained_risks,
       enrichment_applied: enrichmentApplied,
@@ -1088,6 +3898,7 @@ export function inspectProject(projectPath: string, options: ProviderModeOption 
       enrichment_summary: enrichmentSummary,
       block_usage: hyperframes.block_usage,
       element_usage: elementUsage,
+      audio_usage: audioUsage,
       cdn_dependencies: hyperframes.cdn_dependencies,
       asset_summary: assetSummary,
       music_review: musicReview,
@@ -1095,8 +3906,29 @@ export function inspectProject(projectPath: string, options: ProviderModeOption 
       inspection_frames: inspectionFrames,
       warnings,
       report_path: reportPath,
+      inspection_path: inspectionPath,
+      render_result_fingerprint: renderResultFingerprint,
     });
   } catch (error) {
+    if (inspectionInputFingerprint && existsSync(projectPath)) {
+      try {
+        commitProjectStageFailure({
+          project_path: projectPath,
+          stage: "project.inspect",
+          command: "project.inspect",
+          input_fingerprint: inspectionInputFingerprint,
+          inputs: inspectionStageInputs,
+          failure_code: errorCode(error, "PROJECT_INSPECT_FAILED"),
+          failure_message: error instanceof Error ? error.message : String(error),
+          artifact: "inspection",
+          remediation: errorRemediation(error, "Rerun project render if stale, then retry project inspect."),
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+        });
+      } catch {
+        // Preserve the original inspection failure.
+      }
+    }
     return fail("project.inspect", "PROJECT_INSPECT_FAILED", error);
   }
 }
@@ -1131,26 +3963,36 @@ function inspectDecisions(
   return { removed_ranges, retained_risks };
 }
 
+function transcriptTimingRisks(transcript: TranscriptArtifact): string[] {
+  if (transcript.timing_granularity === "word") {
+    return isChinese(transcript.language) && transcript.timing_validated !== true
+      ? ["unvalidated Chinese word timing needs review before precise cuts"]
+      : [];
+  }
+  return [`${transcript.timing_granularity} timing needs review before precise cuts`];
+}
+
 export function validateEnrichmentPlan(
   projectPath: string,
   edl?: EdlArtifact,
-): { plan: EnrichmentPlanArtifact; assets: AssetManifestArtifact; duration: number; warnings: string[] } {
-  const plan = parseEnrichmentPlan(readJson(join(projectPath, projectArtifacts.enrichmentPlan)));
-  const assetPath = join(projectPath, projectArtifacts.assetManifest);
-  const assets = existsSync(assetPath) ? parseAssetManifest(readJson(assetPath)) : { assets: [] };
-  const visualReviewPath = join(projectPath, projectArtifacts.visualReview);
-  const visualReview = existsSync(visualReviewPath) ? parseVisualReview(readJson(visualReviewPath)) : undefined;
-  const duration = edlDuration(edl ?? readOrBuildEdl(projectPath));
+  editPlan?: ReturnType<typeof parseEditPlan>,
+  options: { normalizeUsage?: boolean } = {},
+): { plan: EnrichmentPlanArtifact; assets: AssetManifestArtifact; duration: number; warnings: string[]; normalized: boolean } {
+  const { plan, assets, normalization } = readEffectiveEnrichment(projectPath, editPlan, options.normalizeUsage === true);
+  const normalizedEdl = normalization ? compileCurrentEdl(projectPath) : undefined;
+  const duration = edlDuration(edl ?? normalizedEdl?.edl ?? readOrBuildEdl(projectPath));
   const assetIds = new Set(assets.assets.map((asset) => asset.id));
   for (const item of [...plan.cards, ...plan.music, ...plan.elements]) {
     if (item.end > duration + 0.05) throw new Error(`slot ${item.id} exceeds output duration`);
     if (item.asset_id) {
       if (!assetIds.has(item.asset_id)) throw new Error(`slot ${item.id} references missing asset_id: ${item.asset_id}`);
       const asset = assets.assets.find((assetItem) => assetItem.id === item.asset_id)!;
-      if (!existsSync(projectAssetPath(projectPath, asset.path))) throw new Error(`asset file missing for ${item.asset_id}: ${asset.path}`);
-      if ("element_type" in item && item.element_type === "visual_asset") validateVisualAssetForRender(item, asset, visualReview);
+      projectAssetPath(projectPath, asset.path);
+      if ("element_type" in item && item.element_type === "visual_asset") validateVisualAssetForRender(projectPath, item, asset);
+      if ("type" in item && item.type === "music_segment") validateAudioAssetForRender(asset, "music", item.id);
+      if ("element_type" in item && item.element_type === "sfx") validateAudioAssetForRender(asset, "sfx", item.id);
     }
-    if ("element_type" in item && item.element_type === "sfx") getVendoredSfx(item.sfx_id ?? item.element_id);
+    if ("element_type" in item && item.element_type === "sfx" && !item.asset_id) getVendoredSfx(item.sfx_id ?? item.element_id);
   }
   for (const element of plan.elements) {
     validateElementAdapter(plan, element);
@@ -1158,7 +4000,512 @@ export function validateEnrichmentPlan(
   for (const emphasis of plan.captions.emphasis) {
     if (emphasis.end > duration + 0.05) throw new Error(`caption emphasis ${emphasis.text} exceeds output duration`);
   }
-  return { plan, assets, duration, warnings: enrichmentWarnings(plan) };
+  if (normalization) commitNormalizedAssetUsage(projectPath, normalization, plan, assets, normalizedEdl!.edl_record);
+  return { plan, assets, duration, warnings: enrichmentWarnings(plan), normalized: Boolean(normalization) };
+}
+
+function commitCanonicalEnrichmentValidation(
+  projectPath: string,
+  plan: EnrichmentPlanArtifact,
+  assets: AssetManifestArtifact,
+): void {
+  const startedAt = new Date().toISOString();
+  const recordedAt = new Date().toISOString();
+  const compiledEdl = compileCurrentEdl(projectPath);
+  const manifest = readProjectArtifactManifest(projectPath);
+  if (!manifest) throw new Error("artifact manifest is missing after EDL compilation");
+  const recordsToCommit: ArtifactRecord[] = [];
+  const referencedAssetIds = referencedEnrichmentAssetIds(plan);
+  const assetRecords = assets.assets
+    .filter((asset) => referencedAssetIds.has(asset.id))
+    .map((asset) => {
+      const key = `asset:${asset.id}`;
+      const existing = manifest.artifacts[key];
+      if (existing) {
+        if (existing.path !== asset.path) throw new Error(`${key} path does not match asset-manifest.json`);
+        return assertArtifactRecordCurrent(projectPath, manifest, key, fileBytesFingerprint(projectAssetPath(projectPath, asset.path)), new Set(), new Set(), "project.enrich-plan");
+      }
+      return currentOrReplacementRecord(
+        manifest,
+        recordFileArtifact({
+          project_path: projectPath,
+          key,
+          path: asset.path,
+          role: "authoritative_input",
+          schema_version: "bytes-v1",
+          authored_by: asset.source === "bundled" || asset.source === "derived" ? "cli" : asset.source === "imported" ? "host" : "agent",
+          command: "project.enrich-plan",
+          mode: "validated",
+          recorded_at: recordedAt,
+        }),
+        recordsToCommit,
+      );
+    });
+  const assetReferences = assetRecords.map(artifactReference);
+  const assetManifestPath = join(projectPath, projectArtifacts.assetManifest);
+  if (!existsSync(assetManifestPath)) atomicWriteJson(assetManifestPath, assets);
+  const assetManifestRecord = currentOrReplacementRecord(
+    manifest,
+    recordJsonArtifact({
+      project_path: projectPath,
+      key: "asset-manifest",
+      path: projectArtifacts.assetManifest,
+      role: "execution_result",
+      schema_version: "1.0",
+      authored_by: "cli",
+      command: "project.enrich-plan",
+      mode: "validated",
+      inputs: assetReferences,
+      value: assetManifestFingerprintProjection(assets),
+      file_sha256: fileBytesFingerprint(assetManifestPath),
+      recorded_at: recordedAt,
+    }),
+    recordsToCommit,
+  );
+  const planPath = join(projectPath, projectArtifacts.enrichmentPlan);
+  const planRecord = currentOrReplacementRecord(
+    manifest,
+    recordJsonArtifact({
+      project_path: projectPath,
+      key: "enrichment-plan",
+      path: projectArtifacts.enrichmentPlan,
+      role: "authoritative_input",
+      schema_version: plan.version,
+      authored_by: "agent",
+      command: "project.enrich-plan",
+      mode: "validated",
+      inputs: [artifactReference(compiledEdl.edl_record), ...assetReferences],
+      value: plan,
+      file_sha256: fileBytesFingerprint(planPath),
+      recorded_at: recordedAt,
+    }),
+    recordsToCommit,
+  );
+  const stageInputs = [artifactReference(compiledEdl.edl_record), artifactReference(planRecord), artifactReference(assetManifestRecord), ...assetReferences];
+  commitProjectStage({
+    project_path: projectPath,
+    stage: "project.enrich-plan",
+    command: "project.enrich-plan",
+    input_fingerprint: inputFingerprint(stageInputs),
+    inputs: stageInputs,
+    records: recordsToCommit,
+    started_at: startedAt,
+    completed_at: recordedAt,
+  });
+}
+
+function referencedEnrichmentAssetIds(plan: EnrichmentPlanArtifact): Set<string> {
+  return new Set([
+    ...plan.cards.flatMap((item) => (item.asset_id ? [item.asset_id] : [])),
+    ...plan.music.map((item) => item.asset_id),
+    ...plan.elements.flatMap((item) => (item.asset_id ? [item.asset_id] : [])),
+  ]);
+}
+
+function hasEnrichmentInputs(projectPath: string, editPlan?: ReturnType<typeof parseEditPlan>): boolean {
+  if (existsSync(join(projectPath, projectArtifacts.enrichmentPlan))) return true;
+  if (assetUsageSources(projectPath, editPlan).length > 0) {
+    throw assetUsageError(
+      "ASSET_USAGE_PLAN_REQUIRES_NORMALIZATION",
+      "asset usage handoff must be normalized with project enrich-plan before render",
+    );
+  }
+  return false;
+}
+
+function readEffectiveEnrichment(
+  projectPath: string,
+  editPlan?: ReturnType<typeof parseEditPlan>,
+  normalizeUsage = false,
+): {
+  plan: EnrichmentPlanArtifact;
+  assets: AssetManifestArtifact;
+  normalization?: { name: AssetUsageSourceName; plan: AssetUsagePlanArtifact };
+} {
+  const enrichmentPlanPath = join(projectPath, projectArtifacts.enrichmentPlan);
+  const assetPath = join(projectPath, projectArtifacts.assetManifest);
+  const basePlan = existsSync(enrichmentPlanPath)
+    ? parseEnrichmentPlan(readProjectJson(projectPath, projectArtifacts.enrichmentPlan, "enrichment plan"))
+    : undefined;
+  const baseAssets = existsSync(assetPath)
+    ? parseAssetManifest(readProjectJson(projectPath, projectArtifacts.assetManifest, "asset manifest"))
+    : { assets: [] };
+  const usageSources = assetUsageSources(projectPath, editPlan);
+  if (basePlan && usageSources.length > 0) {
+    throw assetUsageError("ASSET_USAGE_PLAN_CONFLICT", "canonical enrichment-plan.json conflicts with an asset usage handoff source");
+  }
+  if (usageSources.length > 1) {
+    throw assetUsageError(
+      "ASSET_USAGE_PLAN_CONFLICT",
+      `multiple asset usage handoff sources are present: ${usageSources.map((source) => source.name).join(", ")}`,
+    );
+  }
+  if (basePlan) return { plan: basePlan, assets: baseAssets };
+  if (usageSources.length === 0) throw assetUsageError("asset_usage_plan_invalid", "missing enrichment-plan.json or asset usage handoff");
+  if (!normalizeUsage) {
+    throw assetUsageError(
+      "ASSET_USAGE_PLAN_REQUIRES_NORMALIZATION",
+      "asset usage handoff must be normalized with project enrich-plan before render",
+    );
+  }
+
+  const usage = usageSources[0]!.plan;
+  const usageEnrichment = assetUsagePlanToEnrichment(projectPath, usage, "talking_head_avatar");
+  const assets = mergeAssetManifests(baseAssets, usageEnrichment.assets);
+  return { plan: usageEnrichment.plan, assets, normalization: usageSources[0] };
+}
+
+type AssetUsageSourceName = "asset-usage-plan.json" | "project.json#asset_usage_plan" | "edit-plan.json#asset_usage_plan";
+
+function assetUsageSources(
+  projectPath: string,
+  editPlan?: ReturnType<typeof parseEditPlan>,
+): Array<{ name: AssetUsageSourceName; plan: AssetUsagePlanArtifact }> {
+  const sources: Array<{
+    name: AssetUsageSourceName;
+    plan: AssetUsagePlanArtifact;
+  }> = [];
+  const handoffPath = join(projectPath, projectArtifacts.assetUsagePlan);
+  if (existsSync(handoffPath)) {
+    sources.push({
+      name: "asset-usage-plan.json",
+      plan: parseAssetUsagePlan(readProjectJson(projectPath, projectArtifacts.assetUsagePlan, "asset usage plan")),
+    });
+  }
+  const metadata = readProjectMetadata(projectPath);
+  const resolvedEditPlan = editPlan ?? (existsSync(join(projectPath, projectArtifacts.editPlan)) ? readEditPlan(projectPath, readManifest(projectPath)) : undefined);
+  if (metadata?.asset_usage_plan) sources.push({ name: "project.json#asset_usage_plan", plan: metadata.asset_usage_plan });
+  if (resolvedEditPlan?.asset_usage_plan) sources.push({ name: "edit-plan.json#asset_usage_plan", plan: resolvedEditPlan.asset_usage_plan });
+  return sources;
+}
+
+function commitNormalizedAssetUsage(
+  projectPath: string,
+  source: { name: AssetUsageSourceName; plan: AssetUsagePlanArtifact },
+  plan: EnrichmentPlanArtifact,
+  assets: AssetManifestArtifact,
+  edlRecord: ArtifactRecord,
+): void {
+  const startedAt = new Date().toISOString();
+  const recordedAt = new Date().toISOString();
+  const assetManifestPath = join(projectPath, projectArtifacts.assetManifest);
+  const enrichmentPlanPath = join(projectPath, projectArtifacts.enrichmentPlan);
+  const usageFingerprint = semanticJsonFingerprint(source.plan);
+  const archiveName = `${source.name.replaceAll(".json", "").replaceAll("#", "-")}-${usageFingerprint.slice("sha256:".length)}.json`;
+  const sourcePath = `.migration/asset-usage-plan/${archiveName}`;
+  const archivePath = join(projectPath, sourcePath);
+  const sourceOwnerPath = assetUsageSourceOwnerPath(projectPath, source.name);
+  const pathsToRestore = new Map<string, string | undefined>(
+    [archivePath, assetManifestPath, enrichmentPlanPath, sourceOwnerPath].map((path) => [
+      path,
+      existsSync(path) ? readFileSync(path, "utf8") : undefined,
+    ]),
+  );
+
+  try {
+    atomicWriteJson(archivePath, source.plan);
+    atomicWriteJson(assetManifestPath, assets);
+    atomicWriteJson(enrichmentPlanPath, plan);
+    consumeAssetUsageSource(projectPath, source.name);
+
+  const usageRecord = recordJsonArtifact({
+    project_path: projectPath,
+    key: `asset-usage-plan:${usageFingerprint.slice("sha256:".length)}`,
+    path: sourcePath,
+    role: "command_request",
+    schema_version: "1.0",
+    authored_by: "agent",
+    command: "project.enrich-plan",
+    mode: "validated",
+    value: source.plan,
+    file_sha256: fileBytesFingerprint(archivePath),
+    recorded_at: recordedAt,
+  });
+  const referencedAssetIds = referencedEnrichmentAssetIds(plan);
+  const lifecycleManifest = readProjectArtifactManifest(projectPath);
+  const assetRecords = assets.assets.filter((asset) => referencedAssetIds.has(asset.id)).map((asset) => {
+    const key = `asset:${asset.id}`;
+    const existing = lifecycleManifest?.artifacts[key];
+    if (existing) {
+      if (existing.path !== asset.path) throw new Error(`${key} path does not match asset-manifest.json`);
+      return assertArtifactRecordCurrent(projectPath, lifecycleManifest!, key, fileBytesFingerprint(projectAssetPath(projectPath, asset.path)), new Set(), new Set(), "project.enrich-plan");
+    }
+    return recordFileArtifact({
+      project_path: projectPath,
+      key,
+      path: asset.path,
+      role: "authoritative_input",
+      schema_version: "bytes-v1",
+      authored_by: "host",
+      command: "project.enrich-plan",
+      mode: "validated",
+      inputs: [artifactReference(usageRecord)],
+      recorded_at: recordedAt,
+    });
+  });
+  const assetReferences = assetRecords.map(artifactReference);
+  const assetManifestRecord = recordJsonArtifact({
+    project_path: projectPath,
+    key: "asset-manifest",
+    path: projectArtifacts.assetManifest,
+    role: "execution_result",
+    schema_version: "1.0",
+    authored_by: "cli",
+    command: "project.enrich-plan",
+    mode: "produced",
+    inputs: [artifactReference(usageRecord), ...assetReferences],
+    value: assetManifestFingerprintProjection(assets),
+    file_sha256: fileBytesFingerprint(assetManifestPath),
+    recorded_at: recordedAt,
+  });
+  const edlReference = artifactReference(edlRecord);
+  const planRecord = recordJsonArtifact({
+    project_path: projectPath,
+    key: "enrichment-plan",
+    path: projectArtifacts.enrichmentPlan,
+    role: "authoritative_input",
+    schema_version: plan.version,
+    authored_by: "cli",
+    command: "project.enrich-plan",
+    mode: "produced",
+    inputs: [edlReference, artifactReference(usageRecord), ...assetRecords.map(artifactReference)],
+    value: plan,
+    file_sha256: fileBytesFingerprint(enrichmentPlanPath),
+    recorded_at: recordedAt,
+  });
+  const stageInputs = [edlReference, artifactReference(usageRecord), ...assetReferences];
+  commitProjectStage({
+    project_path: projectPath,
+    stage: "project.enrich-plan",
+    command: "project.enrich-plan",
+    input_fingerprint: inputFingerprint(stageInputs),
+    inputs: stageInputs,
+    records: [usageRecord, ...assetRecords, assetManifestRecord, planRecord],
+    started_at: startedAt,
+    completed_at: recordedAt,
+  });
+  } catch (error) {
+    for (const [path, previous] of pathsToRestore) {
+      try {
+        if (previous === undefined) {
+          if (existsSync(path)) unlinkSync(path);
+        } else {
+          atomicWriteText(path, previous);
+        }
+      } catch {
+        // Preserve the normalization failure; status can expose any incomplete rollback.
+      }
+    }
+    throw error;
+  }
+}
+
+function assetUsageSourceOwnerPath(projectPath: string, source: AssetUsageSourceName): string {
+  if (source === "asset-usage-plan.json") return join(projectPath, projectArtifacts.assetUsagePlan);
+  if (source === "project.json#asset_usage_plan") return join(projectPath, projectArtifacts.project);
+  return join(projectPath, projectArtifacts.editPlan);
+}
+
+function consumeAssetUsageSource(projectPath: string, source: AssetUsageSourceName): void {
+  const ownerPath = assetUsageSourceOwnerPath(projectPath, source);
+  if (source === "asset-usage-plan.json") {
+    unlinkSync(ownerPath);
+    return;
+  }
+  if (source === "project.json#asset_usage_plan") {
+    const { asset_usage_plan: _usage, ...metadata } = parseProjectMetadata(readJson(ownerPath));
+    const persisted = metadata.contract_version === "legacy"
+      ? (({ contract_version: _legacy, ...value }) => value)(metadata)
+      : metadata;
+    atomicWriteJson(ownerPath, persisted);
+    return;
+  }
+  const { asset_usage_plan: _usage, ...editPlan } = parseEditPlan(readJson(ownerPath), readManifest(projectPath));
+  const persisted = editPlan.contract_version === "legacy"
+    ? (({ contract_version: _legacy, ...value }) => value)(editPlan)
+    : editPlan;
+  atomicWriteJson(ownerPath, persisted);
+}
+
+function assetUsagePlanToEnrichment(
+  projectPath: string,
+  usage: AssetUsagePlanArtifact,
+  sourceMode: EnrichmentSourceMode,
+): { plan: EnrichmentPlanArtifact; assets: AssetManifestArtifact } {
+  const assets: AssetManifestArtifact["assets"] = [];
+  const music: EnrichmentMusic[] = usage.music.map((item, index) => {
+    const id = usageId("music", index, item.id, item.asset_ref);
+    assertUsableAssetRef(projectPath, item.asset_ref, "audio");
+    assets.push({
+      id,
+      path: item.asset_ref,
+      type: "music",
+      source: "imported",
+      provenance: "asset_usage_plan",
+      reason: item.purpose,
+      used_by: [id],
+      volume: item.volume,
+      fade_seconds: Math.max(item.fade_in, item.fade_out),
+      ducking: item.duck_original_audio,
+    });
+    return {
+      id,
+      type: "music_segment",
+      start: item.start,
+      end: item.end,
+      asset_id: id,
+      volume: item.volume,
+      fade_seconds: Math.max(item.fade_in, item.fade_out),
+      ducking: item.duck_original_audio,
+      reason: item.purpose,
+    };
+  });
+
+  const sfx: EnrichmentElement[] = usage.sfx.map((item, index) => {
+    const id = usageId("sfx", index, item.id, item.asset_ref);
+    assertUsableAssetRef(projectPath, item.asset_ref, "audio");
+    assets.push({
+      id,
+      path: item.asset_ref,
+      type: "sfx",
+      source: "imported",
+      provenance: "asset_usage_plan",
+      reason: item.purpose,
+      used_by: [id],
+      volume: item.volume,
+      fade_seconds: item.fade_seconds,
+    });
+    return {
+      id,
+      source: "asset_usage_plan",
+      element_id: "project-local-sfx",
+      element_type: "sfx",
+      start: item.time,
+      end: item.time + item.duration,
+      asset_id: id,
+      reason: item.purpose,
+      params: { volume: item.volume, fade_seconds: item.fade_seconds },
+    };
+  });
+
+  const visualAssets: EnrichmentElement[] = usage.visual_assets.map((item, index) => {
+    const id = usageId("visual", index, item.id, item.asset_ref);
+    assertUsableAssetRef(projectPath, item.asset_ref, "visual");
+    const position = usagePosition(item.position);
+    assets.push({
+      id,
+      path: item.asset_ref,
+      type: item.asset_type ?? inferVisualAssetType(item.asset_ref),
+      source: "imported",
+      provenance: "asset_usage_plan",
+      reason: item.purpose,
+      used_by: [id],
+    });
+    return {
+      id,
+      source: "asset_usage_plan",
+      element_id: "project-local-visual",
+      element_type: "visual_asset",
+      start: item.start,
+      end: item.end,
+      asset_id: id,
+      zone: position.zone,
+      anchor_point: position.anchor_point,
+      reason: item.purpose,
+      params: { title: item.purpose, size: item.size ?? null, animation: item.animation ?? "fade-in" },
+    };
+  });
+
+  const plan = parseEnrichmentPlan({
+    version: "1.2",
+    profile: { source_mode: sourceMode, aspect_ratio: "source", caption_identity: "anchor" },
+    captions: { enabled: false, identity: "anchor", emphasis: [] },
+    cards: [],
+    music,
+    elements: [...sfx, ...visualAssets],
+  });
+  return { plan, assets: parseAssetManifest({ assets }) };
+}
+
+function mergeAssetManifests(base: AssetManifestArtifact, extra: AssetManifestArtifact): AssetManifestArtifact {
+  const assets = [...base.assets];
+  const ids = new Set(assets.map((asset) => asset.id));
+  for (const asset of extra.assets) {
+    if (ids.has(asset.id)) throw assetUsageError("asset_usage_plan_invalid", `duplicate asset id from asset_usage_plan: ${asset.id}`);
+    assets.push(asset);
+    ids.add(asset.id);
+  }
+  return { assets };
+}
+
+function usageId(kind: "music" | "sfx" | "visual", index: number, explicitId: string | undefined, assetRef: string): string {
+  return explicitId ? safeFileName(explicitId) : `${kind}-${index + 1}-${safeFileName(basename(assetRef, extname(assetRef)))}`;
+}
+
+function assertUsableAssetRef(projectPath: string, assetRef: string, kind: "audio" | "visual"): void {
+  let path: string;
+  try {
+    path = projectAssetPath(projectPath, assetRef);
+  } catch {
+    throw assetUsageError("missing_asset_ref", `missing_asset_ref: ${assetRef}`);
+  }
+  const ext = extname(assetRef).toLowerCase();
+  if (kind === "audio" && !isSupportedAudioExt(ext)) throw assetUsageError("unsupported_audio_asset_format", `unsupported_audio_asset_format: ${assetRef}`);
+  if (kind === "visual" && !isSupportedVisualExt(ext)) throw assetUsageError("unsupported_visual_asset_format", `unsupported_visual_asset_format: ${assetRef}`);
+  if (ext === ".svg") assertSafeSvgAsset(path, assetRef);
+}
+
+function isSupportedAudioExt(ext: string): boolean {
+  return [".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"].includes(ext);
+}
+
+function isSupportedVisualExt(ext: string): boolean {
+  return [".png", ".jpg", ".jpeg", ".webp", ".svg", ".json", ".lottie"].includes(ext);
+}
+
+function assertSafeSvgAsset(path: string, assetRef: string): void {
+  const text = readFileSync(path, "utf8");
+  if (/<script\b|<foreignObject\b|\son[a-z]+\s*=|javascript:|https?:\/\/|url\(\s*['"]?https?:\/\//i.test(text)) {
+    throw assetUsageError("unsupported_visual_asset_format", `unsupported_visual_asset_format: unsafe SVG ${assetRef}`);
+  }
+}
+
+function inferVisualAssetType(assetRef: string): AssetManifestArtifact["assets"][number]["type"] {
+  const lower = assetRef.toLowerCase();
+  if (lower.endsWith(".json") || lower.endsWith(".lottie")) return "lottie";
+  if (lower.includes("icon")) return "icon";
+  return "image";
+}
+
+function usagePosition(position: AssetUsagePosition): { zone: EnrichmentElement["zone"]; anchor_point?: EnrichmentElement["anchor_point"] } {
+  if (position === "top-left") return { zone: "upper_third", anchor_point: { x: 0.06, y: 0.08 } };
+  if (position === "top-right") return { zone: "upper_third", anchor_point: { x: 0.78, y: 0.08 } };
+  if (position === "bottom-left") return { zone: "lower_third", anchor_point: { x: 0.06, y: 0.72 } };
+  if (position === "bottom-right") return { zone: "lower_third", anchor_point: { x: 0.78, y: 0.72 } };
+  return { zone: position };
+}
+
+function validateAudioAssetForRender(asset: AssetManifestArtifact["assets"][number], kind: "music" | "sfx", id: string): void {
+  if (kind === "music" && asset.type !== "music") throw new Error(`${id}: music asset ${asset.id} must have type=music`);
+  if (kind === "sfx" && asset.type !== "sfx") throw new Error(`${id}: sfx asset ${asset.id} must have type=sfx`);
+  if (!isSupportedAudioExt(extname(asset.path).toLowerCase())) {
+    throw assetUsageError("unsupported_audio_asset_format", `unsupported_audio_asset_format: ${asset.path}`);
+  }
+}
+
+function assetUsageError(
+  code:
+    | "missing_asset_ref"
+    | "unsupported_visual_asset_format"
+    | "unsupported_audio_asset_format"
+    | "asset_usage_plan_invalid"
+    | "ASSET_USAGE_PLAN_CONFLICT"
+    | "ASSET_USAGE_PLAN_REQUIRES_NORMALIZATION",
+  message: string,
+): Error & { code: string } {
+  const error = new Error(message) as Error & { code: string };
+  error.code = code;
+  return error;
 }
 
 type OutputTimelineSegment = {
@@ -1169,6 +4516,12 @@ type OutputTimelineSegment = {
   output_start: number;
   output_end: number;
   output_order: number;
+};
+
+type FocusFrameSample = {
+  candidate: FocusCandidate;
+  index: number;
+  mapped: OutputTimelineSegment & { source_time: number };
 };
 
 function validateFocusCandidates(candidates: FocusCandidatesArtifact, duration: number): string[] {
@@ -1197,7 +4550,7 @@ function readSourceFrameRequest(projectPath: string): SourceFrameRequestArtifact
   const requestPath = join(projectPath, projectArtifacts.sourceFrameRequest);
   if (!existsSync(requestPath)) throw sourceFrameError("SOURCE_FRAME_REQUEST_MISSING", `${projectArtifacts.sourceFrameRequest} is missing`);
   try {
-    return parseSourceFrameRequest(JSON.parse(readFileSync(requestPath, "utf8")));
+    return parseSourceFrameRequest(readProjectJson(projectPath, projectArtifacts.sourceFrameRequest, "source frame request"));
   } catch {
     throw sourceFrameError("SOURCE_FRAME_REQUEST_INVALID", `${projectArtifacts.sourceFrameRequest} is invalid`);
   }
@@ -1205,7 +4558,7 @@ function readSourceFrameRequest(projectPath: string): SourceFrameRequestArtifact
 
 function readSourcesForSourceFrames(projectPath: string): SourcesManifest {
   try {
-    return parseSourcesManifest(JSON.parse(readFileSync(join(projectPath, projectArtifacts.sources), "utf8")));
+    return parseSourcesManifest(readProjectJson(projectPath, projectArtifacts.sources, "sources manifest"));
   } catch {
     throw sourceFrameError("SOURCE_FRAME_SOURCE_NOT_FOUND", `${projectArtifacts.sources} is missing or invalid`);
   }
@@ -1223,10 +4576,10 @@ function sourceFrameDuplicateWarnings(request: SourceFrameRequestArtifact): stri
   return warnings;
 }
 
-function extractSourceFrames(projectPath: string, request: SourceFrameRequestArtifact, manifest: SourcesManifest): SourceFrame[] {
+function extractSourceFrames(projectPath: string, request: SourceFrameRequestArtifact, manifest: SourcesManifest, outputDir = join(projectPath, ".source-frames")): SourceFrame[] {
   const sourceById = new Map(manifest.sources.map((source) => [source.source_id, source]));
   const sourcePaths = new Map<string, string>();
-  const dir = join(projectPath, ".source-frames");
+  const dir = outputDir;
   mkdirSync(dir, { recursive: true });
   return request.frames.map((frame, index) => {
     const source = sourceById.get(frame.source_id);
@@ -1240,7 +4593,7 @@ function extractSourceFrames(projectPath: string, request: SourceFrameRequestArt
       sourcePaths.set(source.source_id, sourcePath);
     }
     const relativePath = `.source-frames/frame-${String(index + 1).padStart(4, "0")}.jpg`;
-    const targetPath = join(projectPath, ".source-frames", `frame-${String(index + 1).padStart(4, "0")}.jpg`);
+    const targetPath = join(dir, `frame-${String(index + 1).padStart(4, "0")}.jpg`);
     const image = extractSourceFrameImage(sourcePath, frame.time_seconds, targetPath, frame.id);
     return {
       ...frame,
@@ -1250,6 +4603,72 @@ function extractSourceFrames(projectPath: string, request: SourceFrameRequestArt
       ...image,
     };
   });
+}
+
+type ManagedPublication = {
+  target_path: string;
+  backup_path?: string;
+};
+
+let managedPublicationSequence = 0;
+
+function commitManagedPublications(
+  paths: Array<{ staged_path: string; target_path: string }>,
+  commit: () => void,
+): void {
+  const publications: ManagedPublication[] = [];
+  try {
+    for (const path of paths) publications.push(beginManagedPublication(path.staged_path, path.target_path));
+    commit();
+  } catch (error) {
+    for (const publication of publications.reverse()) {
+      try {
+        rollbackManagedPublication(publication);
+      } catch {
+        // Preserve the original publication or lifecycle commit failure.
+      }
+    }
+    throw error;
+  }
+  for (const publication of publications) finishManagedPublication(publication);
+}
+
+function beginManagedPublication(stagedPath: string, targetPath: string): ManagedPublication {
+  const rename = (nodeFs as unknown as { renameSync(source: string, target: string): void }).renameSync;
+  const backupPath = `${targetPath}.previous-${Date.now().toString(36)}-${managedPublicationSequence++}`;
+  const hadTarget = pathEntryExists(targetPath);
+  if (hadTarget) rename(targetPath, backupPath);
+  try {
+    rename(stagedPath, targetPath);
+  } catch (error) {
+    if (hadTarget && pathEntryExists(backupPath) && !pathEntryExists(targetPath)) rename(backupPath, targetPath);
+    throw error;
+  }
+  return { target_path: targetPath, backup_path: hadTarget ? backupPath : undefined };
+}
+
+function rollbackManagedPublication(publication: ManagedPublication): void {
+  const rename = (nodeFs as unknown as { renameSync(source: string, target: string): void }).renameSync;
+  rmSync(publication.target_path, { recursive: true, force: true });
+  if (publication.backup_path && pathEntryExists(publication.backup_path)) rename(publication.backup_path, publication.target_path);
+}
+
+function finishManagedPublication(publication: ManagedPublication): void {
+  if (!publication.backup_path) return;
+  try {
+    rmSync(publication.backup_path, { recursive: true, force: true });
+  } catch {
+    // The committed checkpoint is authoritative; an old backup is non-authoritative cleanup debt.
+  }
+}
+
+function pathEntryExists(path: string): boolean {
+  try {
+    (nodeFs as unknown as { lstatSync(path: string): unknown }).lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function readableProjectSource(projectPath: string, sourceId: string, projectRelativePath: string): string {
@@ -1365,28 +4784,24 @@ function isProviderModeError(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "PROVIDER_MODE_MISMATCH");
 }
 
-function extractFocusFrames(projectPath: string, candidates: FocusCandidatesArtifact, edl: EdlArtifact): FocusFrame[] {
+function extractFocusFrames(samples: FocusFrameSample[], outputDir: string): FocusFrame[] {
   if (!commandExists("ffmpeg")) throw new Error("ffmpeg not found for focus frames");
-  const timeline = buildOutputTimeline(edl);
-  const dir = join(projectPath, ".focus", "frames");
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(outputDir, { recursive: true });
   const frames: FocusFrame[] = [];
-  for (const candidate of candidates.candidates.filter((item) => item.requires_grounding)) {
-    focusSampleTimes(candidate).forEach((time, index) => {
-      const mapped = mapOutputTime(timeline, time, candidate.id);
-      const id = `${candidate.id}-source-${index + 1}`;
-      const relativePath = join(".focus", "frames", `${safeFileName(id)}.jpg`);
-      const framePath = join(projectPath, relativePath);
-      const result = extractJpegFrame(mapped.source_path, formatSeconds(mapped.source_time), framePath, { quality: 3 });
-      if (result.status !== 0) throw new Error(`ffmpeg focus frame failed for ${candidate.id}: ${result.stderr || result.stdout}`);
-      frames.push({
-        id,
-        candidate_id: candidate.id,
-        timeline: "source",
-        time_seconds: mapped.source_time,
-        path: relativePath,
-        source_id: mapped.source_id,
-      });
+  for (const { candidate, index, mapped } of samples) {
+    const id = `${candidate.id}-source-${index + 1}`;
+    const relativePath = join(".focus", "frames", `${safeFileName(id)}.jpg`);
+    const framePath = join(outputDir, `${safeFileName(id)}.jpg`);
+    const result = extractJpegFrame(mapped.source_path, formatSeconds(mapped.source_time), framePath, { quality: 3 });
+    if (result.status !== 0) throw new Error(`ffmpeg focus frame failed for ${candidate.id}: ${result.stderr || result.stdout}`);
+    probeVideoSize(framePath);
+    frames.push({
+      id,
+      candidate_id: candidate.id,
+      timeline: "source",
+      time_seconds: mapped.source_time,
+      path: relativePath,
+      source_id: mapped.source_id,
     });
   }
   return frames;
@@ -1406,7 +4821,11 @@ function buildFocusReview(
     if (!candidateById.has(item.candidate_id)) throw new Error(`focus grounding references unknown candidate_id: ${item.candidate_id}`);
     const frame = frameById.get(item.frame_id);
     if (!frame) throw new Error(`focus grounding references unknown frame_id: ${item.frame_id}`);
-    if (!existsSync(join(projectPath, frame.path))) throw new Error(`focus grounding frame is missing: ${frame.path}`);
+    try {
+      resolveExistingProjectPath(projectPath, frame.path, `focus grounding frame ${frame.id}`);
+    } catch {
+      throw new Error(`focus grounding frame is missing or not project-local: ${frame.path}`);
+    }
     if (groundingByCandidate.has(item.candidate_id)) throw new Error(`duplicate focus grounding for candidate_id: ${item.candidate_id}`);
     groundingByCandidate.set(item.candidate_id, item);
   }
@@ -1666,17 +5085,216 @@ function focusBusinessSummary(candidate: FocusCandidate): string {
 }
 
 function readOrBuildEdl(projectPath: string): EdlArtifact {
-  const manifest = readManifest(projectPath);
+  return compileCurrentEdl(projectPath).edl;
+}
+
+function compileCurrentEdl(projectPath: string): {
+  edl: EdlArtifact;
+  input_references: ArtifactFingerprintReference[];
+  input_fingerprint: Fingerprint;
+  edl_record: ArtifactRecord;
+} {
+  const startedAt = new Date().toISOString();
+  const sources = readManifest(projectPath);
+  const transcriptPath = join(projectPath, projectArtifacts.transcriptJson);
+  const analysisPath = join(projectPath, projectArtifacts.analysis);
+  const editPlanPath = join(projectPath, projectArtifacts.editPlan);
+  const transcript = parseTranscript(readProjectJson(projectPath, projectArtifacts.transcriptJson, "transcript"), sources);
+  const analysis = parseAnalysis(readProjectJson(projectPath, projectArtifacts.analysis, "analysis"), sources);
+  const materialLineage = assertCurrentMaterialLineage(
+    projectPath,
+    sources,
+    transcript,
+    analysis,
+    "project.compile-edl",
+  );
+  const editPlan = readEditPlan(projectPath, sources);
+  const lifecycleManifest = materialLineage.manifest;
+  const recordedAt = new Date().toISOString();
+  const recordsToCommit: ArtifactRecord[] = [];
+  const sourceRecords = materialLineage.source_records;
+  const sourceReferences = sourceRecords.map(artifactReference);
+  const sourcesRecord = materialLineage.sources_record;
+  const sourcesReference = artifactReference(sourcesRecord);
+  const transcriptRecord = materialLineage.transcript_record;
+  const transcriptReference = artifactReference(transcriptRecord);
+  const analysisRecord = materialLineage.analysis_record;
+  const analysisReference = artifactReference(analysisRecord);
+
+  const selectionReferences: ArtifactFingerprintReference[] = [];
+  if (editPlan.contract_version === "1.0") {
+    const proposalPath = join(projectPath, projectArtifacts.productionProposal);
+    if (!existsSync(proposalPath)) {
+      throw lifecycleCommandError(
+        "PROPOSAL_REQUIRED",
+        "confirmed edit plan requires production-proposal.json",
+        "production-proposal",
+        "Write production-proposal.json, run project proposal, then write the confirmed edit plan.",
+      );
+    }
+    const proposal = parseProductionProposal(readProjectJson(projectPath, projectArtifacts.productionProposal, "production proposal"));
+    const proposalRecord = lifecycleManifest?.artifacts["production-proposal"];
+    const currentProposalFingerprint = proposalFingerprint(proposal);
+    if (!proposalRecord || proposalRecord.fingerprint !== currentProposalFingerprint) {
+      throw lifecycleCommandError(
+        "PROPOSAL_PENDING_VALIDATION",
+        "production proposal must be validated by project proposal before compiling the EDL",
+        "production-proposal",
+        "Run project proposal, confirm one option, and retry.",
+      );
+    }
+    assertArtifactRecordCurrent(
+      projectPath,
+      lifecycleManifest!,
+      "production-proposal",
+      currentProposalFingerprint,
+      new Set(),
+      new Set(),
+      "project.compile-edl",
+    );
+    const selectedOptionId = editPlan.confirmed_option_id!;
+    const selectedFingerprint = proposalSelectionFingerprint(proposal, selectedOptionId);
+    if (editPlan.proposal_selection_fingerprint !== selectedFingerprint) {
+      throw lifecycleCommandError(
+        "PROPOSAL_SELECTION_MISMATCH",
+        `edit plan selection fingerprint does not match proposal option ${selectedOptionId}`,
+        "edit-plan",
+        "Regenerate edit-plan.json from the selected option fingerprint returned by project proposal.",
+      );
+    }
+    const selectionKey = `proposal-selection:${selectedOptionId}`;
+    const selectionRecord = lifecycleManifest?.artifacts[selectionKey];
+    if (!selectionRecord || selectionRecord.fingerprint !== selectedFingerprint) {
+      throw lifecycleCommandError(
+        "PROPOSAL_SELECTION_PENDING_VALIDATION",
+        `proposal option ${selectedOptionId} has not been registered by project proposal`,
+        selectionKey,
+        "Run project proposal again and retry.",
+      );
+    }
+    const currentSelectionRecord = assertArtifactRecordCurrent(
+      projectPath,
+      lifecycleManifest!,
+      selectionKey,
+      selectedFingerprint,
+      new Set(),
+      new Set(),
+      "project.compile-edl",
+    );
+    selectionReferences.push(artifactReference(currentSelectionRecord));
+  }
+
+  const editPlanCandidate = recordJsonArtifact({
+    project_path: projectPath,
+    key: "edit-plan",
+    path: projectArtifacts.editPlan,
+    role: "authoritative_input",
+    schema_version: editPlan.contract_version,
+    authored_by: "agent",
+    command: "project.compile-edl",
+    mode: "validated",
+    inputs: selectionReferences,
+    value: editPlanFingerprintProjection(editPlan),
+    file_sha256: fileBytesFingerprint(editPlanPath),
+    recorded_at: recordedAt,
+  });
+  const editPlanRecord = currentOrReplacementRecord(lifecycleManifest, editPlanCandidate, recordsToCommit);
+  const editPlanReference = artifactReference(editPlanRecord);
+  const inputReferences = [sourcesReference, ...sourceReferences, transcriptReference, analysisReference, ...selectionReferences, editPlanReference];
+  const currentInputFingerprint = inputFingerprint(inputReferences);
   const edlPath = join(projectPath, projectArtifacts.edl);
-  if (existsSync(edlPath)) return parseEdl(readJson(edlPath), manifest);
-  const transcript = parseTranscript(readJson(join(projectPath, projectArtifacts.transcriptJson)), manifest);
-  const analysis = parseAnalysis(readJson(join(projectPath, projectArtifacts.analysis)), manifest);
-  const editPlan = parseEditPlan(readJson(join(projectPath, projectArtifacts.editPlan)), manifest);
-  return buildEdl(projectPath, manifest, transcript, analysis, editPlan);
+  const existingEdlRecord = lifecycleManifest?.artifacts.edl;
+  if (existingEdlRecord && existsSync(edlPath) && referencesEqual(existingEdlRecord.inputs, inputReferences)) {
+    const existingEdl = parseEdl(readProjectJson(projectPath, projectArtifacts.edl, "EDL"), sources);
+    if (existingEdlRecord.fingerprint === semanticJsonFingerprint(existingEdl)) {
+      return { edl: existingEdl, input_references: inputReferences, input_fingerprint: currentInputFingerprint, edl_record: existingEdlRecord };
+    }
+  }
+
+  try {
+    const edl = buildEdl(projectPath, sources, transcript, analysis, editPlan);
+    atomicWriteJson(edlPath, edl);
+    const edlRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "edl",
+      path: projectArtifacts.edl,
+      role: "derived",
+      schema_version: "1.0",
+      authored_by: "cli",
+      command: "project.compile-edl",
+      mode: "produced",
+      inputs: inputReferences,
+      value: edl,
+      file_sha256: fileBytesFingerprint(edlPath),
+      recorded_at: recordedAt,
+    });
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "project.compile-edl",
+      command: "project.compile-edl",
+      input_fingerprint: currentInputFingerprint,
+      inputs: inputReferences,
+      records: [...recordsToCommit, edlRecord],
+      started_at: startedAt,
+      completed_at: recordedAt,
+    });
+    return { edl, input_references: inputReferences, input_fingerprint: currentInputFingerprint, edl_record: edlRecord };
+  } catch (error) {
+    commitProjectStageFailure({
+      project_path: projectPath,
+      stage: "project.compile-edl",
+      command: "project.compile-edl",
+      input_fingerprint: currentInputFingerprint,
+      inputs: inputReferences,
+      failure_code: errorCode(error, "EDL_COMPILE_FAILED"),
+      failure_message: error instanceof Error ? error.message : String(error),
+      artifact: "edl",
+      remediation: errorRemediation(error, "Fix the current edit plan or timing artifacts, then retry."),
+      started_at: startedAt,
+      completed_at: new Date().toISOString(),
+    });
+    throw error;
+  }
+}
+
+function currentOrReplacementRecord(
+  manifest: ReturnType<typeof readProjectArtifactManifest>,
+  candidate: ArtifactRecord,
+  recordsToCommit: ArtifactRecord[],
+): ArtifactRecord {
+  const existing = manifest?.artifacts[candidate.key];
+  if (
+    existing?.key === candidate.key &&
+    existing.path === candidate.path &&
+    existing.role === candidate.role &&
+    existing.schema_version === candidate.schema_version &&
+    existing.fingerprint === candidate.fingerprint &&
+    existing.file_sha256 === candidate.file_sha256 &&
+    referencesEqual(existing.inputs, candidate.inputs)
+  ) return existing;
+  recordsToCommit.push(candidate);
+  return candidate;
+}
+
+function referencesEqual(left: readonly ArtifactFingerprintReference[], right: readonly ArtifactFingerprintReference[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every(
+    (item, index) =>
+      item.key === right[index]?.key && item.fingerprint === right[index]?.fingerprint && (item.schema_version ?? "") === (right[index]?.schema_version ?? ""),
+  );
 }
 
 function projectAssetPath(projectPath: string, relativePath: string): string {
-  return join(projectPath, relativePath);
+  return resolveExistingProjectPath(projectPath, relativePath, `asset ${relativePath}`);
+}
+
+function projectAssetExists(projectPath: string, relativePath: string): boolean {
+  try {
+    projectAssetPath(projectPath, relativePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function summarizeEnrichment(
@@ -1696,6 +5314,36 @@ function summarizeEnrichment(
     ...plan.music.map((slot) => `${slot.id} music_segment ${slot.start.toFixed(2)}-${slot.end.toFixed(2)} asset=${slot.asset_id}`),
     ...elementUsage.map((element) => `${element.id} ${element.element_type} ${element.element_id} ${element.start.toFixed(2)}-${element.end.toFixed(2)} renderable=${element.renderable ? "yes" : "no"} source=${element.source}`),
   ];
+}
+
+function emptyAudioUsage(): ProjectAudioUsage {
+  return { music: [], sfx: [] };
+}
+
+function summarizeAudioUsage(plan: EnrichmentPlanArtifact): ProjectAudioUsage {
+  return {
+    music: plan.music.map((slot) => ({
+      id: slot.id,
+      asset_id: slot.asset_id,
+      start: slot.start,
+      end: slot.end,
+      volume: slot.volume,
+      ducking: slot.ducking,
+      fade_seconds: slot.fade_seconds,
+      reason: slot.reason,
+    })),
+    sfx: plan.elements
+      .filter((element) => element.element_type === "sfx")
+      .map((element) => ({
+        id: element.id,
+        asset_id: element.asset_id,
+        sfx_id: element.sfx_id ?? (element.asset_id ? undefined : element.element_id),
+        start: element.start,
+        end: element.end,
+        volume: typeof element.params?.volume === "number" ? element.params.volume : 0.35,
+        reason: element.reason,
+      })),
+  };
 }
 
 function summarizeHyperframesElements(plan: EnrichmentPlanArtifact): ProjectEnrichmentElementUsage[] {
@@ -1780,17 +5428,13 @@ function summarizeAssets(projectPath: string, assets: AssetManifestArtifact): Pr
     source_url: asset.source_url ?? asset.original_url,
     runtime_dependencies: asset.runtime_dependencies ? [...asset.runtime_dependencies] : [],
     used_by: asset.used_by ? [...asset.used_by] : [],
-    exists: existsSync(projectAssetPath(projectPath, asset.path)),
+    exists: projectAssetExists(projectPath, asset.path),
     duration_seconds: asset.duration_seconds,
     dimensions: asset.dimensions,
   }));
 }
 
 function buildQaChecks(projectPath: string, plan: EnrichmentPlanArtifact, assets: AssetManifestArtifact): ProjectQaCheck[] {
-  const visualReviewPath = join(projectPath, projectArtifacts.visualReview);
-  const visualReview = existsSync(visualReviewPath) ? parseVisualReview(readJson(visualReviewPath)) : undefined;
-  const musicReviewPath = join(projectPath, projectArtifacts.musicReview);
-  const musicReview = existsSync(musicReviewPath) ? (readJson(musicReviewPath) as MusicReviewArtifact) : undefined;
   const checks: ProjectQaCheck[] = [];
 
   for (const card of plan.cards) {
@@ -1804,7 +5448,7 @@ function buildQaChecks(projectPath: string, plan: EnrichmentPlanArtifact, assets
         end: card.end,
         expected: `${card.kind}: ${card.title}. ${card.reason}`,
         frame_times: qaFrameTimes(card.start, card.end),
-        warnings: [...assetWarnings(projectPath, asset, card.asset_id, false, visualReview), ...coordinateWarnings(plan.profile.source_mode, card)],
+        warnings: [...assetWarnings(projectPath, asset, card.asset_id, false), ...coordinateWarnings(plan.profile.source_mode, card)],
         asset,
       }),
     );
@@ -1831,7 +5475,7 @@ function buildQaChecks(projectPath: string, plan: EnrichmentPlanArtifact, assets
     const visualAsset = element.element_type === "visual_asset";
     const generatedAsset = element.element_type === "generated_asset";
     const warnings = [
-      ...assetWarnings(projectPath, asset, element.asset_id, visualAsset || generatedAsset, visualReview),
+      ...assetWarnings(projectPath, asset, element.asset_id, visualAsset || generatedAsset),
       ...coordinateWarnings(plan.profile.source_mode, element),
     ];
     if (plan.profile.source_mode === "screen_recording" && element.element_type === "sfx" && !hasSubtleUiSfxReason(element)) {
@@ -1854,9 +5498,7 @@ function buildQaChecks(projectPath: string, plan: EnrichmentPlanArtifact, assets
 
   for (const music of plan.music) {
     const asset = assets.assets.find((item) => item.id === music.asset_id);
-    const warnings = assetWarnings(projectPath, asset, music.asset_id, false, visualReview);
-    if (musicReview?.status === "skipped") warnings.push(`${music.id}: music-review skipped acquisition`);
-    if (musicReview?.asset_id && musicReview.asset_id !== music.asset_id) warnings.push(`${music.id}: music-review asset ${musicReview.asset_id} differs from plan asset ${music.asset_id}`);
+    const warnings = assetWarnings(projectPath, asset, music.asset_id, false);
     if (music.volume > 0.18) warnings.push(`${music.id}: music volume may cover speech`);
     if (!music.ducking) warnings.push(`${music.id}: music ducking is disabled`);
     checks.push(
@@ -1903,13 +5545,12 @@ function qaFrameTimes(start: number, end: number): number[] {
   return [Number(((start + end) / 2).toFixed(3))];
 }
 
-function assetWarnings(projectPath: string, asset: AssetManifestArtifact["assets"][number] | undefined, assetId: string | undefined, requiresProvenance: boolean, visualReview?: VisualReviewArtifact): string[] {
+function assetWarnings(projectPath: string, asset: AssetManifestArtifact["assets"][number] | undefined, assetId: string | undefined, requiresProvenance: boolean): string[] {
   if (!assetId) return [];
   if (!asset) return [`missing asset ${assetId}`];
   const warnings: string[] = [];
-  if (!existsSync(projectAssetPath(projectPath, asset.path))) warnings.push(`missing asset file ${asset.path}`);
-  const reviewed = visualReview?.items.some((item) => item.asset_id === asset.id);
-  if (requiresProvenance && !reviewed && !asset.provenance && !asset.source && !asset.provider) warnings.push(`${asset.id}: asset provenance is missing`);
+  if (!projectAssetExists(projectPath, asset.path)) warnings.push(`missing or non-project-local asset file ${asset.path}`);
+  if (requiresProvenance && !asset.provenance && !asset.source && !asset.provider) warnings.push(`${asset.id}: asset provenance is missing`);
   return warnings;
 }
 
@@ -2018,7 +5659,18 @@ export function normalizeCloudflareWhisperResult(value: unknown, sourceId: strin
 }
 
 function readManifest(projectPath: string): SourcesManifest {
-  return parseSourcesManifest(readJson(join(projectPath, projectArtifacts.sources)));
+  return parseSourcesManifest(readProjectJson(projectPath, projectArtifacts.sources, "sources manifest"));
+}
+
+function readEditPlan(projectPath: string, manifest: SourcesManifest): ReturnType<typeof parseEditPlan> {
+  try {
+    return parseEditPlan(readProjectJson(projectPath, projectArtifacts.editPlan, "edit plan"), manifest);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("asset_usage_plan")) {
+      throw assetUsageError("asset_usage_plan_invalid", `asset_usage_plan_invalid: ${error.message}`);
+    }
+    throw error;
+  }
 }
 
 async function transcribeProject(projectPath: string, manifest: SourcesManifest, provider?: AsrProvider): Promise<TranscriptArtifact> {
@@ -2212,20 +5864,25 @@ function renderEnrichedVideo(
   subtitlesPath: string,
   plan: EnrichmentPlanArtifact,
   assets: AssetManifestArtifact,
+  output: { workDir: string; finalPath: string; storyboardPath: string },
 ): string {
-  const workDir = resolve(projectPath, ".render", "enrichment");
+  const workDir = output.workDir;
   mkdirSync(workDir, { recursive: true });
   let current = cleanRenderPath;
-  const finalPath = resolve(projectPath, "renders", "final.mp4");
+  const finalPath = output.finalPath;
   const subtitleWarningPath = join(workDir, "subtitles-not-burned.txt");
   writeFileSync(subtitleWarningPath, "");
 
   const needsRecut = requiresHyperframesRecut(plan);
   if (needsRecut) {
-    const visualPath = renderHyperframesRecut(projectPath, cleanRenderPath, subtitlesPath, plan, assets, workDir);
+    const visualPath = renderHyperframesRecut(projectPath, cleanRenderPath, subtitlesPath, plan, assets, workDir, output.storyboardPath);
     const withAudioPath = join(workDir, "recut-with-audio.mp4");
     attachCleanAudio(visualPath, cleanRenderPath, withAudioPath);
     current = withAudioPath;
+  } else {
+    const storyboardPublicDir = join(workDir, "storyboard-public");
+    mkdirSync(storyboardPublicDir, { recursive: true });
+    atomicWriteJson(output.storyboardPath, buildEnrichmentStoryboard(projectPath, cleanRenderPath, subtitlesPath, plan, assets, storyboardPublicDir));
   }
 
   for (const slot of plan.music) {
@@ -2237,7 +5894,8 @@ function renderEnrichedVideo(
 
   for (const element of plan.elements.filter((item) => item.element_type === "sfx")) {
     const next = join(workDir, `${safeFileName(element.id)}-sfx.mp4`);
-    mixSfx(current, getVendoredSfx(element.sfx_id ?? element.element_id).path, element, next);
+    const sfxPath = element.asset_id ? projectAssetPath(projectPath, assetForSlot(assets, element).path) : getVendoredSfx(element.sfx_id ?? element.element_id).path;
+    mixSfx(current, sfxPath, element, next);
     current = next;
   }
 
@@ -2257,9 +5915,10 @@ function renderHyperframesRecut(
   plan: EnrichmentPlanArtifact,
   assets: AssetManifestArtifact,
   workDir: string,
+  storyboardPath: string,
 ): string {
   if (!commandExists("npx")) throw new Error("npx not found for HyperFrames recut render");
-  const workspace = resolve(projectPath, ".hyperframes", "recut");
+  const workspace = resolveProjectOutputPath(projectPath, join(".hyperframes", "recut"), "HyperFrames render workspace");
   const publicDir = join(workspace, "public");
   const cardsDir = join(publicDir, "cards");
   mkdirSync(publicDir, { recursive: true });
@@ -2270,7 +5929,7 @@ function renderHyperframesRecut(
   installStoryboardRegistryElements(plan, publicDir);
 
   const storyboard = buildEnrichmentStoryboard(projectPath, cleanRenderPath, subtitlesPath, plan, assets, publicDir);
-  writeJson(join(projectPath, projectArtifacts.storyboard), storyboard);
+  atomicWriteJson(storyboardPath, storyboard);
   writeJson(join(workspace, "hyperframes.json"), hyperframesConfig());
   writeJson(join(publicDir, "hyperframes.json"), hyperframesConfig());
   for (const card of storyboard.cards) {
@@ -2301,6 +5960,7 @@ export function buildEnrichmentStoryboard(
   const cards = stageStoryboardAssets(projectPath, assets, plan.cards, publicDir).map((card) => resolveStoryboardCard(card, plan.profile.source_mode));
   const elements = stageStoryboardElements(projectPath, assets, plan.elements, publicDir);
   const hyperframes = summarizeHyperframesBlocks(plan, assets);
+  const referencedAssetIds = referencedEnrichmentAssetIds(plan);
   return {
     version: "1.1",
     canvas: {
@@ -2334,6 +5994,9 @@ export function buildEnrichmentStoryboard(
       emphasis: plan.captions.emphasis,
     },
     qa_checks: buildQaChecks(projectPath, plan, assets),
+    asset_summary: summarizeAssets(projectPath, {
+      assets: assets.assets.filter((asset) => referencedAssetIds.has(asset.id)),
+    }),
     cards,
     elements,
     music: plan.music,
@@ -2487,14 +6150,16 @@ function assetForSlot(assets: AssetManifestArtifact, slot: { id: string; asset_i
   return asset;
 }
 
-function validateVisualAssetForRender(element: EnrichmentElement, asset: AssetManifestArtifact["assets"][number], review?: VisualReviewArtifact): void {
+function validateVisualAssetForRender(projectPath: string, element: EnrichmentElement, asset: AssetManifestArtifact["assets"][number]): void {
   if (!isVisualAssetManifestType(asset.type)) throw new Error(`${element.id}: visual_asset ${asset.id} must have a visual asset type`);
-  const reviewed = review?.items.some((item) => item.asset_id === asset.id);
-  const provenanceOk = reviewed || asset.provenance === "visual-acquisition" || asset.source === "agent_generated" || asset.source === "user";
-  if (!provenanceOk) throw new Error(`${element.id}: visual_asset ${asset.id} must be present in visual-review.json or have explicit manifest provenance`);
+  const provenanceOk = asset.provenance === "visual-acquisition" || asset.provenance === "asset_usage_plan" || asset.source === "agent_generated" || asset.source === "user";
+  if (!provenanceOk) throw new Error(`${element.id}: visual_asset ${asset.id} must have explicit manifest provenance`);
   if (asset.source_url && !asset.provider) throw new Error(`${element.id}: visual_asset ${asset.id} has source_url but no provider`);
+  const ext = extname(asset.path).toLowerCase();
+  if (!isSupportedVisualExt(ext)) throw assetUsageError("unsupported_visual_asset_format", `unsupported_visual_asset_format: ${asset.path}`);
+  if (ext === ".svg") assertSafeSvgAsset(projectAssetPath(projectPath, asset.path), asset.path);
   if ((asset.type === "animated_icon" || asset.type === "lottie" || asset.type === "sticker") && !asset.path.endsWith(".json") && !asset.path.endsWith(".lottie") && !asset.path.endsWith(".svg")) {
-    throw new Error(`${element.id}: animated visual asset ${asset.id} must be .json, .lottie, or .svg`);
+    throw assetUsageError("unsupported_visual_asset_format", `${element.id}: animated visual asset ${asset.id} must be .json, .lottie, or .svg`);
   }
 }
 
@@ -3027,6 +6692,7 @@ function isVisualAssetElement(element: EnrichmentElement): boolean {
 }
 
 function vendoredElementType(element: EnrichmentElement): VendoredElementType | undefined {
+  if (element.element_type === "sfx" && element.asset_id) return undefined;
   return isAssetElement(element) ? undefined : element.element_type as VendoredElementType;
 }
 
@@ -3371,6 +7037,7 @@ function renderInspectReport(
   enrichmentSummary: string[],
   blockUsage: ProjectEnrichmentBlockUsage[],
   elementUsage: ProjectEnrichmentElementUsage[],
+  audioUsage: ProjectAudioUsage,
   cdnDependencies: HyperframesDependencySummary[],
   assetSummary: ProjectAssetSummary[],
   musicReview: MusicReviewArtifact | undefined,
@@ -3412,6 +7079,13 @@ function renderInspectReport(
     const durationText = asset.duration_seconds !== undefined ? ` duration=${asset.duration_seconds.toFixed(2)}` : "";
     return `- ${asset.id} ${asset.type ?? "unknown"} ${asset.path} exists=${asset.exists ? "yes" : "no"}${source}${provenance}${provider}${license}${sourceUrl}${runtimeDependencies}${usedBy}${dimensions}${durationText}`;
   });
+  const audio = [
+    ...audioUsage.music.map((item) => `- music ${item.id} asset=${item.asset_id} ${item.start.toFixed(2)}-${item.end.toFixed(2)} volume=${item.volume} ducking=${item.ducking ? "yes" : "no"} fade=${item.fade_seconds}; reason=${item.reason}`),
+    ...audioUsage.sfx.map((item) => {
+      const ref = item.asset_id ? `asset=${item.asset_id}` : `sfx=${item.sfx_id ?? "unknown"}`;
+      return `- sfx ${item.id} ${ref} ${item.start.toFixed(2)}-${item.end.toFixed(2)} volume=${item.volume}; reason=${item.reason}`;
+    }),
+  ];
   const music = musicReview
     ? [
         `- status=${musicReview.status}`,
@@ -3450,6 +7124,9 @@ function renderInspectReport(
     "## Assets",
     ...(assets.length ? assets : ["- none"]),
     "",
+    "## Audio Usage",
+    ...(audio.length ? audio : ["- none"]),
+    "",
     "## Music Review",
     ...music,
     "",
@@ -3471,17 +7148,10 @@ function renderInspectReport(
   ].join("\n");
 }
 
-function readStoryboardQaChecks(projectPath: string): ProjectQaCheck[] | undefined {
-  const storyboardPath = join(projectPath, projectArtifacts.storyboard);
-  if (!existsSync(storyboardPath)) return undefined;
-  const storyboard = readJson(storyboardPath) as { qa_checks?: ProjectQaCheck[] };
-  return Array.isArray(storyboard.qa_checks) ? storyboard.qa_checks : undefined;
-}
-
-function extractInspectionChecks(projectPath: string, outputPath: string, checks: ProjectQaCheck[]): ProjectInspectionCheck[] {
+function extractInspectionChecks(projectPath: string, outputPath: string, checks: ProjectQaCheck[], namespace = "latest"): ProjectInspectionCheck[] {
   if (checks.length === 0) return [];
   if (checks.some((check) => check.frame_times.length > 0) && !commandExists("ffmpeg")) throw new Error("ffmpeg not found for inspection frames");
-  const dir = join(projectPath, ".inspection");
+  const dir = join(projectPath, ".inspection", namespace);
   mkdirSync(dir, { recursive: true });
   return checks.map((check) => {
     const framePaths = check.frame_times.map((time, index) => {
@@ -3549,26 +7219,36 @@ function probeVideoSize(path: string): { width: number; height: number } {
 }
 
 function writeJson(path: string, value: unknown) {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+  atomicWriteJson(path, value);
 }
 
 function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
+function readProjectJson(projectPath: string, projectRelativePath: string, label: string): unknown {
+  return readJson(resolveExistingProjectPath(projectPath, projectRelativePath, label));
+}
+
+function projectFileBytesFingerprint(projectPath: string, projectRelativePath: string, label: string): Fingerprint {
+  return fileBytesFingerprint(resolveExistingProjectPath(projectPath, projectRelativePath, label));
+}
+
 function readProjectMetadata(projectPath: string): ProjectMetadataArtifact | undefined {
   const metadataPath = join(projectPath, projectArtifacts.project);
   if (!existsSync(metadataPath)) return undefined;
-  return parseProjectMetadata(readJson(metadataPath));
+  return parseProjectMetadata(readProjectJson(projectPath, projectArtifacts.project, "project metadata"));
 }
 
 function writeProjectMetadata(projectPath: string, providerMode: ProviderExecutionMode, existing?: ProjectMetadataArtifact): string {
   const metadataPath = join(projectPath, projectArtifacts.project);
   const now = new Date().toISOString();
   writeJson(metadataPath, {
+    contract_version: "1.0",
     provider_execution_mode: providerMode,
     created_at: existing?.created_at ?? now,
     updated_at: now,
+    asset_usage_plan: existing?.asset_usage_plan,
   } satisfies ProjectMetadataArtifact);
   return metadataPath;
 }
@@ -3613,7 +7293,7 @@ function providerModeMismatch(expected: ProviderExecutionMode, actual: ProviderE
 }
 
 function assertPlatformMusicAcquisitionAllowed(projectPath: string, command: "music-acquire" | "music-review") {
-  const request = parseMusicRequest(readJson(join(projectPath, projectArtifacts.musicRequest)));
+  const request = parseMusicRequest(readProjectJson(projectPath, projectArtifacts.musicRequest, "music request"));
   if (request.source === "none") return;
   if (request.source === "local" && request.local_path && !request.library_track) return;
   throw platformProviderBlocked(
@@ -3643,7 +7323,18 @@ function readPlatformVisualCandidatesOrBlock(projectPath: string, stage: string)
       { required_artifact: projectArtifacts.visualCandidates },
     );
   }
-  const candidates = parseVisualCandidates(readJson(candidatesPath));
+  let candidates: VisualCandidatesArtifact;
+  try {
+    candidates = parseVisualCandidates(readJson(candidatesPath));
+  } catch {
+    throw platformProviderBlocked(
+      stage,
+      projectArtifacts.visualCandidates,
+      "platform mode visual-candidates.json is invalid",
+      platformVisualSelectionRemediation(),
+      { required_artifact: projectArtifacts.visualCandidates },
+    );
+  }
   if (candidates.candidates.length === 0) {
     throw platformProviderBlocked(
       stage,
@@ -3668,21 +7359,47 @@ function readPlatformVisualCandidatesOrBlock(projectPath: string, stage: string)
       },
     );
   }
+  for (const candidate of candidates.candidates) {
+    if (candidate.preview_path) assertReadablePlatformVisualPath(projectPath, candidate, "preview_path", stage);
+  }
   return candidates;
 }
 
 function assertPlatformVisualAcquisitionAllowed(projectPath: string) {
-  const request = parseVisualRequest(readJson(join(projectPath, projectArtifacts.visualRequest)));
+  const requestValue = readProjectJson(projectPath, projectArtifacts.visualRequest, "visual request");
+  const rawRequests = object(requestValue).requests;
+  if (Array.isArray(rawRequests)) {
+    for (const value of rawRequests) {
+      const item = object(value);
+      const requestId = typeof item.id === "string" ? item.id : "unknown request";
+      if (typeof item.selected_candidate_id !== "string" || item.selected_candidate_id.trim() === "") {
+        throw platformVisualRequestBlocked(requestId, "selected_candidate_id");
+      }
+      if (typeof item.selection_reason !== "string" || item.selection_reason.trim() === "") {
+        throw platformVisualRequestBlocked(requestId, "selection_reason");
+      }
+    }
+  }
+  const request = parseVisualRequest(requestValue);
   const candidates = readPlatformVisualCandidatesOrBlock(projectPath, "visual-acquire");
   for (const item of request.requests) {
-    const candidate = selectPlatformVisualCandidate(item.selected_candidate_id, candidates.candidates.filter((entry) => entry.request_id === item.id));
+    const candidate = candidates.candidates.find((entry) => entry.request_id === item.id && entry.id === item.selected_candidate_id);
     if (!candidate) {
       throw platformProviderBlocked(
         "visual-acquire",
         projectArtifacts.visualCandidates,
-        `${item.id}: platform mode requires a selected or renderable visual candidate`,
-        "Host/platform must write visual-candidates.json with a selected_candidate_id or a renderable project-local candidate before visual-acquire.",
+        `${item.id}: selected visual candidate does not belong to this request`,
+        platformVisualSelectionRemediation(),
         { request_id: item.id, selected_candidate_id: item.selected_candidate_id, required_artifact: projectArtifacts.visualCandidates },
+      );
+    }
+    if (!candidate.renderable) {
+      throw platformProviderBlocked(
+        "visual-acquire",
+        projectArtifacts.visualCandidates,
+        `${candidate.id}: selected visual candidate is not renderable`,
+        platformVisualSelectionRemediation(),
+        { request_id: item.id, candidate_id: candidate.id, required_field: "renderable" },
       );
     }
     if (!candidate.local_path) {
@@ -3690,7 +7407,7 @@ function assertPlatformVisualAcquisitionAllowed(projectPath: string) {
         "visual-acquire",
         projectArtifacts.visualCandidates,
         `${candidate.id}: platform mode visual acquisition requires local_path`,
-        "Host/platform must download or export the visual asset into the project first; CLI platform mode will not fetch download_url/provider URLs.",
+        platformVisualSelectionRemediation(),
         {
           request_id: item.id,
           candidate_id: candidate.id,
@@ -3700,12 +7417,43 @@ function assertPlatformVisualAcquisitionAllowed(projectPath: string) {
         },
       );
     }
+    assertReadablePlatformVisualPath(projectPath, candidate, "local_path", "visual-acquire");
   }
 }
 
-function selectPlatformVisualCandidate(selectedCandidateId: string | undefined, candidates: VisualCandidate[]): VisualCandidate | undefined {
-  if (selectedCandidateId) return candidates.find((candidate) => candidate.id === selectedCandidateId);
-  return candidates.find((candidate) => candidate.recommended && candidate.renderable) ?? candidates.find((candidate) => candidate.renderable);
+function platformVisualRequestBlocked(requestId: string, field: "selected_candidate_id" | "selection_reason") {
+  return platformProviderBlocked(
+    "visual-acquire",
+    projectArtifacts.visualRequest,
+    `${requestId}: platform mode visual acquisition requires nonblank ${field}`,
+    platformVisualSelectionRemediation(),
+    { request_id: requestId, required_field: field, required_artifact: projectArtifacts.visualRequest },
+  );
+}
+
+function assertReadablePlatformVisualPath(projectPath: string, candidate: VisualCandidate, field: "preview_path" | "local_path", stage: string): void {
+  try {
+    const relativePath = candidate[field];
+    if (!relativePath) throw new Error("missing path");
+    const projectRoot = fsRuntime.realpathSync(projectPath);
+    const filePath = fsRuntime.realpathSync(join(projectPath, relativePath));
+    const fromRoot = relative(projectRoot, filePath);
+    if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || pathRuntime.isAbsolute(fromRoot)) throw new Error("outside project");
+    if (!statSync(filePath).isFile()) throw new Error("not a file");
+    fsRuntime.accessSync(filePath, fsRuntime.constants.R_OK);
+  } catch {
+    throw platformProviderBlocked(
+      stage,
+      projectArtifacts.visualCandidates,
+      `${candidate.id}: ${field} must reference a readable project-local file`,
+      platformVisualSelectionRemediation(),
+      { request_id: candidate.request_id, candidate_id: candidate.id, invalid_field: field, required_artifact: projectArtifacts.visualCandidates },
+    );
+  }
+}
+
+function platformVisualSelectionRemediation(): string {
+  return "Host/agent must review visual candidates, write selected_candidate_id and selection_reason, and materialize only the selected candidate's complete project-local local_path before visual-acquire.";
 }
 
 function platformCandidateProviderUrl(candidates: VisualCandidate[]): { candidate: VisualCandidate; field: "download_url" | "preview_url" | "source_url" } | undefined {
@@ -3824,4 +7572,30 @@ function fail<TCommand extends string, TData>(command: TCommand, code: string, e
   if (typeof details.remediation === "string") response.remediation = details.remediation;
   if (details.request && typeof details.request === "object" && !Array.isArray(details.request)) response.request = details.request as Record<string, unknown>;
   return { ok: false, command, error: response };
+}
+
+function lifecycleCommandError(code: string, message: string, artifact: string, remediation: string, stage = "project.compile-edl"): Error & {
+  code: string;
+  stage: string;
+  artifact: string;
+  remediation: string;
+} {
+  const error = new Error(message) as Error & { code: string; stage: string; artifact: string; remediation: string };
+  error.code = code;
+  error.stage = stage;
+  error.artifact = artifact;
+  error.remediation = remediation;
+  return error;
+}
+
+function errorCode(error: unknown, fallback: string): string {
+  if (error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string") return (error as { code: string }).code;
+  return fallback;
+}
+
+function errorRemediation(error: unknown, fallback: string): string {
+  if (error && typeof error === "object" && typeof (error as { remediation?: unknown }).remediation === "string") {
+    return (error as { remediation: string }).remediation;
+  }
+  return fallback;
 }

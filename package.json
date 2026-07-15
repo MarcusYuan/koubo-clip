@@ -22,7 +22,8 @@
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "docs/*.md",
-    "docs/assets/readme-cn-workflow.png"
+    "docs/assets/readme-cn-workflow.png",
+    "docs/assets/readme-en-workflow.png"
   ],
   "scripts": {
     "koubo-clip": "bun packages/cli/src/cli.ts",

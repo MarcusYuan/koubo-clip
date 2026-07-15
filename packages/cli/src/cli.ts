@@ -3,8 +3,9 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { bundleInfo, resolveKouboClipSkillRoot } from "./bundle-paths";
-import { parseProjectMetadata, projectArtifacts, type ProviderExecutionMode } from "./artifacts";
+import { bundleInfo, cliVersion, resolveKouboClipSkillRoot } from "./bundle-paths";
+import { parseProjectMetadata, projectArtifacts, type CapabilitiesArtifact, type ProviderExecutionMode } from "./artifacts";
+import { projectStatus } from "./project-status";
 import {
   commandExists,
   createProject,
@@ -39,6 +40,8 @@ type Io = {
 const help = `koubo-clip
 
 Usage:
+  koubo-clip --version
+  koubo-clip capabilities --json
   koubo-clip doctor [--provider-mode standalone|platform]
   koubo-clip skills path [--json]
   koubo-clip skills install --target codex|claude|hermes [--dest <dir>] [--force]
@@ -62,6 +65,7 @@ Usage:
   koubo-clip project enrich-plan <project>
   koubo-clip project render <project>
   koubo-clip project inspect <project>
+  koubo-clip project status <project> [--json]
 `;
 
 const projectCommands = [
@@ -85,6 +89,7 @@ const projectCommands = [
   "enrich-plan <project> [--provider-mode standalone|platform]",
   "render <project> [--provider-mode standalone|platform]",
   "inspect <project> [--provider-mode standalone|platform]",
+  "status <project> [--json]",
 ] as const;
 
 export async function main(argv = process.argv.slice(2), io: Io = {}): Promise<number> {
@@ -95,6 +100,16 @@ export async function main(argv = process.argv.slice(2), io: Io = {}): Promise<n
 
   if (!command || command === "--help" || command === "-h") {
     out(help.trimEnd());
+    return 0;
+  }
+
+  if (command === "--version" || command === "-v") {
+    out(cliVersion());
+    return 0;
+  }
+
+  if (command === "capabilities") {
+    out(JSON.stringify(softwareCapabilities()));
     return 0;
   }
 
@@ -187,9 +202,55 @@ function loadLocalEnv() {
 }
 
 function shouldLoadLocalEnv(argv: string[]): boolean {
+  if (argv[0] === "--version" || argv[0] === "-v" || argv[0] === "capabilities") return false;
+  if (argv[0] === "project" && argv[1] === "status") return false;
   const explicitMode = explicitProviderMode(argv);
   if (explicitMode) return explicitMode === "standalone";
   return projectProviderModeFromMetadata(argv) !== "platform";
+}
+
+function softwareCapabilities(): CapabilitiesArtifact {
+  return {
+    contract_version: "1.0",
+    cli_version: cliVersion(),
+    project_commands: projectCommands.map((item) => item.split(" ", 1)[0]),
+    artifact_schema_versions: {
+      "project.json": "1.0",
+      "artifact-manifest.json": "1.0",
+      "production-proposal.json": "1.1",
+      "edit-plan.json": "1.0",
+      "asset-usage-plan.json": "1.0",
+      "enrichment-plan.json": "1.2",
+      "render-result.json": "1.0",
+      "inspection.json": "1.0",
+    },
+    features: {
+      source_frames: true,
+      semantic_focus: true,
+      visual_acquisition: true,
+      music_acquisition: true,
+      canonical_enrichment: true,
+      hyperframes_recut: true,
+      render_result: true,
+      structured_inspection: true,
+      structured_project_status: true,
+    },
+    provider_modes: {
+      standalone: { providers: "cli-managed", artifact_contract: "shared" },
+      platform: { providers: "host-managed", artifact_contract: "shared" },
+    },
+    render_inputs: ["edl", "transcript", "source:*", "enrichment-plan?", "asset:*?"],
+    inspect_inputs: ["render-result"],
+    error_codes: [
+      "ASSET_USAGE_PLAN_CONFLICT",
+      "LINEAGE_UNPROVEN",
+      "ARTIFACT_PENDING_VALIDATION",
+      "ARTIFACT_STALE",
+      "ARTIFACT_INVALID",
+      "RENDER_RESULT_STALE",
+      "RENDER_OUTPUT_HASH_MISMATCH",
+    ],
+  };
 }
 
 function explicitProviderMode(argv: string[]): ProviderExecutionMode | undefined {
@@ -286,6 +347,7 @@ async function runProjectCommand(argv: string[]) {
   if (subcommand === "enrich-plan") return enrichPlanProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "render") return renderProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "inspect") return inspectProject(required(rest[0], "project path"), { providerMode: mode });
+  if (subcommand === "status") return { ok: true as const, command: "project.status" as const, data: projectStatus(required(rest[0], "project path")) };
   return { ok: false as const, command: "project", error: { code: "UNKNOWN_PROJECT_COMMAND", message: `Unknown project command: ${subcommand ?? ""}` } };
 }
 

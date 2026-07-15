@@ -39,7 +39,7 @@ enrichment 层应表达为 v1.2 output-timeline plan：
 
 最新 source sweep 增加了一个修正：enrichment 必须先按 source mode 分支，再选择 visual defaults。Talking-head avatar footage 可以支持 full cards 和 PiP packaging。Screen recordings 需要 transparent guidance，保证 UI text 仍可读。
 
-再进一步，screen recordings 不能只靠“看起来像对”的坐标。只要元素使用 `target_rect`、`anchor_point` 或任何 UI 定位参数，就必须能回溯到 source frame 或 inspection frame；这就是 Visual Grounding 的目的。用户的原始措辞可以变化，但 `focus-candidates`、`focus-frames` 和 `focus-grounding` 必须把它压缩成可验证的证据链。
+再进一步，screen recordings 不能只靠“看起来像对”的坐标。只要元素使用 `target_rect`、`anchor_point` 或任何 UI 定位参数，就必须能回溯到方案确认后的 source-local focus frame；这就是 Visual Grounding 的目的。Render 后的 inspection frame 只验证最终输出，不能反向替代坐标依据。用户的原始措辞可以变化，但 `focus-candidates`、`focus-frames` 和 `focus-grounding` 必须把它压缩成可验证的证据链。
 
 最新视觉素材策略修正是 internet-first：koubo-clip 不应先假设存在一个长期本地 UI/icon/Lottie 素材库。需要视觉 UI、图标、动态图标、模板、贴纸、B-roll 或图片时，agent 应通过 host MCP、API 或平台工具直接在互联网上做语义检索，拿到候选、预览、license/cost/source 和用途说明，再进入 proposal/review。确认后的文件只作为当前 project artifact 落地，不承担跨 agent 缓存职责。
 
@@ -59,7 +59,7 @@ enrichment 层应表达为 v1.2 output-timeline plan：
 本次实现把这个结论落成两个产品合同：
 
 - Visual acquisition 合同：`visual-request` 描述 viewer job 和 semantic query，`visual-candidates` 展示 provider/source/license/cost risk，`visual-acquisition` 记录下载或导入后的 hash/provenance，`visual-review` 再决定是否进入 enrichment。最终 render 只消费 `asset-manifest.json` 中的 project-local files。
-- HyperFrames CDN 合同：允许固定版本 allowlist runtime，例如 `gsap@3.14.2`、`bodymovin/lottie-web@5.12.2`、`@lottiefiles/dotlottie-web@0.76.0`、Google Fonts 等；禁止 agent 自定义 CDN。`storyboard.json`、`inspect` 和 `report.md` 必须暴露 runtime dependencies。
+- HyperFrames CDN 合同：允许固定版本 allowlist runtime，例如 `gsap@3.14.2`、`bodymovin/lottie-web@5.12.2`、`@lottiefiles/dotlottie-web@0.76.0`、Google Fonts 等；禁止 agent 自定义 CDN。Current `storyboard.json`、持久化 `inspection.json` 和派生 `report.md` 必须暴露 runtime dependencies。
 
 ## HyperFrames
 
