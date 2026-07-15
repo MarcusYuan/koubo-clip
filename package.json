@@ -1,8 +1,12 @@
 {
   "name": "koubo-clip",
   "description": "Agent-driven local talking-head video cleanup and enrichment CLI.",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MarcusYuan/koubo-clip.git"
+  },
   "type": "module",
   "bin": {
     "koubo-clip": "bin/koubo-clip"
