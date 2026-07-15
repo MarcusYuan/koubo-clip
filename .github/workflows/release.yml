@@ -161,14 +161,16 @@ jobs:
           fi
 
       - name: Publish npm with token
+        id: publish_with_token
         if: steps.npm_status.outputs.exists != 'true' && steps.npm_auth.outputs.mode == 'token'
+        continue-on-error: true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TAG: ${{ needs.validate.outputs.npm_tag }}
         run: npm publish --access public --tag "$NPM_TAG" --provenance
 
       - name: Publish npm with trusted publishing
-        if: steps.npm_status.outputs.exists != 'true' && steps.npm_auth.outputs.mode == 'trusted'
+        if: steps.npm_status.outputs.exists != 'true' && (steps.npm_auth.outputs.mode == 'trusted' || steps.publish_with_token.outcome == 'failure')
         env:
           NPM_TAG: ${{ needs.validate.outputs.npm_tag }}
         run: npm publish --access public --tag "$NPM_TAG"
