@@ -1815,7 +1815,8 @@ test("source frame request errors do not echo path-like identifiers", () => {
   const result = sourceFramesProject(project);
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error("expected invalid request failure");
-  expect(result.error.code).toBe("SOURCE_FRAME_REQUEST_INVALID");
+  expect(result.error.code).toBe("ARTIFACT_VALIDATION_FAILED");
+  expect(result.error.issues?.some((issue) => issue.path === "/frames/0/id" && issue.keyword === "pattern")).toBe(true);
   expect(JSON.stringify(result.error).includes(privatePath)).toBe(false);
   expect(JSON.stringify(result.error).includes(project)).toBe(false);
 });

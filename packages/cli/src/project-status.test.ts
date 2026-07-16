@@ -15,6 +15,8 @@ test("project status is read-only for a current detached project", () => {
   expect(status.manifest_state).toBe("tracked");
   expect(status.sources?.[0]?.identity).toBe("available");
   expect(status.sources?.[0]?.materialization).toBe("unbound");
+  expect(status.artifacts.some((artifact) => artifact.path.startsWith(".virtual/"))).toBe(false);
+  expect(Object.keys(status.fingerprints).some((key) => key.startsWith("source-identity:"))).toBe(true);
   expect(snapshot(project)).toEqual(before);
 });
 

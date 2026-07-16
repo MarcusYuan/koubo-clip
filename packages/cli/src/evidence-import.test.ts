@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import * as nodeFs from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,6 +7,7 @@ import { join } from "node:path";
 import { expect, test } from "bun:test";
 import {
   parseEvidenceManifest,
+  parseEvidenceProbeResult,
   validateEvidenceDirectory,
   type EvidenceImportErrorCode,
   type EvidenceManifestEntry,
@@ -77,7 +79,7 @@ test("checks size and sha256 exactly before probing", () => {
   expectCode(() => validateEvidenceDirectory(wrongSize.root, { probe: () => {
     probeCalls += 1;
     return validProbe("");
-  } }), "EVIDENCE_HASH_MISMATCH");
+  } }), "EVIDENCE_SIZE_MISMATCH");
   expect(probeCalls).toBe(0);
 
   const wrongHash = evidenceFixture({ sha256: "a".repeat(64) });
@@ -86,11 +88,35 @@ test("checks size and sha256 exactly before probing", () => {
 
 test("requires JPEG codec and exact dimensions", () => {
   const wrongCodec = evidenceFixture();
-  expectCode(() => validateEvidenceDirectory(wrongCodec.root, { probe: () => ({ codec_name: "png", width: 160, height: 90 }) }), "EVIDENCE_INVALID");
+  expectCode(() => validateEvidenceDirectory(wrongCodec.root, { probe: () => ({ codec_name: "png", width: 160, height: 90 }) }), "EVIDENCE_CODEC_MISMATCH");
   const wrongDimensions = evidenceFixture();
-  expectCode(() => validateEvidenceDirectory(wrongDimensions.root, { probe: () => ({ codec_name: "mjpeg", width: 320, height: 180 }) }), "EVIDENCE_INVALID");
+  expectCode(() => validateEvidenceDirectory(wrongDimensions.root, { probe: () => ({ codec_name: "mjpeg", width: 320, height: 180 }) }), "EVIDENCE_DIMENSION_MISMATCH");
   const probeFailure = evidenceFixture();
-  expectCode(() => validateEvidenceDirectory(probeFailure.root, { probe: () => { throw new Error("private path"); } }), "EVIDENCE_INVALID");
+  expectCode(() => validateEvidenceDirectory(probeFailure.root, { probe: () => { throw new Error("private path"); } }), "EVIDENCE_PROBE_UNAVAILABLE");
+});
+
+test("classifies probe transport, process, and output failures", () => {
+  expectCode(() => parseEvidenceProbeResult({ status: null, stdout: "", error: new Error("private path") }), "EVIDENCE_PROBE_UNAVAILABLE");
+  expectCode(() => parseEvidenceProbeResult({ status: 9, stdout: "" }), "EVIDENCE_PROBE_FAILED");
+  expectCode(() => parseEvidenceProbeResult({ status: 0, stdout: "not-json" }), "EVIDENCE_PROBE_OUTPUT_INVALID");
+  expectCode(() => parseEvidenceProbeResult({ status: 0, stdout: JSON.stringify({ streams: [{}] }) }), "EVIDENCE_PROBE_OUTPUT_INVALID");
+  expect(parseEvidenceProbeResult({ status: 0, stdout: JSON.stringify({ streams: [{ codec_name: "mjpeg", width: 224, height: 480 }] }) })).toEqual({ codec_name: "mjpeg", width: 224, height: 480 });
+});
+
+test("imports a real 224x480 baseline JPEG with the installed ffprobe", () => {
+  if (spawnSync("ffmpeg", ["-version"]).status !== 0 || spawnSync("ffprobe", ["-version"]).status !== 0) return;
+  const parent = mkdtempSync(join(tmpdir(), "koubo-evidence-real-jpeg-"));
+  const root = join(parent, "evidence");
+  mkdirSync(root);
+  const framePath = join(root, "frame.jpg");
+  const rendered = spawnSync("ffmpeg", ["-y", "-f", "lavfi", "-i", "color=c=black:s=224x480", "-frames:v", "1", framePath], { encoding: "utf8" });
+  if (rendered.status !== 0) throw new Error("failed to create JPEG fixture");
+  const bytes = readFileSync(framePath);
+  writeFileSync(join(root, "manifest.json"), JSON.stringify({ version: "1.0", entries: [{
+    id: "frame-1", relative_path: "frame.jpg", sha256: hash(bytes), size_bytes: bytes.length,
+    width: 224, height: 480, source_id: "src-001", source_time_seconds: 1.25, request_id: "request-1",
+  }] }));
+  expect(validateEvidenceDirectory(root).map(({ width, height }) => ({ width, height }))).toEqual([{ width: 224, height: 480 }]);
 });
 
 test("binding expectations are exact and fail closed for missing or extra entries", () => {

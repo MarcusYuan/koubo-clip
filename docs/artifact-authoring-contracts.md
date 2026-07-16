@@ -2,7 +2,7 @@
 
 ## 状态
 
-本文定义 `koubo-clip@0.0.7` 的公开作者合同。实现和发布必须以 canonical npm tarball 的安装态验收为完成标准，源码工作区通过不等于正式交付完成。
+本文定义 `koubo-clip@0.0.8` 的公开作者合同。实现和发布必须以 canonical npm tarball 的安装态验收为完成标准，源码工作区通过不等于正式交付完成。
 
 ## 目标
 
@@ -105,6 +105,8 @@ Fail-closed 保持不变。未知字段、缺失必填字段、非法 enum、类
 ## 单一事实来源与防漂移
 
 运行时 validator、公开 schema、template、example、capabilities 索引和 Skill reference 中的结构性声明必须由同一合同定义生成，或由自动测试证明等价。不得独立维护互不校验的 TypeScript 类型、手写 parser、JSON Schema 和 Skill 示例。
+
+合同注册测试必须拒绝可写合同中的裸 `items:{"type":"object"}`、缺失 example 或无法通过当前 runtime parser 的 example。`source-frame-request` 1.0 必须完整公开 frame 的五个必填字段和唯一可选 `segment_id`，并聚合返回缺失、类型、范围、未知字段和重复 ID 问题。
 
 每个正式发布必须证明：
 

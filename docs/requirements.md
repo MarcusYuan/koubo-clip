@@ -183,6 +183,8 @@ render 前，工作流应产出人类和机器都可读的 review artifacts：
 
 CLI 的 artifact contract discovery 必须一次返回目标 artifact 的 ownership、schema version/digest、完整 schema、validator/lifecycle 信息，以及适用的结构完整 template 和同版本合法 example。`capabilities --json` 公开合同索引；Skill 在写 artifact 前先读取对应合同，不复制 required 字段、enum、禁止字段或版本差异。
 
+所有 `external_writes_allowed:true` 的合同都必须闭合到实际 runtime parser 接受的嵌套字段，不能使用无字段定义的通用 `object` 代替作者合同。`source-frame-request.json` 1.0 的 frame 必填 `id`、`source_id`、`time_seconds`、`transcript_quote` 和 `reason`，只允许额外提供 `segment_id`；公开 example 必须可被同版本 request parser 首次接受。
+
 每个 CLI release 对每种 artifact 只支持一个当前 schema。artifact 中保留 `version`，用于 fail-closed 校验、digest 和 delivery identity，但公开命令不接受 schema version 选择，也不做旧 parser、兼容 union、legacy normalization 或运行时迁移。缺失或不匹配的 artifact version 返回 `CONTRACT_SCHEMA_UNSUPPORTED`；开发 fixtures 和内部项目直接更新为当前格式，旧外部项目使用当前 CLI 重新创建。
 
 对 Agent/Host authored artifact，CLI 应一次返回尽可能完整且有界的结构化 `issues[]`，让 Agent 整体修正，而不是按第一个错误反复重写。Fail-closed 不变：未知字段、缺失必填字段、非法 enum、类型和跨字段错误仍然失败，CLI 不静默补全业务语义。
@@ -452,3 +454,6 @@ koubo-clips/<slug>/
 - Strict consumer 只读取合同、bundle assets 和显式 source binding。它不得读取 authoring transcript、analysis、edit-plan 或 enrichment-plan，不得重规划、补默认值或修复项目。
 - Hash/size 必须 exact；source probe duration tolerance 为 0.05 秒；输出 duration tolerance 为 `max(0.05, 2/fps)`。Mismatch 一律 fail closed。
 - CLI delivery 必须公开 CLI version、payload/resources/Skill digest、`artifact_contracts_digest`、schema versions、capability IDs 和 exact GSAP/HyperFrames versions，并能在 export、verify、bind、render 前验证兼容性。`delivery-manifest.json` 唯一当前版本是 3.0，旧 manifest 不读取或迁移。正式 npm delivery 的 manifest 必须从 npm packlist 物化后的最终文件树生成；CI 验收、npm publish 和 GitHub Release 必须复用同一个 canonical tarball，不能从源码 checkout 再次打包。正式版本只有在空目录安装该 tarball 后独立通过 Skill、delivery、contract export、strict render 和 inspect 验收才可发布。
+- `.virtual/*` 只用于 CLI 内部 lineage，`project status` 不得把它作为外部可读取 artifact path。Proposal selection fingerprint 通过 `project proposal --json.option_selection_fingerprints` 或 `project status --json.fingerprints["proposal-selection:<option-id>"]` 获取。
+- Evidence import 必须区分 probe 不可用、probe 进程失败、probe 输出无效、codec、尺寸、size、hash 和 binding mismatch，同时保持错误脱敏和批次 commit-last。
+- Detached project 的 current render contract 导出成功后进入 distributed handoff。Status 应把本地 render/inspect 标记为不适用，并指向远端 `render-contract verify -> bind -> render -> inspect`；不得要求 authoring agent 手写 source materialization 或在 Hermes 本机渲染。

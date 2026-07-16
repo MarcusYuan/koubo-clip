@@ -1574,7 +1574,7 @@ export function sourceFramesProject(projectPath: string, options: ProviderModeOp
         // Preserve the original extraction failure.
       }
     }
-    if (isSourceFrameError(error) || isProviderModeError(error)) return fail("project.source-frames", "PROJECT_SOURCE_FRAMES_FAILED", error);
+    if (isSourceFrameError(error) || isProviderModeError(error) || isArtifactContractError(error)) return fail("project.source-frames", "PROJECT_SOURCE_FRAMES_FAILED", error);
     return fail("project.source-frames", "PROJECT_SOURCE_FRAMES_FAILED", new Error("source frames command failed"));
   }
 }
@@ -4687,7 +4687,8 @@ function readSourceFrameRequest(projectPath: string): SourceFrameRequestArtifact
   if (!existsSync(requestPath)) throw sourceFrameError("SOURCE_FRAME_REQUEST_MISSING", `${projectArtifacts.sourceFrameRequest} is missing`);
   try {
     return parseSourceFrameRequest(readProjectJson(projectPath, projectArtifacts.sourceFrameRequest, "source frame request"));
-  } catch {
+  } catch (error) {
+    if (error && typeof error === "object" && ((error as { code?: unknown }).code === "ARTIFACT_VALIDATION_FAILED" || (error as { code?: unknown }).code === "CONTRACT_SCHEMA_UNSUPPORTED")) throw error;
     throw sourceFrameError("SOURCE_FRAME_REQUEST_INVALID", `${projectArtifacts.sourceFrameRequest} is invalid`);
   }
 }
@@ -7979,6 +7980,11 @@ function lifecycleCommandError(code: string, message: string, artifact: string, 
 function errorCode(error: unknown, fallback: string): string {
   if (error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string") return (error as { code: string }).code;
   return fallback;
+}
+
+function isArtifactContractError(error: unknown): boolean {
+  const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  return code === "ARTIFACT_VALIDATION_FAILED" || code === "CONTRACT_SCHEMA_UNSUPPORTED";
 }
 
 function errorRemediation(error: unknown, fallback: string): string {

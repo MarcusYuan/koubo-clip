@@ -10,6 +10,12 @@ export const EVIDENCE_MANIFEST_VERSION = "1.0" as const;
 export type EvidenceImportErrorCode =
   | "UNSAFE_CONTRACT_PATH"
   | "EVIDENCE_INVALID"
+  | "EVIDENCE_PROBE_UNAVAILABLE"
+  | "EVIDENCE_PROBE_FAILED"
+  | "EVIDENCE_PROBE_OUTPUT_INVALID"
+  | "EVIDENCE_CODEC_MISMATCH"
+  | "EVIDENCE_DIMENSION_MISMATCH"
+  | "EVIDENCE_SIZE_MISMATCH"
   | "EVIDENCE_HASH_MISMATCH"
   | "EVIDENCE_BINDING_MISMATCH";
 
@@ -80,13 +86,12 @@ export function validateEvidenceDirectory(
   const validated: ValidatedEvidenceMember[] = [];
   for (const entry of manifest.entries) {
     const absolutePath = validatedMemberPath(root, entry.relative_path);
-    const bytes = verifiedMemberBytes(absolutePath, entry);
+    verifiedMemberBytes(absolutePath, entry);
     const image = safeProbe(probe, absolutePath);
-    if (image.codec_name !== "mjpeg" || image.width !== entry.width || image.height !== entry.height) {
-      throw evidenceError("EVIDENCE_INVALID", "evidence JPEG metadata does not match manifest");
+    if (image.codec_name !== "mjpeg") throw evidenceError("EVIDENCE_CODEC_MISMATCH", "evidence codec must be mjpeg");
+    if (image.width !== entry.width || image.height !== entry.height) {
+      throw evidenceError("EVIDENCE_DIMENSION_MISMATCH", `evidence dimensions ${image.width}x${image.height} do not match manifest ${entry.width}x${entry.height}`);
     }
-    // Hashing reads the complete file before any member is exposed to the caller.
-    if (bytes.length !== entry.size_bytes) throw evidenceError("EVIDENCE_HASH_MISMATCH", "evidence member bytes do not match manifest");
     validated.push({ ...entry, absolute_path: absolutePath });
   }
   return validated;
@@ -110,17 +115,22 @@ export function probeEvidenceJpeg(absolutePath: string): EvidenceProbeResult {
     ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json", absolutePath],
     { encoding: "utf8" },
   );
-  if (result.status !== 0) throw evidenceError("EVIDENCE_INVALID", "evidence JPEG probe failed");
+  return parseEvidenceProbeResult(result);
+}
+
+export function parseEvidenceProbeResult(result: { status: number | null; stdout: string; error?: Error }): EvidenceProbeResult {
+  if (result.error || result.status === null) throw evidenceError("EVIDENCE_PROBE_UNAVAILABLE", "evidence JPEG probe is unavailable");
+  if (result.status !== 0) throw evidenceError("EVIDENCE_PROBE_FAILED", `evidence JPEG probe exited with code ${result.status}`);
   try {
     const value = JSON.parse(result.stdout) as { streams?: Array<Record<string, unknown>> };
     const stream = value.streams?.[0];
     const codecName = stream?.codec_name;
     const width = stream?.width;
     const height = stream?.height;
-    if (codecName !== "mjpeg" || !isPositiveInteger(width) || !isPositiveInteger(height)) throw new Error("invalid probe");
+    if (typeof codecName !== "string" || codecName === "" || !isPositiveInteger(width) || !isPositiveInteger(height)) throw new Error("invalid probe");
     return { codec_name: codecName, width, height };
   } catch {
-    throw evidenceError("EVIDENCE_INVALID", "evidence JPEG probe failed");
+    throw evidenceError("EVIDENCE_PROBE_OUTPUT_INVALID", "evidence JPEG probe output is invalid");
   }
 }
 
@@ -226,23 +236,23 @@ function verifiedMemberBytes(path: string, entry: EvidenceManifestEntry): Uint8A
     throw evidenceError("EVIDENCE_INVALID", "evidence member is missing or invalid");
   }
   if (size !== entry.size_bytes || bytes.length !== entry.size_bytes) {
-    throw evidenceError("EVIDENCE_HASH_MISMATCH", "evidence member bytes do not match manifest");
+    throw evidenceError("EVIDENCE_SIZE_MISMATCH", "evidence member size does not match manifest");
   }
   const digest = createHash("sha256").update(bytes).digest("hex");
-  if (digest !== entry.sha256) throw evidenceError("EVIDENCE_HASH_MISMATCH", "evidence member bytes do not match manifest");
+  if (digest !== entry.sha256) throw evidenceError("EVIDENCE_HASH_MISMATCH", "evidence member hash does not match manifest");
   return bytes;
 }
 
 function safeProbe(probe: EvidenceProbe, path: string): EvidenceProbeResult {
   try {
     const result = probe(path);
-    if (result.codec_name !== "mjpeg" || !isPositiveInteger(result.width) || !isPositiveInteger(result.height)) {
-      throw new Error("invalid probe");
+    if (typeof result.codec_name !== "string" || result.codec_name === "" || !isPositiveInteger(result.width) || !isPositiveInteger(result.height)) {
+      throw evidenceError("EVIDENCE_PROBE_OUTPUT_INVALID", "evidence JPEG probe output is invalid");
     }
     return result;
   } catch (error) {
     if (isEvidenceImportError(error)) throw error;
-    throw evidenceError("EVIDENCE_INVALID", "evidence JPEG probe failed");
+    throw evidenceError("EVIDENCE_PROBE_UNAVAILABLE", "evidence JPEG probe is unavailable");
   }
 }
 
@@ -354,6 +364,12 @@ function isEvidenceImportError(value: unknown): value is EvidenceImportError {
   const code = (value as { code?: unknown }).code;
   return code === "UNSAFE_CONTRACT_PATH"
     || code === "EVIDENCE_INVALID"
+    || code === "EVIDENCE_PROBE_UNAVAILABLE"
+    || code === "EVIDENCE_PROBE_FAILED"
+    || code === "EVIDENCE_PROBE_OUTPUT_INVALID"
+    || code === "EVIDENCE_CODEC_MISMATCH"
+    || code === "EVIDENCE_DIMENSION_MISMATCH"
+    || code === "EVIDENCE_SIZE_MISMATCH"
     || code === "EVIDENCE_HASH_MISMATCH"
     || code === "EVIDENCE_BINDING_MISMATCH";
 }

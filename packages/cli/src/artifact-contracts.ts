@@ -47,12 +47,13 @@ export class ArtifactValidationError extends Error {
 export class ContractSchemaUnsupportedError extends Error {
   readonly code = "CONTRACT_SCHEMA_UNSUPPORTED";
   readonly artifact: string;
-  readonly schema_version = "2.0";
+  readonly schema_version: string;
   readonly schema_digest: string;
 
-  constructor(actualVersion: unknown, schemaDigest: string) {
-    super(`production-proposal.json version ${JSON.stringify(actualVersion)} is unsupported; expected "2.0"`);
-    this.artifact = "production-proposal.json";
+  constructor(artifact: string, actualVersion: unknown, expectedVersion: string, schemaDigest: string) {
+    super(`${artifact} version ${JSON.stringify(actualVersion)} is unsupported; expected ${JSON.stringify(expectedVersion)}`);
+    this.artifact = artifact;
+    this.schema_version = expectedVersion;
     this.schema_digest = schemaDigest;
   }
 }
@@ -353,8 +354,22 @@ const productionProposalContract: ArtifactContract = {
 };
 
 const id = { type: "string", minLength: 1, pattern: "^[^/:\\\\]+$" } satisfies JsonSchema;
+const opaqueId = { type: "string", minLength: 1, pattern: "^(?!\\s*[A-Za-z][A-Za-z0-9+.-]*:)(?=.*\\S)[^/\\\\]+$" } satisfies JsonSchema;
+const text = { type: "string", minLength: 1, pattern: "\\S" } satisfies JsonSchema;
 const number = { type: "number", minimum: 0 } satisfies JsonSchema;
 const range = closed(["start", "end"], { start: number, end: number });
+const point = closed(["x", "y"], { x: { type: "number", minimum: 0, maximum: 1 }, y: { type: "number", minimum: 0, maximum: 1 } });
+const rect = closed(["x", "y", "width", "height"], {
+  x: { type: "number", minimum: 0, maximum: 1 }, y: { type: "number", minimum: 0, maximum: 1 },
+  width: { type: "number", minimum: 0, maximum: 1 }, height: { type: "number", minimum: 0, maximum: 1 },
+});
+const params = { type: "object", additionalProperties: { type: ["string", "number", "boolean", "null"] } } satisfies JsonSchema;
+const sourceMode = { enum: ["talking_head_avatar", "screen_recording", "mixed"] } satisfies JsonSchema;
+const presentationIntent = { enum: ["internal_tutorial", "product_demo", "course_lesson", "knowledge_explainer", "short_form"] } satisfies JsonSchema;
+const elementType = { enum: ["registry_block", "registry_component", "animation_rule", "caption_identity", "visual_asset"] } satisfies JsonSchema;
+const zone = { enum: ["full_frame", "upper_third", "lower_third", "left_panel", "right_panel", "center"] } satisfies JsonSchema;
+const visualAssetType = { enum: ["icon", "animated_icon", "lottie", "ui_component", "template", "sticker", "broll", "image"] } satisfies JsonSchema;
+const visualProvider = { enum: ["iconify", "lordicon", "lottie", "shadcn", "21st", "mcp-handoff", "local", "url"] } satisfies JsonSchema;
 const sourceIdentity = closed(["sha256", "size_bytes", "duration_seconds", "video"], {
   sha256: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" }, size_bytes: number, duration_seconds: number,
   video: closed(["codec_name", "width", "height", "display_width", "display_height", "rotation", "avg_frame_rate", "pixel_format"], {
@@ -371,15 +386,15 @@ export const enrichmentPlanSchema: JsonSchema = {
   ...closed(["version", "profile", "elements", "audio"], {
     version: { const: "2.0" },
     profile: closed(["source_mode", "aspect_ratio", "caption_identity", "layout", "style", "frame"], {
-      source_mode: { enum: ["talking_head_avatar", "screen_recording", "mixed"] }, aspect_ratio: { enum: ["source", "16:9", "9:16", "4:5"] },
+      source_mode: sourceMode, aspect_ratio: { enum: ["source", "16:9", "9:16", "4:5"] },
       caption_identity: { const: "anchor" }, layout: { enum: ["stack", "overlay", "split", "pip"] },
       style: { enum: ["whiteboard", "audit", "swiss", "terminal", "xhs", "editorial", "minimal"] }, frame: { enum: ["clean", "hairline", "polaroid"] },
     }),
     elements: { type: "array", items: closed(["id", "source", "element_id", "element_type", "start", "end", "reason"], {
       id, source: { type: "string", minLength: 1 }, element_id: id,
-      element_type: { enum: ["registry_block", "registry_component", "animation_rule", "caption_identity", "visual_asset"] },
+      element_type: elementType,
       start: number, end: number, reason: { type: "string", minLength: 1 }, zone: { enum: ["full_frame", "upper_third", "lower_third", "left_panel", "right_panel", "center"] },
-      target_rect: { type: "object" }, anchor_point: { type: "object" }, params: { type: "object" }, asset_id: id, caption_identity: { const: "anchor" },
+      target_rect: rect, anchor_point: point, params, asset_id: id, caption_identity: { const: "anchor" },
     }) },
     audio: closed(["music", "sfx"], {
       music: { type: "array", items: closed(["id", "asset_id", "start", "end", "volume", "fade_seconds", "ducking", "reason"], { id, asset_id: id, ...range.properties as Record<string, JsonSchema>, volume: number, fade_seconds: number, ducking: { type: "boolean" }, reason: { type: "string", minLength: 1 } }) },
@@ -393,9 +408,20 @@ const finalize = (seed: ContractSeed): ArtifactContract => {
   const schema_digest = digest(seed.schema);
   return { ...seed, schema_digest, contract_digest: digest(seed) };
 };
-const writable = (artifact_id: string, filename: string, schema_version: string, schema: JsonSchema, template: unknown, validator: string, prerequisites: string[] = []): ArtifactContract => finalize({
-  artifact_id, filename, schema_version, ownership: "agent_authored", role: "authoritative_input", external_writes_allowed: true,
-  validator, prerequisites, schema, template, template_requires_filling: true,
+const writable = (
+  artifact_id: string,
+  filename: string,
+  schema_version: string,
+  schema: JsonSchema,
+  template: unknown,
+  example: unknown,
+  validator: string,
+  prerequisites: string[] = [],
+  ownership: ArtifactContract["ownership"] = "agent_authored",
+  role: ArtifactContract["role"] = "authoritative_input",
+): ArtifactContract => finalize({
+  artifact_id, filename, schema_version, ownership, role, external_writes_allowed: true,
+  validator, prerequisites, schema, template, template_requires_filling: true, example,
 });
 const readonly = (artifact_id: string, filename: string, schema_version: string, producer: string, role: ArtifactContract["role"] = "derived"): ArtifactContract => finalize({
   artifact_id, filename, schema_version, ownership: "cli_owned", role, external_writes_allowed: false, producer, prerequisites: [],
@@ -415,25 +441,80 @@ const editPlanSchema = { $schema: "https://json-schema.org/draft/2020-12/schema"
   source_order: { type: "array", items: id },
 }) };
 const assetUsageSchema = { $schema: "https://json-schema.org/draft/2020-12/schema", ...closed(["music", "sfx", "visual_assets"], {
-  music: { type: "array", items: { type: "object" } }, sfx: { type: "array", items: { type: "object" } }, visual_assets: { type: "array", items: { type: "object" } },
+  music: { type: "array", items: closed(["asset_ref", "start", "end", "purpose"], {
+    id, asset_ref: text, start: number, end: number, volume: number, duck_original_audio: { type: "boolean" },
+    fade_in: number, fade_out: number, fade_seconds: number, purpose: text,
+  }) },
+  sfx: { type: "array", items: closed(["asset_ref", "time", "purpose"], {
+    id, asset_ref: text, time: number, duration: number, volume: number, fade_seconds: number, purpose: text,
+  }) },
+  visual_assets: { type: "array", items: closed(["asset_ref", "start", "end", "purpose"], {
+    id, asset_ref: text, start: number, end: number,
+    position: { enum: ["top-left", "top-right", "bottom-left", "bottom-right", "full_frame", "upper_third", "lower_third", "left_panel", "right_panel", "center"] },
+    size: { enum: ["small", "medium", "large"] }, animation: { enum: ["none", "fade-in"] }, asset_type: visualAssetType, purpose: text,
+  }) },
 }) };
 const sourceMapSchema = { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object", additionalProperties: { type: "string", minLength: 1 } };
 const versionedRequest = (version: string, required: string[], properties: Record<string, JsonSchema>) => ({ $schema: "https://json-schema.org/draft/2020-12/schema", ...closed(["version", ...required], { version: { const: version }, ...properties }) });
 
+const sourceFrameItemSchema = closed(["id", "source_id", "time_seconds", "transcript_quote", "reason"], {
+  id: opaqueId, source_id: opaqueId, time_seconds: number, segment_id: opaqueId, transcript_quote: text, reason: text,
+});
+const sourceFrameRequestSchema = versionedRequest("1.0", ["frames"], {
+  frames: { type: "array", minItems: 1, maxItems: 20, items: sourceFrameItemSchema },
+});
+export const sourceFrameRequestExample = {
+  version: "1.0",
+  frames: [{ id: "frame-001", source_id: "src-001", time_seconds: 1.25, segment_id: "segment-001", transcript_quote: "A useful source moment", reason: "Verify the visible UI state" }],
+};
+const focusCandidateSchema = closed(["id", "start", "end", "transcript_quote", "semantic_intent", "element_id", "element_type", "requires_grounding", "reason"], {
+  id, start: number, end: number, transcript_quote: text,
+  semantic_intent: { enum: ["orient_viewer", "guide_attention", "explain_sequence", "summarize_payoff", "pacing_relief"] },
+  business_role: text, viewer_job: text, visual_gap: text,
+  recommended_treatment: { enum: ["source_ui_component", "generated_asset", "text_or_caption", "sfx_or_music", "none"] },
+  element_id: id, element_type: elementType, requires_grounding: { type: "boolean" }, asset_id: id, sfx_id: id, reason: text, params,
+});
+const focusGroundingItemSchema = closed(["candidate_id", "frame_id", "confidence", "evidence_note"], {
+  candidate_id: id, frame_id: id, confidence: { type: "number", minimum: 0, maximum: 1 }, evidence_note: text,
+  target_rect: rect, anchor_point: point, params,
+});
+const visualRequestItemSchema = closed(["id", "viewer_job", "semantic_query", "asset_type", "reason"], {
+  id, viewer_job: text, semantic_query: text, asset_type: visualAssetType,
+  preferred_sources: { type: "array", items: visualProvider }, reason: text, output_usage: text,
+  selected_candidate_id: id, selection_reason: text, start: number, end: number, zone,
+});
+const evidenceEntrySchema = closed(["id", "relative_path", "sha256", "size_bytes", "width", "height"], {
+  id: opaqueId, relative_path: text, sha256: { type: "string", pattern: "^(?:sha256:)?[a-f0-9]{64}$" },
+  size_bytes: { type: "number", minimum: 1 }, width: { type: "number", minimum: 1 }, height: { type: "number", minimum: 1 },
+  source_id: opaqueId, source_time_seconds: number, request_id: opaqueId, candidate_id: opaqueId, output_time_seconds: number,
+});
+
+const sourceManifestExample = { contract_version: "2.0", sources: [{ source_id: "src-001", order: 0, original_filename: "raw.mp4", local_media_ref: "opaque-reference", identity: { sha256: `sha256:${"0".repeat(64)}`, size_bytes: 1, duration_seconds: 1, video: { codec_name: "h264", width: 1920, height: 1080, display_width: 1920, display_height: 1080, rotation: 0, avg_frame_rate: "30/1", pixel_format: "yuv420p" } } }] };
+const transcriptExample = { timing_granularity: "segment", segments: [{ source_id: "src-001", start: 0, end: 1, text: "Example transcript" }] };
+const editPlanExample = { contract_version: "1.0", confirmed_option_id: "option-001", proposal_selection_fingerprint: `sha256:${"0".repeat(64)}`, decisions: [] };
+const enrichmentExample = { version: "2.0", profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor", layout: "stack", style: "minimal", frame: "clean" }, elements: [], audio: { music: [], sfx: [] } };
+const assetUsageExample = { music: [], sfx: [], visual_assets: [] };
+const focusCandidatesExample = { version: "1.0", source_mode: "talking_head_avatar", presentation_intent: "knowledge_explainer", candidates: [{ id: "focus-001", start: 0, end: 1, transcript_quote: "Example transcript", semantic_intent: "summarize_payoff", element_id: "anchor", element_type: "caption_identity", requires_grounding: false, reason: "Emphasize the key point" }] };
+const focusGroundingExample = { version: "1.0", groundings: [{ candidate_id: "focus-001", frame_id: "frame-001", confidence: 1, evidence_note: "The target is visible" }] };
+const musicRequestExample = { version: "1.0", id: "music-001", source: "none", reason: "Speech does not need background music" };
+const visualRequestExample = { version: "1.0", source_mode: "talking_head_avatar", presentation_intent: "knowledge_explainer", requests: [{ id: "visual-001", viewer_job: "Orient the viewer", semantic_query: "simple orientation icon", asset_type: "icon", preferred_sources: ["iconify"], reason: "Clarify the section transition" }] };
+const evidenceManifestExample = { version: "1.0", entries: [{ id: "frame-001", relative_path: "frame-001.jpg", sha256: "0".repeat(64), size_bytes: 1, width: 224, height: 480, source_id: "src-001", source_time_seconds: 1.25, request_id: "frame-001" }] };
+const sourceMapExample = { "src-001": "/authorized/raw.mp4" };
+
 const discoveredContracts: ArtifactContract[] = [
   productionProposalContract,
-  writable("source-manifest", "sources.json", "2.0", sourceManifestSchema, { contract_version: "2.0", sources: [] }, "project create --source-manifest"),
-  writable("transcript", "transcript.json", "1.0", transcriptSchema, { timing_granularity: "segment", segments: [] }, "project explore", ["sources"]),
-  writable("edit-plan", "edit-plan.json", "1.0", editPlanSchema, { contract_version: "1.0", confirmed_option_id: "", proposal_selection_fingerprint: "", decisions: [] }, "project compile-edl", ["production-proposal"]),
-  writable("enrichment-plan", "enrichment-plan.json", "2.0", enrichmentPlanSchema, { version: "2.0", profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor", layout: "stack", style: "minimal", frame: "clean" }, elements: [], audio: { music: [], sfx: [] } }, "project enrich-plan", ["edl"]),
-  writable("asset-usage-plan", "asset-usage-plan.json", "1.0", assetUsageSchema, { music: [], sfx: [], visual_assets: [] }, "project enrich-plan", ["edl"]),
-  writable("source-frame-request", "source-frame-request.json", "1.0", versionedRequest("1.0", ["frames"], { frames: { type: "array", minItems: 1, maxItems: 20, items: { type: "object" } } }), { version: "1.0", frames: [] }, "project source-frames", ["sources"]),
-  writable("focus-candidates", "focus-candidates.json", "1.0", versionedRequest("1.0", ["source_mode", "presentation_intent", "candidates"], { source_mode: { enum: ["talking_head_avatar", "screen_recording", "mixed"] }, presentation_intent: { type: "string" }, candidates: { type: "array", items: { type: "object" } } }), { version: "1.0", source_mode: "talking_head_avatar", presentation_intent: "knowledge_explainer", candidates: [] }, "project focus-candidates", ["edl"]),
-  writable("focus-grounding", "focus-grounding.json", "1.0", versionedRequest("1.0", ["groundings"], { groundings: { type: "array", items: { type: "object" } } }), { version: "1.0", groundings: [] }, "project focus-grounding", ["focus-frames"]),
-  writable("music-request", "music-request.json", "1.0", versionedRequest("1.0", ["id", "source", "reason"], { id, source: { enum: ["none", "local", "minimax", "freesound", "pixabay"] }, reason: { type: "string", minLength: 1 } }), { version: "1.0", id: "", source: "none", reason: "" }, "project music-acquire"),
-  writable("visual-request", "visual-request.json", "1.0", versionedRequest("1.0", ["source_mode", "presentation_intent", "requests"], { source_mode: { type: "string" }, presentation_intent: { type: "string" }, requests: { type: "array", items: { type: "object" } } }), { version: "1.0", source_mode: "talking_head_avatar", presentation_intent: "knowledge_explainer", requests: [] }, "project visual-acquire"),
-  writable("evidence-import-manifest", "manifest.json", "1.0", versionedRequest("1.0", ["entries"], { entries: { type: "array", minItems: 1, items: { type: "object" } } }), { version: "1.0", entries: [] }, "project source-frames/focus-frames --import"),
-  writable("source-map", "source-map.json", "1.0", sourceMapSchema, {}, "render-contract bind"),
+  writable("source-manifest", "sources.json", "2.0", sourceManifestSchema, sourceManifestExample, sourceManifestExample, "project create --source-manifest", [], "host_authored"),
+  writable("transcript", "transcript.json", "1.0", transcriptSchema, transcriptExample, transcriptExample, "project explore", ["sources"], "host_authored"),
+  writable("edit-plan", "edit-plan.json", "1.0", editPlanSchema, editPlanExample, editPlanExample, "project compile-edl", ["production-proposal"]),
+  writable("enrichment-plan", "enrichment-plan.json", "2.0", enrichmentPlanSchema, enrichmentExample, enrichmentExample, "project enrich-plan", ["edl"]),
+  writable("asset-usage-plan", "asset-usage-plan.json", "1.0", assetUsageSchema, assetUsageExample, assetUsageExample, "project enrich-plan", ["edl"], "host_authored", "command_request"),
+  writable("source-frame-request", "source-frame-request.json", "1.0", sourceFrameRequestSchema, sourceFrameRequestExample, sourceFrameRequestExample, "project source-frames", ["sources"], "agent_authored", "command_request"),
+  writable("focus-candidates", "focus-candidates.json", "1.0", versionedRequest("1.0", ["source_mode", "presentation_intent", "candidates"], { source_mode: sourceMode, presentation_intent: presentationIntent, candidates: { type: "array", items: focusCandidateSchema } }), focusCandidatesExample, focusCandidatesExample, "project focus-candidates", ["edl"]),
+  writable("focus-grounding", "focus-grounding.json", "1.0", versionedRequest("1.0", ["groundings"], { groundings: { type: "array", items: focusGroundingItemSchema } }), focusGroundingExample, focusGroundingExample, "project focus-grounding", ["focus-frames"]),
+  writable("music-request", "music-request.json", "1.0", versionedRequest("1.0", ["id", "source", "reason"], { id, source: { enum: ["none", "local", "minimax", "freesound", "pixabay"] }, reason: text, source_mode: sourceMode, presentation_intent: presentationIntent, mood: text, target_duration_seconds: number, local_path: text, library_track: text, prompt: text, query: text, model: text, volume: { type: "number", minimum: 0, maximum: 1 }, fade_seconds: number, ducking: { type: "boolean" }, min_duration_seconds: number, max_duration_seconds: number }), musicRequestExample, musicRequestExample, "project music-acquire", [], "agent_authored", "command_request"),
+  writable("visual-request", "visual-request.json", "1.0", versionedRequest("1.0", ["source_mode", "presentation_intent", "requests"], { source_mode: sourceMode, presentation_intent: presentationIntent, requests: { type: "array", minItems: 1, items: visualRequestItemSchema } }), visualRequestExample, visualRequestExample, "project visual-acquire", [], "agent_authored", "command_request"),
+  writable("evidence-import-manifest", "manifest.json", "1.0", versionedRequest("1.0", ["entries"], { entries: { type: "array", minItems: 1, items: evidenceEntrySchema } }), evidenceManifestExample, evidenceManifestExample, "project source-frames/focus-frames --import", [], "host_authored", "command_request"),
+  writable("source-map", "source-map.json", "1.0", sourceMapSchema, sourceMapExample, sourceMapExample, "render-contract bind", [], "host_authored", "command_request"),
   ...[
     ["project", "project.json", "1.0", "project create"], ["source-materialization", "source-materialization.json", "1.0", "project create"],
     ["analysis", "analysis.json", "1.0", "project explore"], ["review-package", "review-package.json", "1.0", "project review"],
@@ -476,12 +557,22 @@ export function artifactContractsDigest(): `sha256:${string}` {
   return digest([...contracts].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0).map(([artifact_id, contract]) => ({ artifact_id, contract_digest: contract.contract_digest })));
 }
 
-export function assertProductionProposalContract(value: unknown): void {
-  if (isRecord(value) && value.version !== "2.0") throw new ContractSchemaUnsupportedError(value.version, proposalSchemaDigest);
+export function assertArtifactContract(artifactId: string, value: unknown): void {
+  const contract = contracts.get(artifactId);
+  if (!contract || !contract.external_writes_allowed) throw unsupportedArtifactContract(artifactId);
+  const versionField = contractVersionField(contract.schema);
+  if (versionField && isRecord(value) && value[versionField.field] !== versionField.expected) {
+    throw new ContractSchemaUnsupportedError(contract.filename, value[versionField.field], String(versionField.expected), contract.schema_digest);
+  }
   const issues: ArtifactValidationIssue[] = [];
-  validateJsonSchema(value, productionProposalSchema, "", productionProposalSchema, issues);
-  addProposalSemanticIssues(value, issues);
-  if (issues.length) throw new ArtifactValidationError("production-proposal.json", "2.0", proposalSchemaDigest, issues);
+  validateJsonSchema(value, contract.schema, "", contract.schema, issues);
+  if (artifactId === "production-proposal") addProposalSemanticIssues(value, issues);
+  if (artifactId === "source-frame-request") addSourceFrameRequestSemanticIssues(value, issues);
+  if (issues.length) throw new ArtifactValidationError(contract.filename, contract.schema_version, contract.schema_digest, issues);
+}
+
+export function assertProductionProposalContract(value: unknown): void {
+  assertArtifactContract("production-proposal", value);
 }
 
 export function productionProposalContractInfo(): Pick<ArtifactContract, "schema_version" | "schema_digest"> {
@@ -508,6 +599,12 @@ function addProposalSemanticIssues(value: unknown, issues: ArtifactValidationIss
       addDuplicateIssues(slots.map((slot) => slot.slot_id), `/options/${optionIndex}/asset_requirements/${key}`, "slot_id", issues);
     }
   });
+}
+
+function addSourceFrameRequestSemanticIssues(value: unknown, issues: ArtifactValidationIssue[]): void {
+  if (!isRecord(value) || !Array.isArray(value.frames)) return;
+  const frames = value.frames.filter(isRecord);
+  addDuplicateIssues(frames.map((frame) => frame.id), "/frames", "id", issues);
 }
 
 function addRangeIssues(value: unknown, path: string, issues: ArtifactValidationIssue[]): void {
@@ -544,6 +641,7 @@ function validateJsonSchema(value: unknown, schema: JsonSchema, path: string, ro
     if (typeof schema.pattern === "string" && !new RegExp(schema.pattern).test(value)) issues.push({ path, keyword: "pattern", message: "contains characters that are not allowed" });
   }
   if (typeof value === "number" && typeof schema.minimum === "number" && value < schema.minimum) issues.push({ path, keyword: "minimum", message: `must be >= ${schema.minimum}` });
+  if (typeof value === "number" && typeof schema.maximum === "number" && value > schema.maximum) issues.push({ path, keyword: "maximum", message: `must be <= ${schema.maximum}` });
   if (Array.isArray(value)) {
     if (typeof schema.minItems === "number" && value.length < schema.minItems) issues.push({ path, keyword: "minItems", message: `must contain at least ${schema.minItems} items` });
     if (typeof schema.maxItems === "number" && value.length > schema.maxItems) issues.push({ path, keyword: "maxItems", message: `must contain at most ${schema.maxItems} items` });
@@ -555,11 +653,31 @@ function validateJsonSchema(value: unknown, schema: JsonSchema, path: string, ro
     for (const key of required) if (!(key in value) || value[key] === undefined) issues.push({ path: pointer(path, key), keyword: "required", message: `${key} is required` });
     if (schema.additionalProperties === false) {
       for (const key of Object.keys(value)) if (value[key] !== undefined && !(key in properties)) issues.push({ path: pointer(path, key), keyword: "additionalProperties", message: `${key} is not allowed` });
+    } else if (isRecord(schema.additionalProperties)) {
+      for (const [key, childValue] of Object.entries(value)) {
+        if (!(key in properties)) validateJsonSchema(childValue, schema.additionalProperties as JsonSchema, pointer(path, key), root, issues);
+      }
     }
     for (const [key, childSchema] of Object.entries(properties)) {
       if (key in value && value[key] !== undefined) validateJsonSchema(value[key], childSchema, pointer(path, key), root, issues);
     }
   }
+}
+
+function contractVersionField(schema: JsonSchema): { field: "version" | "contract_version"; expected: unknown } | undefined {
+  const properties = isRecord(schema.properties) ? schema.properties : undefined;
+  if (!properties) return undefined;
+  for (const field of ["version", "contract_version"] as const) {
+    const fieldSchema = properties[field];
+    if (isRecord(fieldSchema) && "const" in fieldSchema) return { field, expected: fieldSchema.const };
+  }
+  return undefined;
+}
+
+function unsupportedArtifactContract(artifactId: string): Error & { code: "ARTIFACT_CONTRACT_UNSUPPORTED" } {
+  const error = new Error(`artifact contract is unavailable: ${artifactId}`) as Error & { code: "ARTIFACT_CONTRACT_UNSUPPORTED" };
+  error.code = "ARTIFACT_CONTRACT_UNSUPPORTED";
+  return error;
 }
 
 function resolveRef(root: JsonSchema, ref: string): JsonSchema | undefined {

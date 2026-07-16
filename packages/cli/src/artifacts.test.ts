@@ -849,11 +849,11 @@ test("source frame request parser accepts 1 to 20 ordered frames and URL text", 
 test("source frame request parser rejects invalid counts and duplicate ids", () => {
   const parseSourceFrameRequest = requiredArtifactParser("parseSourceFrameRequest");
   const frame = { id: "source-frame-1", source_id: "src-1", time_seconds: 0, transcript_quote: "quote", reason: "reason" };
-  expect(() => parseSourceFrameRequest({ version: "1.0", frames: [] })).toThrow("between 1 and 20");
+  expect(() => parseSourceFrameRequest({ version: "1.0", frames: [] })).toThrow("at least 1 items");
   expect(() => parseSourceFrameRequest({ version: "1.0", frames: Array.from({ length: 21 }, (_, index) => ({ ...frame, id: `frame-${index}` })) })).toThrow(
-    "between 1 and 20",
+    "at most 20 items",
   );
-  expect(() => parseSourceFrameRequest({ version: "1.0", frames: [frame, frame] })).toThrow("duplicate source frame request id");
+  expect(() => parseSourceFrameRequest({ version: "1.0", frames: [frame, frame] })).toThrow("duplicate id");
 });
 
 test("source frame request parser rejects unknown structured fields", () => {
@@ -869,10 +869,10 @@ test("source frame request parser rejects blank strings and invalid times", () =
   const parseSourceFrameRequest = requiredArtifactParser("parseSourceFrameRequest");
   const frame = { id: "source-frame-1", source_id: "src-1", time_seconds: 0, segment_id: "segment-1", transcript_quote: "quote", reason: "reason" };
   for (const key of ["id", "source_id", "segment_id", "transcript_quote", "reason"]) {
-    expect(() => parseSourceFrameRequest({ version: "1.0", frames: [{ ...frame, [key]: "   " }] })).toThrow("must not be blank");
+    expect(() => parseSourceFrameRequest({ version: "1.0", frames: [{ ...frame, [key]: "   " }] })).toThrow("failed validation");
   }
-  expect(() => parseSourceFrameRequest({ version: "1.0", frames: [{ ...frame, time_seconds: -1 }] })).toThrow("non-negative number");
-  expect(() => parseSourceFrameRequest({ version: "1.0", frames: [{ ...frame, time_seconds: Number.NaN }] })).toThrow("non-negative number");
+  expect(() => parseSourceFrameRequest({ version: "1.0", frames: [{ ...frame, time_seconds: -1 }] })).toThrow("must be >= 0");
+  expect(() => parseSourceFrameRequest({ version: "1.0", frames: [{ ...frame, time_seconds: Number.NaN }] })).toThrow("must be number");
 });
 
 test("source frame request parser rejects path-like identifiers", () => {
@@ -891,7 +891,7 @@ test("source frame request parser rejects path-like identifiers", () => {
     ["segment_id", "  https:example.com  "],
     ["source_id", "  ../outside  "],
   ]) {
-    expect(() => parseSourceFrameRequest({ version: "1.0", frames: [{ ...frame, [key]: value }] })).toThrow("opaque identifier");
+    expect(() => parseSourceFrameRequest({ version: "1.0", frames: [{ ...frame, [key]: value }] })).toThrow();
   }
 });
 

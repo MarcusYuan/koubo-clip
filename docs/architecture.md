@@ -67,6 +67,8 @@ CLI 不读取、不运行、不解释 agent skill。CLI 是普通程序，只消
 
 CLI 内部维护公开 artifact contract registry，作为 runtime validator、schema discovery、template、example、capabilities 索引和 contract digest 的单一结构事实来源。每项声明 artifact ID、文件名、唯一当前 schema version、ownership、role、writer、validator/producer、lifecycle prerequisites 和 schema digest。
 
+Registry 的递归 schema validator 是所有 Agent/Host authored artifact 的结构校验入口。Runtime parser 只在结构校验通过后做类型化和项目上下文检查；不能另行维护一份更严格但不可发现的字段合同。所有可写合同必须提供闭合嵌套 schema、完整 template 和可被当前 parser 接受的 example。
+
 Ownership 固定分为：
 
 - `agent_authored`：Skill 引导 Agent 编写，CLI 提供完整 schema、template、合法 example 和聚合 validator；
@@ -300,3 +302,7 @@ strict machine: bundle + explicit source map -> verified binding -> executeResol
 Skill 只存在于 authoring 段。CLI compiler 把 agent decisions 解析成冻结后的执行闭包；strict runtime 与 authoring runtime 只在 `executeResolvedRenderPlan` 汇合。Strict runtime 不读取 transcript、analysis、edit-plan 或 enrichment-plan，也没有 fallback。
 
 Source lineage 分为 `source-identity:*`、`source-materialization` 和 `source:*` bytes。规划依赖 identity；ASR、抽帧和本地 render 才依赖 bytes。External evidence import 先验证完整批次的 containment、regular-file、hash、size、JPEG probe 和 request/EDL mapping，再原子发布 canonical evidence。
+
+Evidence JPEG probe 在进程边界区分 executable/transport unavailable、non-zero exit、invalid output、codec mismatch 和 dimension mismatch；size、hash、request/candidate binding 分别校验。错误只暴露稳定 code 和脱敏事实。
+
+Lineage 可以包含 `proposal-selection:*`、`source-identity:*` 等逻辑节点，但 `.virtual/*` 是内部实现路径，不进入公开 `artifacts[].path`。外部所需逻辑 fingerprint 通过 status 的 `fingerprints` map 或对应命令结果获取。当任一 source 未 materialize 时，authoring status 选择 distributed execution 分支：合同导出前推荐 export，导出后声明 handoff ready 并给出 strict consumer 命令链；本地 project render/inspect 不进入该分支的完成条件。

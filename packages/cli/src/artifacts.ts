@@ -1,5 +1,5 @@
 import { assertKnownVendoredElement, type VendoredElementType } from "./hyperframes-registry";
-import { assertProductionProposalContract } from "./artifact-contracts";
+import { assertArtifactContract, assertProductionProposalContract } from "./artifact-contracts";
 
 export type TimingGranularity = "word" | "segment" | "text-only";
 
@@ -890,7 +890,17 @@ export type ProjectStatusArtifact = {
   blockers: StatusBlocker[];
   last_successful_checkpoint?: { stage: string; completed_at: string; output_artifact_keys: string[] };
   sources?: Array<{ source_id: string; identity: "available"; materialization: "verified" | "unbound" | "invalid" }>;
-  render_contract?: { ready: boolean; blockers: StatusBlocker[]; current_authoring_fingerprint?: ArtifactFingerprint; current_contract_digest?: string };
+  render_contract?: {
+    ready: boolean;
+    export_ready: boolean;
+    exported: boolean;
+    execution_mode: "local" | "distributed";
+    handoff_ready: boolean;
+    next_commands: string[];
+    blockers: StatusBlocker[];
+    current_authoring_fingerprint?: ArtifactFingerprint;
+    current_contract_digest?: string;
+  };
 };
 
 export type ProviderModeCapability = {
@@ -1494,6 +1504,7 @@ export function parseVisualReview(value: unknown): VisualReviewArtifact {
 }
 
 export function parseSourceFrameRequest(value: unknown): SourceFrameRequestArtifact {
+  assertArtifactContract("source-frame-request", value);
   const obj = strictRecord(value, "source frame request", ["version", "frames"]);
   const version = string(obj.version, "version");
   if (version !== "1.0") throw new Error('source frame request version must be "1.0"');

@@ -199,6 +199,8 @@ Inventory JSON 不能代替它所引用文件的 bytes lineage。Manifest 为媒
 
 集合 fingerprint 由成员 key 和 semantic/bytes fingerprint 按稳定 ID 排序后组合。消费者只绑定实际使用的成员 key；未选 candidate 或未引用 asset 的变化不能让 render stale。
 
+这些动态 key 中一部分通过 `.virtual/*` 实现，但虚拟路径不是外部文件合同。`project status.artifacts[]` 只返回可读取的 managed artifacts；逻辑节点的 fingerprint 继续通过 `fingerprints[dynamic-key]` 返回。
+
 ## 权威事实划分
 
 ### Project 与素材理解
@@ -389,6 +391,8 @@ Pure cleanup result 的 `inputs[]` 只绑定 EDL、EDL 引用的 source members 
 - next valid commands；
 - blockers 和可执行 remediation；
 - last successful checkpoint。
+
+`render_contract` 还必须区分 `export_ready`、`exported`、`execution_mode` 和 `handoff_ready`。任一 source unbound 时使用 distributed 分支：本地 render/inspect stage 为 `not_applicable`；export 前 next command 是 export，export 后 next commands 是 strict verify/bind/render/inspect，不要求本机 materialization。
 
 宿主不扫描目录，不比较 mtime，不根据 Markdown 或 MP4 文件名猜状态。
 

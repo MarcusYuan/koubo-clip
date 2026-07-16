@@ -48,6 +48,7 @@ import {
 } from "./project";
 import { computeRendererResourcesDigest } from "./delivery-identity";
 import { verifyInstalledDelivery } from "./delivery-runtime";
+import { artifactReference, commitProjectStage, inputFingerprint, readProjectArtifactManifest, recordJsonArtifact } from "./project-lineage";
 
 const fsRuntime = nodeFs as unknown as { realpathSync(path: string): string; lstatSync(path: string): { isSymbolicLink(): boolean }; renameSync(from: string, to: string): void };
 const CAPABILITY_IDS = [
@@ -64,6 +65,11 @@ type CommandResult<T extends string, D> = { ok: true; command: T; data: D } | { 
 
 export function exportRenderContract(projectPath: string, outputDir: string): CommandResult<"render-contract.export", { bundle_path: string; contract_digest: string; asset_count: number }> {
   let staging = "";
+  let publishedBundle = false;
+  let wroteProjectContract = false;
+  const projectContractPath = join(projectPath, projectArtifacts.renderContract);
+  const previousProjectContract = existsSync(projectContractPath) ? readFileSync(projectContractPath) : undefined;
+  const startedAt = new Date().toISOString();
   try {
     verifyInstalledDelivery();
     if (existsSync(outputDir)) throw coded("CONTRACT_INVALID", "render contract output must not already exist");
@@ -140,11 +146,49 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
     writeJson(join(staging, "render-contract.json"), contract);
     fsRuntime.renameSync(staging, outputDir);
     staging = "";
-    writeJson(join(projectPath, projectArtifacts.renderContract), contract);
+    publishedBundle = true;
+    writeJson(projectContractPath, contract);
+    wroteProjectContract = true;
+    const lifecycle = readProjectArtifactManifest(projectPath);
+    const inputKeys = ["sources", "edl", "transcript", ...(plan ? ["enrichment-plan"] : []), ...(plan && existsSync(assetManifestPath) ? ["asset-manifest"] : [])];
+    const inputs = inputKeys.map((key) => {
+      const record = lifecycle?.artifacts[key];
+      if (!record) throw coded("CONTRACT_INVALID", `render contract export requires current ${key}`);
+      return artifactReference(record);
+    });
+    const recordedAt = new Date().toISOString();
+    const contractRecord = recordJsonArtifact({
+      project_path: projectPath,
+      key: "render-contract",
+      path: projectArtifacts.renderContract,
+      role: "derived",
+      schema_version: contract.schema_version,
+      authored_by: "cli",
+      command: "render-contract.export",
+      mode: "produced",
+      inputs,
+      value: contract,
+      recorded_at: recordedAt,
+    });
+    commitProjectStage({
+      project_path: projectPath,
+      stage: "render-contract.export",
+      command: "render-contract.export",
+      input_fingerprint: inputFingerprint(inputs),
+      inputs,
+      records: [contractRecord],
+      started_at: startedAt,
+      completed_at: recordedAt,
+    });
     void frozenAssets;
     return { ok: true, command: "render-contract.export", data: { bundle_path: outputDir, contract_digest: contract.contract_digest, asset_count: contractAssets.length } };
   } catch (error) {
     if (staging) rmSync(staging, { recursive: true, force: true });
+    if (publishedBundle) rmSync(outputDir, { recursive: true, force: true });
+    if (wroteProjectContract) {
+      if (previousProjectContract) writeFileSync(projectContractPath, previousProjectContract);
+      else rmSync(projectContractPath, { force: true });
+    }
     return failure("render-contract.export", error, "CONTRACT_INVALID");
   }
 }

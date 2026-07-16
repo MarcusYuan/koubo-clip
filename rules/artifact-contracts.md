@@ -18,6 +18,7 @@
 - Schema 必须覆盖 required、optional、enum、array limits、unknown/additional properties、格式约束和可静态表达的跨字段约束。
 - Template 必须结构闭合，不得用 `{}`、`...` 或“省略字段遵循 schema”代替必填嵌套对象；template 不得携带会被 CLI 静默采用的业务默认决策。
 - Example 必须完整、无 placeholder violation，并通过同版本正式 CLI validator。
+- 可写 schema 的所有嵌套 object/array item 必须定义实际字段与 unknown-field policy；禁止用裸 `type:object` 隐藏 runtime parser 要求。注册表测试必须验证每个可写 example 通过对应当前 parser。
 
 ## Skill 与 Agent
 
@@ -31,6 +32,7 @@
 - CLI 保持 fail-closed：缺失、类型错误、非法 enum、unknown field、跨字段约束和上下文绑定错误不得被接受或静默补全。
 - 对 Agent/Host authored artifact，一次 JSON 校验应尽可能返回完整且有界的 `issues[]`。每项至少包含 JSON path、稳定 keyword/code 和 message；顶层同时返回 artifact、schema version 和 schema digest。
 - 所有作者合同校验使用同一结构化错误面，不保留只返回第一个错误的旧响应别名。
+- `source-frame-request` 结构错误使用 `ARTIFACT_VALIDATION_FAILED` 聚合返回；只在 JSON 无法读取等尚未形成 artifact value 的情况下使用 request IO 类错误。
 - 聚合结构错误后，项目状态、lineage、candidate/source binding 等运行态错误可以分阶段返回；CLI 不替 Agent 做业务方向、剪辑、素材或文案选择。
 
 ## 单一事实来源

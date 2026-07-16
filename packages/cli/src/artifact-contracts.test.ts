@@ -3,11 +3,13 @@ import {
   ArtifactValidationError,
   artifactContractIndex,
   artifactContractsDigest,
+  assertArtifactContract,
   assertProductionProposalContract,
   getArtifactContract,
   productionProposalExample,
+  sourceFrameRequestExample,
 } from "./artifact-contracts";
-import { parseProductionProposal } from "./artifacts";
+import { parseProductionProposal, parseSourceFrameRequest } from "./artifacts";
 
 const writableArtifactIds = [
   "production-proposal",
@@ -77,6 +79,7 @@ test("contract registry exposes every external JSON entry point without version 
     expect(contract?.external_writes_allowed).toBe(true);
     expect(contract?.ownership === "agent_authored" || contract?.ownership === "host_authored").toBe(true);
     expect(contract?.template === undefined).toBe(false);
+    expect(contract?.example === undefined).toBe(false);
     expect(contract?.template_requires_filling).toBe(true);
     expect(index[artifactId]?.schema_version).toBe(contract?.schema_version);
     expect(index[artifactId]?.schema_digest).toBe(contract?.schema_digest);
@@ -100,6 +103,49 @@ test("contract registry exposes every external JSON entry point without version 
   });
 });
 
+test("every writable contract has closed array items and a self-validating example", () => {
+  for (const artifactId of writableArtifactIds) {
+    const contract = getArtifactContract(artifactId)!;
+    expect(hasBareObjectArrayItem(contract.schema)).toBe(false);
+    assertArtifactContract(artifactId, contract.example);
+  }
+});
+
+test("source frame request contract is complete and runtime-equivalent", () => {
+  expect(parseSourceFrameRequest(sourceFrameRequestExample).frames[0]).toEqual(sourceFrameRequestExample.frames[0]);
+  const invalid = {
+    version: "1.0",
+    frames: [
+      { id: "../bad", source_id: "", time_seconds: -1, unexpected: true },
+      { id: "duplicate", source_id: "src-001", time_seconds: 1, transcript_quote: "quote", reason: "reason" },
+      { id: "duplicate", source_id: "src-001", time_seconds: 2, transcript_quote: "quote", reason: "reason" },
+    ],
+  };
+  try {
+    parseSourceFrameRequest(invalid);
+    throw new Error("expected source frame request validation failure");
+  } catch (error) {
+    if (!(error instanceof ArtifactValidationError)) throw error;
+    const issues = error.issues.map((issue) => `${issue.path}:${issue.keyword}`);
+    expect(issues).toContain("/frames/0/id:pattern");
+    expect(issues).toContain("/frames/0/reason:required");
+    expect(issues).toContain("/frames/0/time_seconds:minimum");
+    expect(issues).toContain("/frames/0/transcript_quote:required");
+    expect(issues).toContain("/frames/0/unexpected:additionalProperties");
+    expect(issues).toContain("/frames/2/id:unique");
+  }
+});
+
+test("source frame request rejects non-current version before field repair", () => {
+  try {
+    parseSourceFrameRequest({ version: "0.9", frames: [] });
+    throw new Error("expected version failure");
+  } catch (error) {
+    expect((error as { code?: string }).code).toBe("CONTRACT_SCHEMA_UNSUPPORTED");
+    expect((error as { schema_version?: string }).schema_version).toBe("1.0");
+  }
+});
+
 test("CLI-owned contracts are discoverable but never authorable", () => {
   for (const artifactId of ["edl", "render-contract", "render-contract-result", "inspection", "delivery-manifest"]) {
     const contract = getArtifactContract(artifactId);
@@ -110,3 +156,15 @@ test("CLI-owned contracts are discoverable but never authorable", () => {
     expect(Boolean(contract?.producer)).toBe(true);
   }
 });
+
+function hasBareObjectArrayItem(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some(hasBareObjectArrayItem);
+  const record = value as Record<string, unknown>;
+  const items = record.items;
+  if (items && typeof items === "object" && !Array.isArray(items)) {
+    const item = items as Record<string, unknown>;
+    if (item.type === "object" && item.properties === undefined && item.additionalProperties === undefined) return true;
+  }
+  return Object.values(record).some(hasBareObjectArrayItem);
+}

@@ -85,6 +85,8 @@ koubo-clips/<slug>/
 
 文件存在不代表 artifact 有效。受管理 artifact 只有 `missing`、`pending_validation`、`current`、`stale`、`invalid` 五种状态；宿主只通过 `project status --json` 恢复流程，不扫描目录、比较 mtime 或猜文件名。JSON 是机器合同，Markdown 是可重建 human view，不能被执行命令当作事实输入。
 
+`.virtual/*` 只用于内部 lineage，不是可读取 managed artifact，不能出现在公开 `artifacts[].path`。动态 selection/source identity fingerprint 通过 status 的 `fingerprints` map 返回。
+
 每个公开 JSON artifact 还必须在 CLI artifact contract registry 中声明 ownership。Skill/Agent/Host 写入的 artifact 通过版本化 schema/template/example 获得完整作者合同；CLI-owned derived/result artifact 只能由声明的 producer 写入，外部只可 verify/inspect。文件布局不构成作者合同，宿主不得通过扫描目录或读取源码恢复 schema。
 
 Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`stale`、`failed`、`not_applicable`。Stage complete 需要 current outputs 和成功 attempt；同一输入的失败重试通过 `last_attempt` 报告，不能抹掉仍有效的旧成功，也不能凭残留文件制造成功。
@@ -213,3 +215,4 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 - `source-frames --import` 和 `focus-frames --import` 只读取 evidence directory 内的 manifest-relative regular JPEG；拒绝 symlink、escape、partial batch、hash/size/probe 或 binding mismatch。
 - Focus import 必须用 current EDL 重新计算 output-time 到 source/time 的映射；外部 manifest 的映射只作为待验证声明。
 - Detached source 没有 materialization 时，本地 ASR/抽帧/render 返回 `SOURCE_BINDING_REQUIRED`，不得覆盖旧 evidence；identity-only 规划阶段不因此整体 blocked。
+- Detached project 在 current contract 导出后由 status 指向 distributed strict execution；本地 render/inspect 不适用，host 不得手写 source materialization。

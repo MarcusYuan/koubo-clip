@@ -62,6 +62,7 @@ Read only the references needed for the current stage:
    - Do not ask the user to select a direction and then ask again to confirm the execution plan. The options are the single confirmation surface.
    - Before confirmation, write asset intent only: intent, query, provider preference, license/cost/source risk, and reason. Do not write final `asset_id`, local path, provider URL, download URL, absolute path, or raw MCP payload.
 7. Run `koubo-clip project proposal <project> --provider-mode <mode> --json`. Show the complete options and preserve `proposal_fingerprint` plus the `option_selection_fingerprints` map. The user confirms exactly once: `OK` selects `recommended_option_id`, or they provide one option id. Material changes require updating and revalidating the proposal before the final selection.
+   - On resume, the same selection fingerprint is available from `project status --json` at `fingerprints["proposal-selection:<option-id>"]`. Never read `.virtual/*`; those paths are CLI-internal lineage only.
 8. Convert the confirmed cleanup choice into `edit-plan.json` with `contract_version:"1.0"`, `confirmed_option_id`, and the matching `proposal_selection_fingerprint`. Do not ask users to edit JSON unless they want to. CLI consumers validate this binding and automatically rebuild a stale EDL when prerequisites are complete.
 9. Run `project compile-edl <project>` after the confirmed edit plan. For UI-facing inserts, write `focus-candidates.json`, then run `project focus-candidates`, `project focus-frames`, `project focus-grounding`, and `project focus-review` with the same provider mode. In detached authoring, fulfill focus evidence externally and use `project focus-frames <project> --import <evidence-dir>`; the CLI verifies each output time against the current portable EDL mapping rather than trusting an external source mapping.
 10. For approved visual assets, write `visual-request.json`.
@@ -86,6 +87,7 @@ Read only the references needed for the current stage:
 15. For distributed execution, transfer the immutable bundle through the platform. The remote machine must use the same verified Koubo Clip delivery identity and invoke `render-contract verify`, `bind`, `render`, then `inspect`. The remote executor must not receive or consult transcript, analysis, edit-plan, enrichment-plan, or this Skill.
 16. Run `project status --json` again and report the current authoring fingerprint, contract digest or canonical local deliverable, render/inspection fingerprints, removed sections, enrichment choices, grounded evidence, checks, warnings, and skipped or failed stages.
    - For local execution, select the output only through `render-result.json.canonical_output_key`; never guess from a filename.
+   - When `render_contract.execution_mode` is `distributed` and `handoff_ready` is true, stop authoring and transfer the exported bundle. Follow its strict `next_commands`; do not create source materialization or run local project render.
 
 ## Hard Rules
 

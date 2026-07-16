@@ -165,7 +165,15 @@ CLI failures 应使用稳定 code。Provider mode 相关 blocker 至少包含 `c
 - `RAW_PROVIDER_RESULT_REJECTED`: raw MCP/provider payload 被写入 artifact，而不是归一化 candidate 或 landed-asset metadata。
 - `PROVENANCE_MISSING`: landed asset 缺少最小审计 metadata，例如 provider/source label、license/usage note、hash、type 或 acquired_at。
 - `SOURCE_FRAME_REQUEST_MISSING`: `source-frame-request.json` 不存在。
-- `SOURCE_FRAME_REQUEST_INVALID`: request 无法读取、无法 parse 或 strict validation 失败。
+- `SOURCE_FRAME_REQUEST_INVALID`: request 文件无法读取或 JSON 无法 parse；结构和静态语义错误使用聚合的 `ARTIFACT_VALIDATION_FAILED`。
+- `EVIDENCE_PROBE_UNAVAILABLE`: ffprobe executable/transport 无法启动。
+- `EVIDENCE_PROBE_FAILED`: ffprobe 已启动但非零退出。
+- `EVIDENCE_PROBE_OUTPUT_INVALID`: ffprobe 输出无法解析或缺少有效视频流。
+- `EVIDENCE_CODEC_MISMATCH`: evidence codec 不是 JPEG `mjpeg`。
+- `EVIDENCE_DIMENSION_MISMATCH`: evidence 尺寸与 manifest 不一致。
+- `EVIDENCE_SIZE_MISMATCH`: evidence byte size 与 manifest 不一致。
+- `EVIDENCE_HASH_MISMATCH`: evidence SHA-256 与 manifest 不一致。
+- `EVIDENCE_BINDING_MISMATCH`: evidence request/candidate/source/time binding 不一致。
 - `SOURCE_FRAME_SOURCE_NOT_FOUND`: source manifest/source id/path 无效，或 source 不是可读的 project-local regular file。
 - `SOURCE_FRAME_TIME_OUT_OF_RANGE`: request time 达到或超过 source duration。
 - `SOURCE_FRAME_FFMPEG_FAILED`: FFmpeg 无法执行、返回失败或未产生输出。
@@ -184,3 +192,4 @@ CLI failures 应使用稳定 code。Provider mode 相关 blocker 至少包含 `c
 - Contract bundle、binding output 和 run directory 均不可覆盖。公共合同/result 必须 commit-last。
 - Strict render 只能调用冻结执行内核；禁止调用 authoring EDL compiler、transcript-to-SRT、enrichment validator、storyboard builder 或 provider。
 - Unknown schema/capability/runtime digest、asset tamper、binding member 缺失/多余、source replacement 和 output tamper 都必须返回稳定非零错误。
+- Detached authoring 导出 current contract 后，status 必须进入 distributed handoff，不再推荐本地 `project render` 或要求 `source-materialization.json`。

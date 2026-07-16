@@ -567,7 +567,7 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
   }
 
   const artifactStatuses = [...nodes.values()]
-    .filter((node) => !node.key.startsWith("virtual:"))
+    .filter((node) => !node.path.startsWith(".virtual/"))
     .map((node) => artifactStatus(node, evaluations.get(node.key)))
     .sort((left, right) => left.key.localeCompare(right.key));
 
@@ -588,6 +588,27 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
   }
 
   const nextStage = stages.find((stage) => stage.state !== "complete" && stage.state !== "not_applicable");
+  const detachedExecution = Boolean(parsed.sources?.sources.length)
+    && parsed.sources!.sources.some((source) => evaluations.get(`source:${source.source_id}`)?.state !== "current");
+  const contractStage = stages.find((stage) => stage.stage === "contract-export");
+  const exportReady = evaluations.get("edl")?.state === "current"
+    && (!nodes.get("enrichment-plan")?.exists || evaluations.get("enrichment-plan")?.state === "current");
+  const currentContractDigest = nodes.get("render-contract")?.exists && nodes.get("render-contract")?.valid
+    ? (readJson(resolve(rootPath, projectArtifacts.renderContract)) as { contract_digest?: string }).contract_digest
+    : undefined;
+  const exported = contractStage?.state === "complete" && typeof currentContractDigest === "string";
+  const strictNextCommands = [
+    "koubo-clip render-contract verify <bundle-dir>",
+    "koubo-clip render-contract bind <bundle-dir> --source-map <source-map.json> --output <bindings.json>",
+    "koubo-clip render-contract render <bundle-dir> --bindings <bindings.json> --output <run-dir>",
+    "koubo-clip render-contract inspect <bundle-dir> --result <run-dir>/render-contract-result.json",
+  ];
+  const renderContractNextCommands = detachedExecution
+    ? exported ? strictNextCommands : exportReady ? contractStage?.next_commands ?? [] : []
+    : [];
+  const nextCommands = detachedExecution && (exported || exportReady)
+    ? renderContractNextCommands
+    : nextStage?.next_commands ?? [];
 
   return {
     contract_version: "1.0",
@@ -599,7 +620,7 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
     fingerprints,
     ...(canonicalDeliverable ? { canonical_deliverable: canonicalDeliverable } : {}),
     render_inputs: parsed.renderResult?.inputs ?? [],
-    next_commands: uniqueStrings(nextStage?.next_commands ?? []),
+    next_commands: uniqueStrings(nextCommands),
     blockers: uniqueBlockers(blockers),
     ...(lastSuccessfulCheckpoint(manifest) ? { last_successful_checkpoint: lastSuccessfulCheckpoint(manifest)! } : {}),
     sources: (parsed.sources?.sources ?? []).map((source) => ({
@@ -608,15 +629,18 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
       materialization: evaluations.get(`source:${source.source_id}`)?.state === "current" ? "verified" as const : "unbound" as const,
     })),
     render_contract: {
-      ready: evaluations.get("edl")?.state === "current" && (!nodes.get("enrichment-plan")?.exists || evaluations.get("enrichment-plan")?.state === "current"),
-      blockers: stages.find((stage) => stage.stage === "contract-export")?.blockers ?? [],
+      ready: exportReady,
+      export_ready: exportReady,
+      exported,
+      execution_mode: detachedExecution ? "distributed" : "local",
+      handoff_ready: detachedExecution && exported,
+      next_commands: renderContractNextCommands,
+      blockers: contractStage?.blockers ?? [],
       ...(evaluations.get("edl")?.fingerprint ? { current_authoring_fingerprint: inputFingerprint([
         { key: "edl", fingerprint: evaluations.get("edl")!.fingerprint! },
         ...(evaluations.get("enrichment-plan")?.fingerprint ? [{ key: "enrichment-plan", fingerprint: evaluations.get("enrichment-plan")!.fingerprint! }] : []),
       ]) } : {}),
-      ...(nodes.get("render-contract")?.exists && nodes.get("render-contract")?.valid
-        ? { current_contract_digest: (readJson(resolve(rootPath, projectArtifacts.renderContract)) as { contract_digest?: string }).contract_digest }
-        : {}),
+      ...(currentContractDigest ? { current_contract_digest: currentContractDigest } : {}),
     },
   };
 }
@@ -1350,6 +1374,8 @@ function buildStages(
   const enrichmentStarted = ["asset-usage-plan", "enrichment-plan", "asset-manifest", "storyboard"].some((key) => nodes.get(key)?.exists);
   const currentEditPlanRequiresProposal = parsed.editPlan?.contract_version === "1.0";
   const renderOutputKey = parsed.renderResult?.canonical_output_key;
+  const detachedExecution = Boolean(parsed.sources?.sources.length)
+    && parsed.sources!.sources.some((source) => evaluations.get(`source:${source.source_id}`)?.state !== "current");
   const definitions: StageDefinition[] = [
     {
       stage: "create",
@@ -1397,6 +1423,7 @@ function buildStages(
     },
     {
       stage: "contract-export",
+      attemptStage: "render-contract.export",
       command: `koubo-clip render-contract export ${JSON.stringify(rootPath)} --output <bundle-dir>`,
       prerequisites: ["edl", ...(nodes.get("enrichment-plan")?.exists ? ["enrichment-plan"] : [])],
       outputs: ["render-contract"],
@@ -1484,12 +1511,14 @@ function buildStages(
       command: command(rootPath, "render"),
       prerequisites: ["edl", ...(parsed.sources?.contract_version === "2.0" ? ["source-materialization"] : []), ...(nodes.get("enrichment-plan")?.exists ? ["enrichment-plan"] : [])],
       outputs: ["render-result", ...(renderOutputKey ? [renderOutputKey] : [])],
+      notApplicable: detachedExecution,
     },
     {
       stage: "inspect",
       command: command(rootPath, "inspect"),
       prerequisites: ["render-result", ...(renderOutputKey ? [renderOutputKey] : [])],
       outputs: ["inspection"],
+      notApplicable: detachedExecution,
     },
   ];
   return definitions.map((definition) => calculateStage(definition, nodes, evaluations, manifest));
@@ -1576,7 +1605,8 @@ function outputsBelongToStage(
   definition: StageDefinition,
   manifest: ArtifactManifest | undefined,
 ): boolean {
-  const owner = `project.${definition.attemptStage ?? definition.stage}`;
+  const attemptStage = definition.attemptStage ?? definition.stage;
+  const owner = attemptStage.includes(".") ? attemptStage : `project.${attemptStage}`;
   return outputs.every(({ key }) => {
     const record = manifest?.artifacts[key];
     return record?.produced_by_command === owner || record?.validated_by_command === owner;
