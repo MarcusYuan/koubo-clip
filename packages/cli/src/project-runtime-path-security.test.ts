@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import { expect, test } from "bun:test";
 import { projectArtifacts, type RenderResult } from "./artifacts";
 import { commandExists, createProject, exploreProject, inspectProject, renderProject } from "./project";
+import { confirmProposalAndWriteEditPlan } from "./test-fixtures";
 
 test("inspect rejects project artifact symlinks that resolve outside the project", async () => {
   if (!commandExists("ffmpeg")) return;
@@ -23,7 +24,7 @@ test("inspect rejects project artifact symlinks that resolve outside the project
   );
   const explored = await exploreProject(project, { asr: "external" });
   if (!explored.ok) throw new Error(explored.error.message);
-  writeFileSync(join(project, projectArtifacts.editPlan), JSON.stringify({ decisions: [] }));
+  confirmProposalAndWriteEditPlan(project);
   const rendered = renderProject(project);
   if (!rendered.ok) throw new Error(rendered.error.message);
 

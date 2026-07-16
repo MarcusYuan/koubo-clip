@@ -42,7 +42,7 @@ const inventoryIds = [
   "visual_inspection_report",
 ] as const;
 
-test("HyperFrames catalog covers the useful migration inventory", () => {
+test("HyperFrames catalog covers the current renderable inventory", () => {
   const ids = HYPERFRAMES_BLOCK_CATALOG.map((entry) => entry.id);
   for (const id of inventoryIds) expect(ids).toContain(id);
   for (const entry of HYPERFRAMES_BLOCK_CATALOG) {

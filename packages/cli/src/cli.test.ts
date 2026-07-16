@@ -15,6 +15,7 @@ test("prints help", async () => {
   expect(code).toBe(0);
   expect(output).toContain("koubo-clip doctor");
   expect(output).toContain("koubo-clip capabilities --json");
+  expect(output).toContain("koubo-clip artifact contract <artifact-id> --json");
   expect(output).toContain("skills path");
   expect(output).toContain("skills install --target codex|claude|hermes");
   expect(output).toContain("project source-frames <project>");
@@ -69,11 +70,34 @@ test("capabilities reports stable software contracts without probing or loading 
     expect(json.provider_modes.standalone.artifact_contract).toBe("shared");
     expect(json.artifact_schema_versions["artifact-manifest.json"]).toBe("1.0");
     expect(json.error_codes).toContain("ASSET_USAGE_PLAN_CONFLICT");
+    expect(json.artifact_schema_versions["production-proposal.json"]).toBe("2.0");
+    expect(json.artifact_contracts["production-proposal"].schema_version).toBe("2.0");
+    expect(json.capability_ids).toContain("artifact_contract.discovery.v1");
   } finally {
     process.chdir(previousCwd);
     if (old === undefined) delete process.env.LORDICON_API_KEY;
     else process.env.LORDICON_API_KEY = old;
   }
+});
+
+test("artifact contract returns the unique current production proposal contract", async () => {
+  let output = "";
+  const code = await main(["artifact", "contract", "production-proposal", "--json"], { stdout: (text) => (output = text) });
+  expect(code).toBe(0);
+  const result = JSON.parse(output);
+  expect(result.command).toBe("artifact.contract");
+  expect(result.data.schema_version).toBe("2.0");
+  expect(result.data.schema.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
+  expect(result.data.example.options.length).toBe(2);
+  expect(/^sha256:[a-f0-9]{64}$/.test(result.data.schema_digest)).toBe(true);
+});
+
+test("artifact contract rejects version selection and unknown artifacts", async () => {
+  let error = "";
+  expect(await main(["artifact", "contract", "production-proposal", "--version", "1.1", "--json"], { stderr: (text) => (error = text) })).toBe(1);
+  expect(JSON.parse(error).error.code).toBe("ARTIFACT_CONTRACT_ARGUMENT_INVALID");
+  expect(await main(["artifact", "contract", "missing", "--json"], { stderr: (text) => (error = text) })).toBe(1);
+  expect(JSON.parse(error).error.code).toBe("ARTIFACT_CONTRACT_UNSUPPORTED");
 });
 
 test("prints project help before requiring a project path", async () => {
@@ -179,7 +203,7 @@ test("platform project metadata prevents provider env loading without a repeated
   const project = join(dir, "project");
   mkdirSync(project, { recursive: true });
   writeFileSync(join(dir, ".env"), "LORDICON_API_KEY=secret-platform-project-value\n");
-  writeFileSync(join(project, "project.json"), JSON.stringify({ provider_execution_mode: "platform", created_at: "2026-01-01T00:00:00.000Z" }));
+  writeFileSync(join(project, "project.json"), JSON.stringify({ contract_version: "1.0", provider_execution_mode: "platform", created_at: "2026-01-01T00:00:00.000Z" }));
   process.chdir(dir);
   try {
     let output = "";

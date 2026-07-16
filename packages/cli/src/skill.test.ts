@@ -46,6 +46,8 @@ test("koubo-clip skill documents proposal confirmation gate", () => {
   expect(skill).toContain("The user confirms exactly once");
   expect(`${skill}\n${workflow}`).toContain("proposal_fingerprint");
   expect(`${skill}\n${workflow}`).toContain("option_selection_fingerprints");
+  expect(`${skill}\n${workflow}`).toContain("koubo-clip artifact contract production-proposal --json");
+  expect(`${skill}\n${workflow}`).toContain('production-proposal.json` version `2.0`');
   expect(`${skill}\n${workflow}`).toContain("`contract_version:\"1.0\"`, `confirmed_option_id`, and the matching `proposal_selection_fingerprint`");
   expect(skill).toContain("Before user confirmation, do not write `edit-plan.json`, `focus-candidates.json`, any `focus-*` execution artifacts, `visual-request.json`, `music-request.json`, `asset-manifest.json`, or `enrichment-plan.json`");
   expect(`${skill}\n${workflow}\n${media}`).toContain("intent, query, provider preference, license/cost/source risk");
@@ -63,7 +65,7 @@ test("koubo-clip skill collects source frames before business planning without o
   expect(workflow).toContain("project source-frames");
   const skillExplore = skill.indexOf("project explore", skill.indexOf("## Workflow"));
   const skillSourceFrames = skill.indexOf("project source-frames", skillExplore);
-  const skillDirections = skill.indexOf("Write `production-proposal.json`", skillSourceFrames);
+  const skillDirections = skill.indexOf("artifact contract production-proposal", skillSourceFrames);
   expect(skillExplore < skillSourceFrames).toBe(true);
   expect(skillSourceFrames < skillDirections).toBe(true);
   const workflowSourceFrames = workflow.indexOf("project source-frames", workflow.indexOf("## Stages"));
@@ -86,11 +88,28 @@ test("koubo-clip skill resumes from status and keeps one canonical enrichment au
 
   const workflowStatus = workflow.indexOf("project status <project> --json");
   expect(workflowStatus < workflow.indexOf("## Stages")).toBe(true);
-  expect(`${skill}\n${workflow}\n${planning}`).toContain("`enrichment-plan.json` is the only canonical");
+  expect(`${skill}\n${workflow}\n${planning}`).toContain("the only canonical final visual/audio usage plan");
   expect(`${skill}\n${workflow}\n${planning}`).toContain("asset-usage-plan.json");
   expect(`${skill}\n${workflow}\n${planning}`).toContain("normalize");
   expect(`${skill}\n${workflow}`).toContain("ASSET_USAGE_PLAN_CONFLICT");
   expect(skill).toContain("never infer state by scanning files");
+});
+
+test("koubo-clip skill uses CLI contracts instead of parallel schemas", () => {
+  const skill = readFileSync("skills/koubo-clip/SKILL.md", "utf8");
+  const workflow = readFileSync("skills/koubo-clip/references/workflow.md", "utf8");
+  const planning = readFileSync("skills/koubo-clip/references/business-planning.md", "utf8");
+  const body = `${skill}\n${workflow}\n${planning}`;
+
+  expect(body).toContain("koubo-clip artifact contract <artifact-id> --json");
+  expect(body).toContain("profile + elements + audio");
+  expect(body).toContain("caption_identity");
+  expect(body).toContain("audio.music[]");
+  expect(body).toContain("audio.sfx[]");
+  expect(body.includes("The omitted fields in this compact example")).toBe(false);
+  expect(body.includes('"direction_id"')).toBe(false);
+  expect(body.includes('"visual_asset_slots"')).toBe(false);
+  expect(body.includes('"version": "1.1"')).toBe(false);
 });
 
 test("koubo-clip skill and READMEs use render-result and inspection as completion evidence", () => {

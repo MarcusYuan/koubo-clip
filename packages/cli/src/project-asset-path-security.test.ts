@@ -6,6 +6,7 @@ import { expect, test } from "bun:test";
 import { projectArtifacts } from "./artifacts";
 import { acquireVisualAssets } from "./visual/acquire";
 import { commandExists, createProject, enrichPlanProject, exploreProject, renderProject } from "./project";
+import { confirmProposalAndWriteEditPlan } from "./test-fixtures";
 
 test("enrich and render reject asset symlinks that resolve outside the project", async () => {
   if (!commandExists("ffmpeg")) return;
@@ -22,12 +23,10 @@ test("enrich and render reject asset symlinks that resolve outside the project",
   writeFileSync(
     join(project, projectArtifacts.enrichmentPlan),
     JSON.stringify({
-      version: "1.2",
-      profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor" },
-      captions: { enabled: false, identity: "anchor", emphasis: [] },
-      cards: [{ id: "escape-card", start: 0.2, end: 1.2, kind: "image", title: "Escape", asset_id: "escape", zone: "right_panel", reason: "security regression" }],
-      music: [],
-      elements: [],
+      version: "2.0",
+      profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor", layout: "stack", style: "whiteboard", frame: "clean" },
+      elements: [{ id: "escape-card", source: "agent", element_id: "escape", element_type: "visual_asset", start: 0.2, end: 1.2, asset_id: "escape", zone: "right_panel", reason: "security regression" }],
+      audio: { music: [], sfx: [] },
     }),
   );
 
@@ -139,7 +138,7 @@ async function readyProject(): Promise<{ project: string; root: string }> {
   );
   const explored = await exploreProject(project, { asr: "external" });
   if (!explored.ok) throw new Error(explored.error.message);
-  writeFileSync(join(project, projectArtifacts.editPlan), JSON.stringify({ decisions: [] }));
+  confirmProposalAndWriteEditPlan(project);
   return { project, root };
 }
 

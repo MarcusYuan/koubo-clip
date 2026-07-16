@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 import type { ArtifactManifest, ProductionProposalArtifact } from "./artifacts";
+import { productionProposalExample } from "./artifact-contracts";
 import {
   commandExists,
   createProject,
@@ -15,7 +16,7 @@ import {
 } from "./project";
 import { projectStatus } from "./project-status";
 
-test("legacy first explore registers the project and immutable source root before derived artifacts", async () => {
+test("pre-contract project explore fails closed", async () => {
   const root = mkdtempSync(join(tmpdir(), "koubo-owner-legacy-"));
   const project = join(root, "project");
   mkdirSync(join(project, "source"), { recursive: true });
@@ -37,8 +38,10 @@ test("legacy first explore registers the project and immutable source root befor
   writeTranscript(project, "legacy transcript");
 
   const explored = await exploreProject(project, { asr: "external" });
-  expect(explored.ok).toBe(true);
-  if (!explored.ok) throw new Error(explored.error.message);
+  expect(explored.ok).toBe(false);
+  if (explored.ok) throw new Error("expected legacy project rejection");
+  expect(explored.error.code).toBe("PROJECT_EXPLORE_FAILED");
+  return;
 
   const manifest = readManifest(project);
   expect(Object.keys(manifest.artifacts).sort()).toContain("project");
@@ -74,11 +77,8 @@ test("visual review is not an implicit asset authorization source", () => {
     ],
   });
   writeJson(join(project, "enrichment-plan.json"), {
-    version: "1.2",
-    profile: { source_mode: "screen_recording" },
-    captions: { enabled: false, identity: "anchor" },
-    cards: [],
-    music: [],
+    version: "2.0",
+    profile: { source_mode: "screen_recording", aspect_ratio: "source", caption_identity: "anchor", layout: "overlay", style: "minimal", frame: "clean" },
     elements: [
       {
         id: "reviewed-visual",
@@ -91,6 +91,7 @@ test("visual review is not an implicit asset authorization source", () => {
         reason: "show the reviewed image",
       },
     ],
+    audio: { music: [], sfx: [] },
   });
   writeJson(join(project, "visual-review.json"), {
     version: "1.0",
@@ -111,10 +112,10 @@ test("visual review is not an implicit asset authorization source", () => {
     warnings: [],
   });
   const edl = {
+    contract_version: "2.0" as const,
     entries: [
       {
         source_id: "src-001",
-        source_path: "source/001-original.mp4",
         start: 0,
         end: 1,
         output_order: 0,
@@ -137,7 +138,7 @@ test("visual review is not an implicit asset authorization source", () => {
     ],
   });
   writeFileSync(join(project, "visual-review.json"), "not valid JSON");
-  expect(validateEnrichmentPlan(project, edl).plan.version).toBe("1.2");
+  expect(validateEnrichmentPlan(project, edl).plan.version).toBe("2.0");
 });
 
 test("explore rejects changed tracked source bytes before writing derived artifacts", async () => {
@@ -194,14 +195,15 @@ test("review and proposal refuse stale upstream closure instead of blessing it",
 test("compile validates but never re-registers changed material owners", async () => {
   if (!commandExists("ffmpeg")) return;
   const project = await exploredAndReviewedProject(true);
-  writeJson(join(project, "production-proposal.json"), proposalDocument());
+  const proposal = proposalDocument();
+  writeJson(join(project, "production-proposal.json"), proposal);
   const proposed = proposalProject(project);
   expect(proposed.ok).toBe(true);
   if (!proposed.ok) throw new Error(proposed.error.message);
   writeJson(join(project, "edit-plan.json"), {
     contract_version: "1.0",
-    confirmed_option_id: "selected",
-    proposal_selection_fingerprint: proposed.data.option_selection_fingerprints.selected,
+    confirmed_option_id: proposal.recommended_option_id,
+    proposal_selection_fingerprint: proposed.data.option_selection_fingerprints[proposal.recommended_option_id],
     decisions: [],
   });
 
@@ -250,34 +252,9 @@ function writeTranscript(project: string, text: string): void {
 }
 
 function proposalDocument(): ProductionProposalArtifact {
-  return {
-    version: "1.0",
-    source_mode: "talking_head_avatar",
-    presentation_intent: "knowledge_explainer",
-    goal_summary: "keep the concise statement",
-    material_summary: "one short source",
-    recommended_option_id: "selected",
-    options: [
-      {
-        id: "selected",
-        label: "Clean only",
-        recommended: true,
-        reason: "the source already carries the complete idea",
-        cleanup: { cut_candidate_ids: [], keep_strategy: "keep the complete statement", risks: [] },
-        subtitles: { enabled: true, style: "anchor", conflict_notes: [] },
-        visuals: {
-          direction: "none",
-          viewer_job: "follow the statement",
-          requires_grounding: false,
-          notes: [],
-        },
-        images: { needed: false, reason: "no visual gap", missing_assets: [] },
-        music: { source: "none", ducking: true, notes: [] },
-        sfx: { enabled: false, usage: "none", restraint: "none" },
-        requires_confirmation: [],
-      },
-    ],
-  };
+  const proposal = structuredClone(productionProposalExample) as ProductionProposalArtifact;
+  proposal.options.forEach((option) => { option.cleanup.cut_candidate_ids = []; });
+  return proposal;
 }
 
 function ownedMaterialRecords(manifest: ArtifactManifest): unknown {

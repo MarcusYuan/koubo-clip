@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createProject, exploreProject } from "./project";
 import { bindRenderContract, exportRenderContract, inspectBoundContract, renderBoundContract, verifyRenderContractBundle } from "./render-contract-commands";
+import { confirmProposalAndWriteEditPlan } from "./test-fixtures";
 
 test("strict render contract binds source and renders without authoring artifacts", async () => {
     if (spawnSync("ffmpeg", ["-version"]).status !== 0) return;
@@ -18,7 +19,7 @@ test("strict render contract binds source and renders without authoring artifact
       segments: [{ source_id: "src-001", start: 0.1, end: 1.0, text: "contract caption" }],
     }));
     expect((await exploreProject(project, { asr: "external" })).ok).toBe(true);
-    writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ decisions: [] }));
+    confirmProposalAndWriteEditPlan(project);
 
     const bundle = join(root, "bundle");
     const exported = exportRenderContract(project, bundle);
@@ -66,7 +67,7 @@ test("strict render contract fails closed after source replacement", async () =>
     createProject([source], { projectPath: project });
     writeFileSync(join(project, "transcript.json"), JSON.stringify({ timing_granularity: "segment", segments: [{ source_id: "src-001", start: 0, end: 0.8, text: "hello" }] }));
     await exploreProject(project, { asr: "external" });
-    writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ decisions: [] }));
+    confirmProposalAndWriteEditPlan(project);
     const bundle = join(root, "bundle");
     expect(exportRenderContract(project, bundle).ok).toBe(true);
     const sourceMap = join(root, "source-map.json");
@@ -99,7 +100,7 @@ test("strict render contract normalizes different multi-source media before conc
     { source_id: "src-002", start: 0.05, end: 0.8, text: "second" },
   ] }));
   expect((await exploreProject(project, { asr: "external" })).ok).toBe(true);
-  writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ source_order: ["src-001", "src-002"], decisions: [] }));
+  confirmProposalAndWriteEditPlan(project, [], ["src-001", "src-002"]);
   const bundle = join(root, "bundle");
   expect(exportRenderContract(project, bundle).ok).toBe(true);
   const sourceMap = join(root, "source-map.json");

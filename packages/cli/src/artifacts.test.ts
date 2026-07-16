@@ -1,22 +1,22 @@
 import { expect, test } from "bun:test";
 import * as artifacts from "./artifacts";
 import { parseAssetManifest, parseEdl, parseEnrichmentPlan, parseMusicRequest, parseProductionProposal, parseSourcesManifest, parseTranscript, parseVisualAcquisition, parseVisualCandidates, parseVisualRequest, parseVisualReview } from "./artifacts";
+import { productionProposalExample } from "./artifact-contracts";
 
-const manifest = parseSourcesManifest({
-  sources: [
-    { source_id: "src-1", order: 0, original_filename: "a.mp4", project_path: "source/001-original.mp4", duration_seconds: 10 },
-    { source_id: "src-2", order: 1, original_filename: "b.mp4", project_path: "source/002-original.mp4", duration_seconds: 20 },
-  ],
+const source = (source_id: string, order: number, duration_seconds: number) => ({
+  source_id, order, original_filename: `${source_id}.mp4`, local_media_ref: `ref-${source_id}`,
+  identity: {
+    sha256: `sha256:${String(order + 1).repeat(64)}`, size_bytes: 100 + order, duration_seconds,
+    video: { codec_name: "h264", width: 1920, height: 1080, display_width: 1920, display_height: 1080, rotation: 0, avg_frame_rate: "30/1", pixel_format: "yuv420p" },
+    audio: { codec_name: "aac", sample_rate: 48000, channels: 2, channel_layout: "stereo" },
+  },
 });
+
+const manifest = parseSourcesManifest({ contract_version: "2.0", sources: [source("src-1", 0, 10), source("src-2", 1, 20)] });
 
 test("source manifest rejects duplicate source ids", () => {
   expect(() =>
-    parseSourcesManifest({
-      sources: [
-        { source_id: "src-1", order: 0, original_filename: "a.mp4", project_path: "source/a.mp4", duration_seconds: 1 },
-        { source_id: "src-1", order: 1, original_filename: "b.mp4", project_path: "source/b.mp4", duration_seconds: 1 },
-      ],
-    }),
+    parseSourcesManifest({ contract_version: "2.0", sources: [source("src-1", 0, 1), source("src-1", 1, 1)] }),
   ).toThrow("duplicate source_id");
 });
 
@@ -37,24 +37,24 @@ test("transcript validates timing granularity and source ids", () => {
 
 test("edl validates source references and output order", () => {
   const edl = parseEdl(
-    {
+    { contract_version: "2.0",
       entries: [
-        { source_id: "src-1", source_path: "source/001-original.mp4", start: 0, end: 2, output_order: 0, reason: "intro" },
-        { source_id: "src-2", source_path: "source/002-original.mp4", start: 3, end: 4, output_order: 1, reason: "take two" },
+        { source_id: "src-1", start: 0, end: 2, output_order: 0, reason: "intro" },
+        { source_id: "src-2", start: 3, end: 4, output_order: 1, reason: "take two" },
       ],
     },
     manifest,
   );
   expect(edl.entries.map((entry) => entry.source_id)).toEqual(["src-1", "src-2"]);
   expect(() =>
-    parseEdl({ entries: [{ source_id: "src-1", source_path: "source/a.mp4", start: 2, end: 1, output_order: 0, reason: "bad" }] }, manifest),
+    parseEdl({ contract_version: "2.0", entries: [{ source_id: "src-1", start: 2, end: 1, output_order: 0, reason: "bad" }] }, manifest),
   ).toThrow("end must be greater");
   expect(() =>
     parseEdl(
-      {
+      { contract_version: "2.0",
         entries: [
-          { source_id: "src-1", source_path: "source/a.mp4", start: 0, end: 1, output_order: 0, reason: "a" },
-          { source_id: "src-2", source_path: "source/b.mp4", start: 0, end: 1, output_order: 0, reason: "b" },
+          { source_id: "src-1", start: 0, end: 1, output_order: 0, reason: "a" },
+          { source_id: "src-2", start: 0, end: 1, output_order: 0, reason: "b" },
         ],
       },
       manifest,
@@ -62,10 +62,10 @@ test("edl validates source references and output order", () => {
   ).toThrow("duplicate output_order");
   expect(() =>
     parseEdl(
-      {
+      { contract_version: "2.0",
         entries: [
-          { source_id: "src-1", source_path: "source/a.mp4", start: 0, end: 2, output_order: 0, reason: "a" },
-          { source_id: "src-1", source_path: "source/a.mp4", start: 1, end: 3, output_order: 1, reason: "b" },
+          { source_id: "src-1", start: 0, end: 2, output_order: 0, reason: "a" },
+          { source_id: "src-1", start: 1, end: 3, output_order: 1, reason: "b" },
         ],
       },
       manifest,
@@ -73,73 +73,6 @@ test("edl validates source references and output order", () => {
   ).toThrow("overlap");
 });
 
-test("enrichment artifacts validate slots and safe asset paths", () => {
-  const plan = parseEnrichmentPlan({
-    version: "1.0",
-    slots: [
-      { id: "title", type: "title_card", start: 0, end: 1, text: "Hello", reason: "open" },
-      { id: "music", type: "music_segment", start: 0, end: 2, asset_id: "m1", volume: 0.2, fade_seconds: 0.2, ducking: true, reason: "bed" },
-    ],
-  });
-  expect(plan.slots?.length).toBe(2);
-  expect(plan.profile.source_mode).toBe("talking_head_avatar");
-  expect(() => parseEnrichmentPlan({ version: "1.0", cards: [], music: [] })).toThrow("require slots");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.10",
-      slots: [{ id: "title", type: "title_card", start: 0, end: 1, text: "Hello", reason: "open" }],
-    }),
-  ).toThrow("version");
-  expect(() => parseEnrichmentPlan({ version: "1.0", slots: [{ id: "bad", type: "title_card", start: 1, end: 1, text: "x", reason: "bad" }] })).toThrow("end must be greater");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.0",
-      slots: [
-        { id: "a", type: "keyword_callout", start: 0, end: 2, text: "A", reason: "a" },
-        { id: "b", type: "key_point_card", start: 1, end: 3, text: "B", reason: "b" },
-      ],
-    }),
-  ).toThrow("overlap");
-
-  const assets = parseAssetManifest({
-    assets: [
-      {
-        id: "img",
-        path: "assets/images/a.png",
-        type: "image",
-        source: "agent_generated",
-        provenance: "openai-image",
-        reason: "concept art",
-        used_by: ["image-1"],
-        dimensions: { width: 1280, height: 720 },
-        hash: "sha256-demo",
-      },
-      {
-        id: "hit",
-        path: "assets/music/hit.wav",
-        type: "sfx",
-        source: "bundled",
-        provider: "local",
-        license: "bundled",
-        duration_seconds: 0.4,
-        volume: 0.2,
-        fade_seconds: 0.05,
-        ducking: true,
-      },
-    ],
-  });
-  expect(assets.assets[0]?.path).toBe("assets/images/a.png");
-  expect(assets.assets[0]?.source).toBe("agent_generated");
-  expect(assets.assets[0]?.used_by).toEqual(["image-1"]);
-  expect(assets.assets[0]?.dimensions).toEqual({ width: 1280, height: 720 });
-  expect(assets.assets[1]?.type).toBe("sfx");
-  expect(assets.assets[1]?.provider).toBe("local");
-  expect(assets.assets[1]?.license).toBe("bundled");
-  expect(() => parseAssetManifest({ assets: [{ id: "bad", path: "https://example.com/a.png" }] })).toThrow("project-relative");
-  expect(() => parseAssetManifest({ assets: [{ id: "bad", path: "../a.png" }] })).toThrow("must not contain");
-  expect(() => parseAssetManifest({ assets: [{ id: "bad", path: "assets/images/a.png", source: "provider_url" }] })).toThrow("source");
-  expect(() => parseAssetManifest({ assets: [{ id: "bad", path: "assets/images/a.png", dimensions: { width: 0, height: 720 } }] })).toThrow("greater than 0");
-});
 
 test("music request validates sources and safe local paths", () => {
   const request = parseMusicRequest({
@@ -282,31 +215,9 @@ test("visual acquisition artifacts validate metadata urls but keep final paths l
 });
 
 test("production proposal validates options and forbids premature asset refs", () => {
-  const proposal = parseProductionProposal({
-    version: "1.0",
-    source_mode: "mixed",
-    presentation_intent: "knowledge_explainer",
-    goal_summary: "make a concise explainer",
-    material_summary: "screen recording with spoken explanation",
-    recommended_option_id: "balanced",
-    options: [
-      {
-        id: "balanced",
-        label: "克制增强",
-        recommended: true,
-        reason: "keeps the screen readable",
-        cleanup: { cut_candidate_ids: ["c-001-silence"], keep_strategy: "keep all semantic content", risks: [] },
-        subtitles: { enabled: true, style: "anchor", conflict_notes: ["source has hard subtitles"] },
-        visuals: { direction: "transparent focus cues", viewer_job: "follow the important UI step", requires_grounding: true, notes: ["avoid opaque cards"] },
-        images: { needed: true, reason: "abstract concept is not visible", missing_assets: ["concept image"] },
-        music: { source: "minimax", mood: "quiet tech bed", ducking: true, notes: ["review cost before acquisition"] },
-        sfx: { enabled: true, usage: "click accents", restraint: "low volume only" },
-        requires_confirmation: ["generate image", "acquire music"],
-      },
-    ],
-  });
-  expect(proposal.recommended_option_id).toBe("balanced");
-  expect(proposal.options[0]?.music.source).toBe("minimax");
+  const proposal = parseProductionProposal(productionProposalExample);
+  expect(proposal.recommended_option_id).toBe("restrained-enhancement");
+  expect(proposal.options[0]?.music.source).toBe("none");
 
   expect(() =>
     parseProductionProposal({
@@ -323,9 +234,9 @@ test("production proposal validates options and forbids premature asset refs", (
   expect(() =>
     parseProductionProposal({
       ...proposal,
-      options: [{ ...proposal.options[0], music: { source: "spotify", ducking: true, notes: [] } }],
+      options: [{ ...proposal.options[0], music: { source: "spotify", ducking: true, notes: [] } }, proposal.options[1]],
     }),
-  ).toThrow("music.source");
+  ).toThrow("/music/source");
   expect(() =>
     parseProductionProposal({
       ...proposal,
@@ -334,136 +245,39 @@ test("production proposal validates options and forbids premature asset refs", (
         { ...proposal.options[0], id: "same" },
       ],
     }),
-  ).toThrow("duplicate production proposal option id");
+  ).toThrow("duplicate id");
   expect(() =>
     parseProductionProposal({
       ...proposal,
-      options: [{ ...proposal.options[0], images: { ...proposal.options[0]!.images, path: "assets/images/a.png" } }],
+      options: [{ ...proposal.options[0], images: { ...proposal.options[0]!.images, path: "assets/images/a.png" } }, proposal.options[1]],
     }),
-  ).toThrow("must not appear before confirmed asset acquisition");
+  ).toThrow("path is not allowed");
 });
 
-test("project metadata normalizes missing contract version as legacy", () => {
-  expect(artifacts.parseProjectMetadata({ provider_execution_mode: "standalone" }).contract_version).toBe("legacy");
+test("project metadata only accepts the current contract", () => {
+  expect(() => artifacts.parseProjectMetadata({ provider_execution_mode: "standalone" })).toThrow("contract_version");
   expect(artifacts.parseProjectMetadata({ contract_version: "1.0", provider_execution_mode: "platform" }).contract_version).toBe("1.0");
   expect(() => artifacts.parseProjectMetadata({ contract_version: "2.0", provider_execution_mode: "standalone" })).toThrow("contract_version");
 });
 
-test("production proposal v1.1 consumes business direction, execution plan, and asset requirements", () => {
-  const proposal = parseProductionProposal({
-    version: "1.1",
-    source_mode: "mixed",
-    presentation_intent: "short_form",
-    goal_summary: "turn the source into a concise sales video",
-    material_summary: "product demo with a spoken walkthrough",
-    recommended_option_id: "sales_conversion",
-    options: [
-      {
-        id: "sales_conversion",
-        label: "强卖货转化版",
-        recommended: true,
-        reason: "the source contains a clear product payoff",
-        cleanup: { cut_candidate_ids: ["c-001"], keep_strategy: "keep proof and CTA", risks: [] },
-        subtitles: { enabled: true, style: "anchor", conflict_notes: [] },
-        visuals: { direction: "restrained product cues", viewer_job: "see the key feature", requires_grounding: true, notes: [] },
-        images: { needed: false, reason: "the source already shows the product", missing_assets: [] },
-        music: { source: "none", ducking: true, notes: [] },
-        sfx: { enabled: false, usage: "none", restraint: "no decorative effects" },
-        requires_confirmation: ["final duration"],
-        business_direction: {
-          direction_id: "sales_conversion",
-          title: "强卖货转化版",
-          suitable_for: "private-domain conversion",
-          editing_strategy: "lead with payoff, retain proof, close with CTA",
-          expected_duration: "25-40s",
-          asset_style: "strong captions and restrained icons",
-          risks: ["sales tone may reduce authenticity"],
-        },
-        edit_execution_plan: {
-          objective: "drive qualified inquiries",
-          target_audience: "buyers comparing the product",
-          final_duration: "30-40s",
-          narrative_structure: [{ beat: "hook", purpose: "show the payoff", source_hint: "0.0-4.0" }],
-          keep_segments: [{ source_id: "src-1", start: 0.5, end: 4.5, reason: "contains the core proof" }],
-          remove_segments: [{ candidate_id: "c-001", reason: "long pause" }],
-          reorder_segments: [],
-          text_overlays: [{ start: 0.5, end: 2.5, text: "核心卖点", purpose: "reinforce the hook" }],
-          visual_asset_slots: [],
-          music_slots: [],
-          sfx_slots: [],
-          image_slots: [],
-          user_confirmation_summary: "cut the pause, keep the proof, and use restrained captions",
-        },
-        asset_requirements: {
-          visual_asset_slots: [
-            {
-              slot_id: "feature_icon",
-              kind: "visual_asset",
-              purpose: "reinforce the product feature",
-              query: "simple product feature icon",
-              required: false,
-              suggested_time: 1.2,
-              duration_hint: 2.5,
-              placement_hint: "top-right small",
-              provider_hint: "Iconify",
-            },
-          ],
-          music_slots: [],
-          sfx_slots: [],
-          image_slots: [],
-        },
-      },
-    ],
-  });
+test("production proposal v2 consumes business direction, execution plan, and asset requirements", () => {
+  const proposal = parseProductionProposal(productionProposalExample);
+  expect(proposal.version).toBe("2.0");
+  expect(proposal.options[0]?.business_direction.title).toBe("Restrained enhancement");
+  expect(proposal.options[0]?.edit_execution_plan.narrative_structure[0]?.beat).toBe("proof");
 
-  expect(proposal.version).toBe("1.1");
-  if (proposal.version !== "1.1") throw new Error("expected v1.1 proposal");
-  expect(proposal.options[0]?.business_direction.direction_id).toBe("sales_conversion");
-  expect(proposal.options[0]?.edit_execution_plan.keep_segments[0]?.source_id).toBe("src-1");
-  expect(proposal.options[0]?.asset_requirements.visual_asset_slots[0]?.slot_id).toBe("feature_icon");
-
-  expect(() => parseProductionProposal({ ...proposal, options: [{ ...proposal.options[0], asset_requirements: undefined }] })).toThrow("asset_requirements");
+  expect(() => parseProductionProposal({ ...proposal, options: [{ ...proposal.options[0], asset_requirements: undefined }, proposal.options[1]] })).toThrow("asset_requirements");
   expect(() =>
     parseProductionProposal({
       ...proposal,
-      options: [
-        {
-          ...proposal.options[0],
-          asset_requirements: {
-            ...proposal.options[0]!.asset_requirements,
-            visual_asset_slots: [{ ...proposal.options[0]!.asset_requirements.visual_asset_slots[0], asset_id: "already-acquired" }],
-          },
-        },
-      ],
+      options: [{ ...proposal.options[0], asset_requirements: { ...proposal.options[0]!.asset_requirements, visual_asset_slots: [{ slot_id: "icon", kind: "visual_asset", purpose: "show feature", required: false, asset_id: "already-acquired" }] } }, proposal.options[1]],
     }),
   ).toThrow("asset_id is not allowed");
 });
 
-test("production proposal v1.0 remains an explicit legacy parse path", () => {
-  const proposal = parseProductionProposal({
-    version: "1.0",
-    source_mode: "talking_head_avatar",
-    presentation_intent: "knowledge_explainer",
-    goal_summary: "legacy proposal",
-    material_summary: "legacy material",
-    recommended_option_id: "legacy",
-    options: [
-      {
-        id: "legacy",
-        label: "Legacy",
-        reason: "existing project compatibility",
-        cleanup: { cut_candidate_ids: [], keep_strategy: "keep", risks: [] },
-        subtitles: { enabled: true, style: "anchor", conflict_notes: [] },
-        visuals: { direction: "none", viewer_job: "listen", requires_grounding: false, notes: [] },
-        images: { needed: false, reason: "none", missing_assets: [] },
-        music: { source: "none", ducking: false, notes: [] },
-        sfx: { enabled: false, usage: "none", restraint: "none" },
-        requires_confirmation: [],
-      },
-    ],
-  });
-  expect(proposal.version).toBe("1.0");
-  expect("business_direction" in proposal.options[0]!).toBe(false);
+test("production proposal rejects legacy versions", () => {
+  expect(() => parseProductionProposal({ ...productionProposalExample, version: "1.0" })).toThrow("unsupported");
+  expect(() => parseProductionProposal({ ...productionProposalExample, version: "1.1" })).toThrow("unsupported");
 });
 
 test("edit plan requires proposal selection binding only for the current contract", () => {
@@ -478,9 +292,7 @@ test("edit plan requires proposal selection binding only for the current contrac
   expect(current.confirmed_option_id).toBe("sales_conversion");
   expect(current.proposal_selection_fingerprint).toBe(fingerprint);
 
-  const legacy = artifacts.parseEditPlan({ decisions: [] });
-  expect(legacy.contract_version).toBe("legacy");
-  expect(legacy.confirmed_option_id).toBe(undefined);
+  expect(() => artifacts.parseEditPlan({ decisions: [] })).toThrow("contract_version");
   expect(() => artifacts.parseEditPlan({ contract_version: "1.0", confirmed_option_id: "sales_conversion", decisions: [] })).toThrow(
     "proposal_selection_fingerprint",
   );
@@ -845,322 +657,6 @@ test("music acquisition and review managed JSON use real parsers", () => {
   expect(() => artifacts.parseMusicAcquisition({ version: "1.0", request, acquired: true, warnings: [] })).toThrow("asset");
 });
 
-test("enrichment v1.1 validates profile, captions, cards, and music", () => {
-  const plan = parseEnrichmentPlan({
-    version: "1.1",
-    profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor", layout: "stack", style: "whiteboard", frame: "clean" },
-    captions: { enabled: true, identity: "anchor", emphasis: [{ start: 0.4, end: 0.9, text: "关键点", reason: "highlight" }] },
-    cards: [
-      {
-        id: "opening",
-        start: 0,
-        end: 1.2,
-        kind: "title",
-        block_id: "lt_bold_block",
-        visual_intent: "opening hook",
-        layout: "stack",
-        style: "whiteboard",
-        frame: "clean",
-        zone: "full_frame",
-        title: "开场标题",
-        reason: "orient",
-      },
-      {
-        id: "flow",
-        start: 1.2,
-        end: 2.5,
-        kind: "flowchart",
-        title: "三步流程",
-        detail: "上传 -> 清理 -> 增强",
-        reason: "explain process",
-      },
-    ],
-    music: [{ id: "bed", type: "music_segment", start: 0, end: 2.5, asset_id: "m1", volume: 0.12, fade_seconds: 0.2, ducking: true, reason: "light bed" }],
-  });
-  expect(plan.profile.style).toBe("whiteboard");
-  expect(plan.profile.source_mode).toBe("talking_head_avatar");
-  expect(plan.captions.identity).toBe("anchor");
-  expect(plan.cards.map((card) => card.kind)).toEqual(["title", "flowchart"]);
-  expect(plan.cards[0]?.block_id).toBe("lt_bold_block");
-  expect(plan.cards[0]?.visual_intent).toBe("opening hook");
-  expect(plan.cards[1]?.style).toBe("whiteboard");
-  expect(plan.music[0]?.asset_id).toBe("m1");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.1",
-      slots: [{ id: "legacy", type: "title_card", start: 0, end: 1, text: "Legacy", reason: "stale" }],
-      captions: { enabled: true, identity: "anchor" },
-      cards: [],
-      music: [],
-    }),
-  ).toThrow("legacy slots");
-
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.1",
-      profile: { layout: "grid" },
-      captions: { enabled: true, identity: "anchor" },
-      cards: [],
-      music: [],
-    }),
-  ).toThrow("profile.layout");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.1",
-      captions: { enabled: true, identity: "anchor" },
-      cards: [{ id: "bad", start: 0, end: 1, kind: "unknown", title: "Bad", reason: "bad" }],
-      music: [],
-    }),
-  ).toThrow("cards[0].kind");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.1",
-      captions: { enabled: true, identity: "anchor" },
-      cards: [{ id: "bad", start: 0, end: 1, kind: "key_point", block_id: "unknown_block", title: "Bad", reason: "bad" }],
-      music: [],
-    }),
-  ).toThrow("block_id");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.1",
-      profile: { source_mode: "screen_recording" },
-      captions: { enabled: true, identity: "anchor" },
-      cards: [{ id: "bad", start: 0, end: 1, kind: "key_point", block_id: "visual_inspection_report", title: "Bad", reason: "bad" }],
-      music: [],
-    }),
-  ).toThrow("renderable");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.1",
-      profile: { source_mode: "screen_recording" },
-      captions: { enabled: true, identity: "anchor" },
-      cards: [{ id: "bad", start: 0, end: 1, kind: "lower_third", block_id: "target_zoom", title: "Bad", reason: "bad" }],
-      music: [],
-    }),
-  ).toThrow("lower_third");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.1",
-      profile: { source_mode: "screen_recording" },
-      captions: { enabled: true, identity: "anchor" },
-      cards: [{ id: "bad", start: 0, end: 1, kind: "title", block_id: "lt_bold_block", title: "Bad", reason: "bad" }],
-      music: [],
-    }),
-  ).toThrow("screen_recording");
-});
-
-test("enrichment v1.2 accepts HyperFrames elements and rejects invalid element contracts", () => {
-  const plan = parseEnrichmentPlan({
-    version: "1.2",
-    profile: { source_mode: "screen_recording" },
-    captions: { enabled: false, identity: "anchor" },
-    cards: [],
-    music: [],
-    elements: [
-      {
-        id: "focus",
-        source: "agent",
-        element_id: "code-highlight",
-        element_type: "registry_block",
-        start: 0,
-        end: 1,
-        target_rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.2 },
-        reason: "highlight code region",
-      },
-      {
-        id: "shimmer",
-        source: "agent",
-        element_id: "shimmer-sweep",
-        element_type: "registry_component",
-        start: 1,
-        end: 2,
-        anchor_point: { x: 0.2, y: 0.8 },
-        params: { text: "关键步骤", volume: 0.2, enabled: true, optional: null },
-        reason: "text accent",
-      },
-      {
-        id: "caption-theme",
-        source: "agent",
-        element_id: "anchor",
-        element_type: "caption_identity",
-        start: 0,
-        end: 2,
-        caption_identity: "anchor",
-        reason: "caption rail",
-      },
-      {
-        id: "click",
-        source: "agent",
-        element_id: "click",
-        element_type: "sfx",
-        start: 1.2,
-        end: 1.45,
-        sfx_id: "click",
-        reason: "sync click",
-      },
-      {
-        id: "asset",
-        source: "agent",
-        element_id: "hero-image",
-        element_type: "generated_asset",
-        start: 1.5,
-        end: 2,
-        asset_id: "img",
-        reason: "agent generated visual",
-      },
-      {
-        id: "guidance",
-        source: "agent",
-        element_id: "animation-rule:coordinate-target-zoom",
-        element_type: "animation_rule",
-        start: 0,
-        end: 1,
-        reason: "motion guidance",
-      },
-    ],
-  });
-  expect(plan.version).toBe("1.2");
-  expect(plan.profile.source_mode).toBe("screen_recording");
-  expect(plan.elements.map((element) => element.element_type)).toEqual(["registry_block", "registry_component", "caption_identity", "sfx", "generated_asset", "animation_rule"]);
-  expect(plan.elements[1]?.params?.text).toBe("关键步骤");
-  expect(plan.elements[3]?.sfx_id).toBe("click");
-
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.2",
-      profile: { source_mode: "screen_recording" },
-      captions: { enabled: false, identity: "anchor" },
-      elements: [{ id: "bad", source: "agent", element_id: "missing", element_type: "registry_block", start: 0, end: 1, reason: "bad" }],
-    }),
-  ).toThrow("unknown vendored HyperFrames registry item");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.2",
-      captions: { enabled: false, identity: "anchor" },
-      elements: [{ id: "bad", source: "agent", element_id: "code-highlight", element_type: "block", start: 0, end: 1, reason: "bad" }],
-    }),
-  ).toThrow("element_type");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.2",
-      captions: { enabled: false, identity: "anchor" },
-      elements: [{ id: "bad", source: "agent", element_id: "img", element_type: "generated_asset", start: 0, end: 1, reason: "bad" }],
-    }),
-  ).toThrow("asset_id");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.2",
-      captions: { enabled: false, identity: "anchor" },
-      elements: [{ id: "bad", source: "agent", element_id: "click", element_type: "sfx", start: 0, end: 1, sfx_id: "missing", reason: "bad" }],
-    }),
-  ).toThrow("unknown HyperFrames sfx");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.2",
-      captions: { enabled: false, identity: "anchor" },
-      elements: [{ id: "bad", source: "agent", element_id: "shimmer-sweep", element_type: "registry_component", start: 0, end: 1, params: { nested: { nope: true } }, reason: "bad" }],
-    }),
-  ).toThrow("params.nested");
-});
-
-test("current enrichment parser output is safe to persist and parse again", () => {
-  const first = parseEnrichmentPlan({
-    version: "1.2",
-    profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor" },
-    captions: { enabled: false, identity: "anchor", emphasis: [] },
-    cards: [],
-    music: [],
-    elements: [],
-  });
-
-  expect(first.slots).toBe(undefined);
-  expect(parseEnrichmentPlan(JSON.parse(JSON.stringify(first)))).toEqual(first);
-});
-
-test("source mode controls enrichment defaults without overriding explicit card choices", () => {
-  const screen = parseEnrichmentPlan({
-    version: "1.1",
-    profile: { source_mode: "screen_recording" },
-    captions: { enabled: true, identity: "anchor" },
-    cards: [
-      { id: "default", start: 0, end: 1, kind: "key_point", title: "Default", reason: "screen safe" },
-      { id: "explicit", start: 1, end: 2, kind: "key_point", layout: "stack", style: "whiteboard", frame: "hairline", title: "Explicit", reason: "user approved" },
-    ],
-    music: [],
-  });
-  expect(screen.profile.source_mode).toBe("screen_recording");
-  expect(screen.profile.layout).toBe("overlay");
-  expect(screen.profile.style).toBe("minimal");
-  expect(screen.cards[0]?.layout).toBe("overlay");
-  expect(screen.cards[0]?.style).toBe("minimal");
-  expect(screen.cards[1]?.layout).toBe("stack");
-  expect(screen.cards[1]?.style).toBe("whiteboard");
-  expect(screen.cards[1]?.frame).toBe("hairline");
-
-  const mixed = parseEnrichmentPlan({ version: "1.1", profile: { source_mode: "mixed" }, captions: { enabled: true, identity: "anchor" }, cards: [], music: [] });
-  expect(mixed.profile.layout).toBe("overlay");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.1",
-      profile: { source_mode: "screen" },
-      captions: { enabled: true, identity: "anchor" },
-      cards: [],
-      music: [],
-    }),
-  ).toThrow("profile.source_mode");
-});
-
-test("enrichment cards validate normalized target coordinates", () => {
-  const plan = parseEnrichmentPlan({
-    version: "1.1",
-    profile: { source_mode: "screen_recording" },
-    captions: { enabled: true, identity: "anchor" },
-    cards: [
-      {
-        id: "focus",
-        start: 0,
-        end: 1,
-        kind: "screenshot_focus",
-        title: "按钮位置",
-        target_rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.2 },
-        anchor_point: { x: 0.44, y: 0.3 },
-        reason: "precise screen highlight",
-      },
-    ],
-    music: [],
-  });
-  expect(plan.cards[0]?.target_rect).toEqual({ x: 0.1, y: 0.2, width: 0.3, height: 0.2 });
-  expect(plan.cards[0]?.anchor_point).toEqual({ x: 0.44, y: 0.3 });
-
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.1",
-      cards: [{ id: "bad", start: 0, end: 1, kind: "screenshot_focus", title: "Bad", target_rect: { x: -0.1, y: 0, width: 0.2, height: 0.2 }, reason: "bad" }],
-      music: [],
-    }),
-  ).toThrow("target_rect.x");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.1",
-      cards: [{ id: "bad", start: 0, end: 1, kind: "screenshot_focus", title: "Bad", target_rect: { x: 0.9, y: 0, width: 0.2, height: 0.2 }, reason: "bad" }],
-      music: [],
-    }),
-  ).toThrow("normalized canvas bounds");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.1",
-      cards: [{ id: "bad", start: 0, end: 1, kind: "screenshot_focus", title: "Bad", target_rect: { x: 0, y: 0, width: 0, height: 0.2 }, reason: "bad" }],
-      music: [],
-    }),
-  ).toThrow("greater than 0");
-  expect(() =>
-    parseEnrichmentPlan({
-      version: "1.1",
-      cards: [{ id: "bad", start: 0, end: 1, kind: "key_point", title: "Bad", anchor_point: { x: 0.4, y: 1.1 }, reason: "bad" }],
-      music: [],
-    }),
-  ).toThrow("anchor_point.y");
-});
 
 test("focus candidate parser accepts source-timeline focus candidates", () => {
   const parseFocusCandidates = requiredArtifactParser("parseFocusCandidates");
@@ -1483,7 +979,6 @@ test("focus review parser accepts proposed elements for enrichment", () => {
         target_rect: { x: 0.42, y: 0.32, width: 0.14, height: 0.09 },
         params: { title: "Pricing button", coordinate_source_frame: ".inspection/focus/frame-1.jpg" },
         reason: "guide attention to the grounded UI target",
-        approved: true,
       },
     ],
     warnings: [],

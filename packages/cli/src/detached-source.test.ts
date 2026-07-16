@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { compileEdlProject, createProject, exploreProject, sourceFramesProject } from "./project";
 import { projectStatus } from "./project-status";
 import { exportRenderContract } from "./render-contract-commands";
+import { confirmProposalAndWriteEditPlan } from "./test-fixtures";
 
 test("detached project plans, imports source evidence, and exports without source bytes", async () => {
   if (spawnSync("ffmpeg", ["-version"]).status !== 0) return;
@@ -26,7 +27,7 @@ test("detached project plans, imports source evidence, and exports without sourc
     segments: [{ source_id: "src-001", start: 0.1, end: 0.9, text: "detached planning" }],
   }));
   expect((await exploreProject(detached, { asr: "external", providerMode: "platform" })).ok).toBe(true);
-  writeFileSync(join(detached, "edit-plan.json"), JSON.stringify({ decisions: [] }));
+  confirmProposalAndWriteEditPlan(detached);
   expect(compileEdlProject(detached).ok).toBe(true);
 
   const detachedStatus = projectStatus(detached);

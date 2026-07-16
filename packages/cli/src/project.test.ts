@@ -6,11 +6,13 @@ import { tmpdir } from "node:os";
 import * as nodePath from "node:path";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { parseAssetManifest, parseEnrichmentPlan, parseProjectMetadata } from "./artifacts";
+import { parseAssetManifest, parseEnrichmentPlan, parseProjectMetadata, type ProductionProposalArtifact } from "./artifacts";
 import { fileBytesFingerprint, semanticJsonFingerprint } from "./artifact-lifecycle";
 import * as projectApi from "./project";
 import { buildEnrichmentStoryboard, commandExists, createProject, elementCatalogProject, enrichPlanProject, exploreProject, inspectProject, musicAcquireProject, musicCatalogProject, musicReviewProject, normalizeCloudflareWhisperResult, normalizeWhisperJson, proposalProject, renderProject, reviewProject, sourceFramesProject, validateSourceFrameByteLimits, visualAcquireProject, visualCatalogProject, visualReviewProject, visualSearchProject } from "./project";
 import { projectStatus } from "./project-status";
+import { productionProposalExample } from "./artifact-contracts";
+import { confirmProposalAndWriteEditPlan } from "./test-fixtures";
 
 test("creates, explores, and reviews a source-aware project", async () => {
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-"));
@@ -561,45 +563,19 @@ test("validates and renders a production proposal without creating execution art
   );
   await exploreProject(project, { asr: "external" });
   reviewProject(project);
-  writeFileSync(
-    join(project, "production-proposal.json"),
-    JSON.stringify({
-      version: "1.0",
-      source_mode: "mixed",
-      presentation_intent: "knowledge_explainer",
-      goal_summary: "turn this into a concise explainer",
-      material_summary: "short screen recording with one filler candidate",
-      recommended_option_id: "balanced",
-      options: [
-        {
-          id: "balanced",
-          label: "克制增强",
-          recommended: true,
-          reason: "clean the filler and keep visuals readable",
-          cleanup: { cut_candidate_ids: ["c-002-filler"], keep_strategy: "keep spoken meaning", risks: ["segment timing needs review"] },
-          subtitles: { enabled: true, style: "anchor", conflict_notes: [] },
-          visuals: { direction: "transparent focus cues", viewer_job: "help viewers follow the key point", requires_grounding: true, notes: ["no opaque cards"] },
-          images: { needed: true, reason: "one abstract idea is not visible in source", missing_assets: ["concept-image"] },
-          music: { source: "minimax", mood: "quiet tech bed", ducking: true, notes: ["acquire only after OK"] },
-          sfx: { enabled: true, usage: "subtle click accents", restraint: "low volume" },
-          requires_confirmation: ["generate image", "acquire music"],
-        },
-        {
-          id: "cleanup-only",
-          label: "只清理",
-          recommended: false,
-          reason: "fastest path",
-          cleanup: { cut_candidate_ids: ["c-002-filler"], keep_strategy: "keep all non-filler speech", risks: [] },
-          subtitles: { enabled: true, style: "plain", conflict_notes: [] },
-          visuals: { direction: "none", viewer_job: "only improve pacing", requires_grounding: false, notes: [] },
-          images: { needed: false, reason: "no visual gap", missing_assets: [] },
-          music: { source: "none", ducking: true, notes: [] },
-          sfx: { enabled: false, usage: "none", restraint: "none" },
-          requires_confirmation: [],
-        },
-      ],
-    }),
-  );
+  const proposal = structuredClone(productionProposalExample) as unknown as ProductionProposalArtifact;
+  proposal.presentation_intent = "knowledge_explainer";
+  proposal.recommended_option_id = "balanced";
+  proposal.options[0]!.id = "balanced";
+  proposal.options[0]!.label = "克制增强";
+  proposal.options[0]!.cleanup.cut_candidate_ids = ["c-002-filler"];
+  proposal.options[0]!.images = { needed: true, reason: "one abstract idea is not visible in source", missing_assets: ["concept-image"] };
+  proposal.options[0]!.music = { source: "minimax", mood: "quiet tech bed", ducking: true, notes: ["acquire only after OK"] };
+  proposal.options[0]!.sfx = { enabled: true, usage: "subtle click accents", restraint: "low volume" };
+  proposal.options[1]!.id = "cleanup-only";
+  proposal.options[1]!.label = "只清理";
+  proposal.options[1]!.cleanup.cut_candidate_ids = ["c-002-filler"];
+  writeFileSync(join(project, "production-proposal.json"), JSON.stringify(proposal));
 
   const proposed = proposalProject(project);
   expect(proposed.ok).toBe(true);
@@ -623,51 +599,14 @@ test("validates and renders a production proposal without creating execution art
   };
   expect(Boolean(initialProposalLifecycle.artifacts["proposal-selection:balanced"])).toBe(true);
   expect(Boolean(initialProposalLifecycle.artifacts["proposal-selection:cleanup-only"])).toBe(true);
-  const proposalPath = join(project, "production-proposal.json");
-  const reducedProposal = JSON.parse(readFileSync(proposalPath, "utf8")) as {
-    options: Array<{ id: string }>;
-  } & Record<string, unknown>;
-  reducedProposal.options = reducedProposal.options.filter((option) => option.id === "balanced");
-  writeFileSync(proposalPath, JSON.stringify(reducedProposal));
-  const reproposed = proposalProject(project);
-  expect(reproposed.ok).toBe(true);
-  if (!reproposed.ok) throw new Error(reproposed.error.message);
-  const proposalLifecycle = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as {
-    artifacts: Record<string, unknown>;
-  };
-  expect(Boolean(proposalLifecycle.artifacts["proposal-selection:balanced"])).toBe(true);
-  expect(Boolean(proposalLifecycle.artifacts["proposal-selection:cleanup-only"])).toBe(false);
-
-  writeFileSync(
-    join(project, "production-proposal.json"),
-    JSON.stringify({
-      version: "1.0",
-      source_mode: "mixed",
-      presentation_intent: "knowledge_explainer",
-      goal_summary: "bad",
-      material_summary: "bad",
-      recommended_option_id: "bad",
-      options: [
-        {
-          id: "bad",
-          label: "坏方案",
-          recommended: true,
-          reason: "bad",
-          cleanup: { cut_candidate_ids: ["missing-candidate"], keep_strategy: "bad", risks: [] },
-          subtitles: { enabled: true, style: "anchor", conflict_notes: [] },
-          visuals: { direction: "none", viewer_job: "none", requires_grounding: false, notes: [] },
-          images: { needed: false, reason: "none", missing_assets: [] },
-          music: { source: "none", ducking: true, notes: [] },
-          sfx: { enabled: false, usage: "none", restraint: "none" },
-          requires_confirmation: [],
-        },
-      ],
-    }),
-  );
+  proposal.options[0]!.cleanup.cut_candidate_ids = ["missing-candidate", "another-missing-candidate"];
+  writeFileSync(join(project, "production-proposal.json"), JSON.stringify(proposal));
   const invalid = proposalProject(project);
   expect(invalid.ok).toBe(false);
   if (invalid.ok) throw new Error("expected invalid proposal");
-  expect(invalid.error.message).toContain("unknown cleanup candidate_id");
+  expect(invalid.error.code).toBe("ARTIFACT_VALIDATION_FAILED");
+  expect(invalid.error.issues?.length).toBe(2);
+  expect(invalid.error.issues?.[0]?.message).toContain("unknown cleanup candidate_id");
 });
 
 test("visual acquisition accepts a confirmed local handoff candidate", async () => {
@@ -1163,7 +1102,7 @@ test("renders and inspects an edit plan", async () => {
   );
   await exploreProject(project, { asr: "external" });
   reviewProject(project);
-  writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ decisions: [{ action: "cut", candidate_id: "c-002-filler" }] }));
+  confirmProposalAndWriteEditPlan(project, [{ action: "cut", candidate_id: "c-002-filler" }]);
 
   const rendered = renderProject(project);
   expect(rendered.ok).toBe(true);
@@ -1222,7 +1161,7 @@ test("normalizes rounded SRT millisecond rollover", () => {
     }),
   );
   void exploreProject(project, { asr: "external" });
-  writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ decisions: [] }));
+  confirmProposalAndWriteEditPlan(project);
   const rendered = renderProject(project);
   expect(rendered.ok).toBe(true);
   if (!rendered.ok) throw new Error(rendered.error.message);
@@ -1283,7 +1222,7 @@ test("renders two sources in manifest order", async () => {
     },
   );
   reviewProject(project);
-  writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ decisions: [{ action: "cut", candidate_id: "c-001-cut" }] }));
+  confirmProposalAndWriteEditPlan(project, [{ action: "cut", candidate_id: "c-001-cut" }]);
   const rendered = renderProject(project);
   expect(rendered.ok).toBe(true);
   if (!rendered.ok) throw new Error(rendered.error.message);
@@ -1316,7 +1255,7 @@ test("honors explicit source order", async () => {
     }),
   );
   await exploreProject(project, { asr: "external" });
-  writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ source_order: ["src-002", "src-001"], decisions: [] }));
+  confirmProposalAndWriteEditPlan(project, [], ["src-002", "src-001"]);
   const rendered = renderProject(project);
   expect(rendered.ok).toBe(true);
   if (!rendered.ok) throw new Error(rendered.error.message);
@@ -1326,7 +1265,7 @@ test("honors explicit source order", async () => {
 
 test("rejects edit plans that reference unknown candidates", async () => {
   const project = await projectWithAnalysis("segment", undefined);
-  writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ decisions: [{ action: "cut", candidate_id: "missing" }] }));
+  confirmProposalAndWriteEditPlan(project, [{ action: "cut", candidate_id: "missing" }]);
   const rendered = renderProject(project);
   expect(rendered.ok).toBe(false);
   if (rendered.ok) throw new Error("expected unknown candidate failure");
@@ -1354,7 +1293,7 @@ test("rejects candidate ranges outside source duration", () => {
       candidates: [{ id: "c-001-bad", source_id: "src-001", start: 0.5, end: 2, text: "bad", type: "manual", reason: "test", confidence: 0.9 }],
     },
   );
-  writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ decisions: [{ action: "cut", candidate_id: "c-001-bad" }] }));
+  confirmProposalAndWriteEditPlan(project, [{ action: "cut", candidate_id: "c-001-bad" }]);
   const rendered = renderProject(project);
   expect(rendered.ok).toBe(false);
   if (rendered.ok) throw new Error("expected bounds failure");
@@ -1385,465 +1324,16 @@ test("rejects overlapping selected cut candidates", () => {
       ],
     },
   );
-  writeFileSync(
-    join(project, "edit-plan.json"),
-    JSON.stringify({
-      decisions: [
-        { action: "cut", candidate_id: "c-001-a" },
-        { action: "cut", candidate_id: "c-002-b" },
-      ],
-    }),
-  );
+  confirmProposalAndWriteEditPlan(project, [
+    { action: "cut", candidate_id: "c-001-a" },
+    { action: "cut", candidate_id: "c-002-b" },
+  ]);
   const rendered = renderProject(project);
   expect(rendered.ok).toBe(false);
   if (rendered.ok) throw new Error("expected overlap failure");
   expect(rendered.error.message).toContain("overlap");
 });
 
-test("validates enrichment assets and output-timeline bounds", () => {
-  if (!commandExists("ffmpeg")) return;
-  const { project } = readyProject(2);
-  const imagePath = join(project, "assets", "images", "card.png");
-  makeStillImage(imagePath);
-  writeFileSync(join(project, "asset-manifest.json"), JSON.stringify({ assets: [{ id: "card", path: "assets/images/card.png", type: "image" }] }));
-  writeFileSync(
-    join(project, "enrichment-plan.json"),
-    JSON.stringify({ version: "1.0", slots: [{ id: "img", type: "image_overlay", start: 0.2, end: 1.2, asset_id: "card", reason: "show card" }] }),
-  );
-  const valid = enrichPlanProject(project);
-  expect(valid.ok).toBe(true);
-  if (!valid.ok) throw new Error(valid.error.message);
-  expect(valid.data.slot_count).toBe(1);
-  expect(valid.data.source_mode).toBe("talking_head_avatar");
-  expect(valid.data.requires_hyperframes).toBe(true);
-  expect(valid.data.block_usage[0]?.block_id).toBe("app_showcase");
-  expect(valid.data.block_usage[0]?.visual_role).toBe("app or product showcase");
-  expect(valid.data.cdn_dependencies.some((dependency) => dependency.id === "gsap_3_14_2")).toBe(true);
-  expect(valid.data.asset_summary[0]?.id).toBe("card");
-  expect(valid.data.asset_summary[0]?.path).toBe("assets/images/card.png");
-  expect(valid.data.asset_summary[0]?.type).toBe("image");
-  expect(valid.data.asset_summary[0]?.exists).toBe(true);
-
-  writeFileSync(
-    join(project, "enrichment-plan.json"),
-    JSON.stringify({ version: "1.0", slots: [{ id: "late", type: "image_overlay", start: 1, end: 3, asset_id: "card", reason: "too late" }] }),
-  );
-  const outOfRange = enrichPlanProject(project);
-  expect(outOfRange.ok).toBe(false);
-  if (outOfRange.ok) throw new Error("expected out-of-range failure");
-  expect(outOfRange.error.message).toContain("exceeds output duration");
-});
-
-test("validates v1.1 enrichment plans", () => {
-  if (!commandExists("ffmpeg")) return;
-  const { project } = readyProject(2);
-  makeStillImage(join(project, "assets", "images", "card.png"));
-  makeMusic(join(project, "assets", "music", "bed.wav"), 2);
-  writeFileSync(
-    join(project, "asset-manifest.json"),
-    JSON.stringify({
-      assets: [
-        { id: "card", path: "assets/images/card.png", type: "image", source: "agent_generated", used_by: ["img"], dimensions: { width: 64, height: 64 } },
-        { id: "bed", path: "assets/music/bed.wav", type: "music", source: "user", used_by: ["bed"], duration_seconds: 2 },
-      ],
-    }),
-  );
-  writeFileSync(
-    join(project, "enrichment-plan.json"),
-    JSON.stringify({
-      version: "1.1",
-      profile: { source_mode: "screen_recording", aspect_ratio: "source", caption_identity: "anchor" },
-      captions: { enabled: true, identity: "anchor" },
-      cards: [
-        { id: "covering", start: 0.2, end: 1.2, kind: "key_point", style: "whiteboard", zone: "full_frame", title: "重点", reason: "warning test" },
-        { id: "img", start: 1.2, end: 1.6, kind: "image", title: "示意图", asset_id: "card", reason: "show visual" },
-      ],
-      music: [{ id: "bed", type: "music_segment", start: 0, end: 1.8, asset_id: "bed", volume: 0.1, fade_seconds: 0.1, ducking: false, reason: "bed" }],
-    }),
-  );
-  const valid = enrichPlanProject(project);
-  expect(valid.ok).toBe(true);
-  if (!valid.ok) throw new Error(valid.error.message);
-  expect(valid.data.source_mode).toBe("screen_recording");
-  expect(valid.data.visual_slot_count).toBe(2);
-  expect(valid.data.requires_hyperframes).toBe(true);
-  expect(valid.data.warnings.some((warning) => warning.includes("full_frame"))).toBe(true);
-  expect(valid.data.warnings.some((warning) => warning.includes("whiteboard"))).toBe(true);
-  expect(valid.data.warnings.some((warning) => warning.includes("image asset"))).toBe(true);
-  expect(valid.data.warnings.some((warning) => warning.includes("includes music"))).toBe(true);
-  expect(valid.data.block_usage.map((usage) => usage.block_id)).toEqual(["code_highlight", "macos_notification"]);
-  expect(valid.data.block_usage.map((usage) => usage.visual_role)).toEqual(["code or keyword highlight", "small notification insert"]);
-  expect(valid.data.block_usage[0]?.source).toContain("registry/blocks/code-highlight");
-  expect(valid.data.cdn_dependencies.map((dependency) => dependency.id)).toContain("font_code_combo");
-  expect(valid.data.cdn_dependencies.map((dependency) => dependency.id)).toContain("font_inter");
-  const cardAsset = valid.data.asset_summary.find((asset) => asset.id === "card");
-  expect(cardAsset?.source).toBe("agent_generated");
-  expect(cardAsset?.used_by).toEqual(["img"]);
-  expect(cardAsset?.dimensions).toEqual({ width: 64, height: 64 });
-  expect(cardAsset?.exists).toBe(true);
-  const bedAsset = valid.data.asset_summary.find((asset) => asset.id === "bed");
-  expect(bedAsset?.source).toBe("user");
-  expect(bedAsset?.used_by).toEqual(["bed"]);
-  expect(bedAsset?.duration_seconds).toBe(2);
-  expect(bedAsset?.exists).toBe(true);
-  expect(valid.data.qa_checks.map((check) => check.id)).toEqual(["card-covering", "card-img", "music-bed"]);
-  expect(valid.data.qa_checks.find((check) => check.id === "music-bed")?.warnings).toContain("bed: music ducking is disabled");
-});
-
-test("lists vendored element catalog and validates v1.2 element usage", () => {
-  if (!commandExists("ffmpeg")) return;
-  const { project } = readyProject(2);
-  const catalog = elementCatalogProject(project);
-  expect(catalog.ok).toBe(true);
-  if (!catalog.ok) throw new Error(catalog.error.message);
-  expect(catalog.data.stats.registry.blocks).toBe(109);
-  expect(catalog.data.stats.registry.components).toBe(25);
-  expect(catalog.data.stats.resources.sfx).toBe(19);
-  const codeElement = catalog.data.elements.find((element) => element.element_id === "code-highlight" && element.element_type === "registry_block");
-  const shimmerElement = catalog.data.elements.find((element) => element.element_id === "shimmer-sweep" && element.element_type === "registry_component");
-  const clickElement = catalog.data.elements.find((element) => element.element_id === "click" && element.element_type === "sfx");
-  expect(codeElement?.adapter.family).toBe("code");
-  expect(codeElement?.adapter.render_strategy).toBe("cli_overlay");
-  expect(shimmerElement?.adapter.requires_anchor_point).toBe(true);
-  expect(clickElement?.adapter.render_strategy).toBe("sfx_mix");
-  expect(catalog.data.recommendations.screen_recording.some((element) => element.family === "transition" || element.family === "vfx_texture" || element.family === "social" || element.family === "app_showcase")).toBe(false);
-  expect(catalog.data.recommendations.screen_recording.slice(0, 12).some((element) => element.family === "screen_focus")).toBe(true);
-  expect(catalog.data.recommendations.screen_recording.slice(0, 12).some((element) => element.family === "sfx")).toBe(true);
-  expect(catalog.data.purpose_recommendations.screen_recording.internal_tutorial.some((element) => element.family === "screen_focus")).toBe(true);
-  expect(catalog.data.purpose_recommendations.screen_recording.internal_tutorial.some((element) => element.family === "transition" || element.family === "social" || element.family === "app_showcase")).toBe(false);
-  expect(catalog.data.purpose_recommendations.talking_head_avatar.short_form.some((element) => element.family === "transition" || element.family === "social" || element.family === "app_showcase")).toBe(true);
-  expect(catalog.data.purpose_recommendations.talking_head_avatar.product_demo.some((element) => element.family === "app_showcase")).toBe(true);
-
-  writeFileSync(join(project, "asset-manifest.json"), JSON.stringify({ assets: [] }));
-  writeFileSync(
-    join(project, "enrichment-plan.json"),
-    JSON.stringify({
-      version: "1.2",
-      profile: { source_mode: "screen_recording" },
-      captions: { enabled: false, identity: "anchor" },
-      elements: [
-        {
-          id: "large-block",
-          source: "agent",
-          element_id: "code-highlight",
-          element_type: "registry_block",
-          start: 0.1,
-          end: 0.9,
-          zone: "full_frame",
-          params: { code: "const answer = 42;" },
-          reason: "show real registry block warning",
-        },
-        {
-          id: "shine",
-          source: "agent",
-          element_id: "shimmer-sweep",
-          element_type: "registry_component",
-          start: 0.9,
-          end: 1.3,
-          anchor_point: { x: 0.08, y: 0.72 },
-          params: { text: "关键节点" },
-          reason: "small text accent",
-        },
-        {
-          id: "click",
-          source: "agent",
-          element_id: "click",
-          element_type: "sfx",
-          start: 1.3,
-          end: 1.5,
-          sfx_id: "click",
-          params: { volume: 0.12 },
-          reason: "sync UI click",
-        },
-        {
-          id: "bad-sfx",
-          source: "agent",
-          element_id: "pop",
-          element_type: "sfx",
-          start: 1.45,
-          end: 1.7,
-          sfx_id: "pop",
-          params: { volume: 0.2 },
-          reason: "decorative sound",
-        },
-        {
-          id: "zoom-rule",
-          source: "agent",
-          element_id: "animation-rule:coordinate-target-zoom",
-          element_type: "animation_rule",
-          start: 1.5,
-          end: 1.8,
-          target_rect: { x: 0.42, y: 0.28, width: 0.18, height: 0.14 },
-          params: { title: "聚焦按钮", coordinate_source_frame: "source@1.6s" },
-          reason: "zoom to a real UI target",
-        },
-      ],
-    }),
-  );
-  const valid = enrichPlanProject(project);
-  expect(valid.ok).toBe(true);
-  if (!valid.ok) throw new Error(valid.error.message);
-  expect(valid.data.source_mode).toBe("screen_recording");
-  expect(valid.data.element_count).toBe(5);
-  expect(valid.data.requires_hyperframes).toBe(true);
-  expect(valid.data.element_usage.map((usage) => usage.element_id)).toEqual(["code-highlight", "shimmer-sweep", "click", "pop", "animation-rule:coordinate-target-zoom"]);
-  expect(valid.data.element_usage[0]?.source).toBe("registry/blocks/code-highlight");
-  expect(valid.data.element_usage[0]?.adapter.family).toBe("code");
-  expect(valid.data.element_usage[0]?.adapter.render_strategy).toBe("cli_overlay");
-  expect(valid.data.element_usage[1]?.source).toBe("registry/components/shimmer-sweep");
-  expect(valid.data.element_usage[2]?.source).toBe("hyperframes-media/assets/sfx");
-  expect(valid.data.element_usage[4]?.adapter.family).toBe("screen_focus");
-  expect(valid.data.element_usage[4]?.adapter.render_strategy).toBe("cli_overlay");
-  expect(valid.data.element_usage[4]?.guidance_only).toBe(false);
-  expect(valid.data.warnings.some((warning) => warning.includes("full_frame"))).toBe(true);
-  expect(valid.data.warnings.some((warning) => warning.includes("shine") && warning.includes("coordinate_source_frame"))).toBe(true);
-  expect(valid.data.warnings.some((warning) => warning.includes("click") && warning.includes("SFX"))).toBe(false);
-  expect(valid.data.warnings.some((warning) => warning.includes("bad-sfx") && warning.includes("SFX"))).toBe(true);
-  expect(valid.data.warnings.some((warning) => warning.includes("zoom-rule") && warning.includes("guidance_only"))).toBe(false);
-  expect(valid.data.warnings.some((warning) => warning.includes("zoom-rule") && warning.includes("coordinate_source_frame"))).toBe(false);
-  expect(valid.data.qa_checks.map((check) => check.id)).toEqual(["element-large-block", "element-shine", "element-click", "element-bad-sfx", "element-zoom-rule"]);
-  expect(valid.data.qa_checks.find((check) => check.id === "element-shine")?.warnings[0]).toContain("coordinate_source_frame");
-  expect(valid.data.qa_checks.find((check) => check.id === "element-click")?.frame_times).toEqual([]);
-
-  writeFileSync(
-    join(project, "enrichment-plan.json"),
-    JSON.stringify({
-      version: "1.2",
-      profile: { source_mode: "screen_recording" },
-      captions: { enabled: false, identity: "anchor" },
-      elements: [{ id: "missing-code", source: "agent", element_id: "code-highlight", element_type: "registry_block", start: 0.1, end: 0.9, reason: "missing code" }],
-    }),
-  );
-  const missingCode = enrichPlanProject(project);
-  expect(missingCode.ok).toBe(false);
-  if (missingCode.ok) throw new Error("expected missing code failure");
-  expect(missingCode.error.message).toContain("params.code");
-
-  writeFileSync(
-    join(project, "enrichment-plan.json"),
-    JSON.stringify({
-      version: "1.2",
-      profile: { source_mode: "screen_recording" },
-      captions: { enabled: false, identity: "anchor" },
-      elements: [{ id: "missing-target", source: "agent", element_id: "cinematic-zoom", element_type: "registry_block", start: 0.1, end: 0.9, reason: "missing target" }],
-    }),
-  );
-  const missingTarget = enrichPlanProject(project);
-  expect(missingTarget.ok).toBe(false);
-  if (missingTarget.ok) throw new Error("expected missing target failure");
-  expect(missingTarget.error.message).toContain("target_rect");
-});
-
-test("builds storyboard aspect and anchor caption cues without rendering", () => {
-  if (!commandExists("ffmpeg")) return;
-  const cases = [
-    { size: "160x90", expected: "16:9" },
-    { size: "90x160", expected: "9:16" },
-    { size: "120x150", expected: "4:5" },
-  ] as const;
-  for (const item of cases) {
-    const dir = mkdtempSync(join(tmpdir(), "koubo-clip-storyboard-"));
-    const clean = join(dir, "clean.mp4");
-    const subtitles = join(dir, "subtitles.srt");
-    const publicDir = join(dir, "public");
-    mkdirSync(publicDir, { recursive: true });
-    makeSampleVideo(clean, 2, item.size);
-    writeFileSync(subtitles, "1\n00:00:00,100 --> 00:00:01,000\nhello caption\n");
-    const plan = parseEnrichmentPlan({
-      version: "1.1",
-      profile: { source_mode: "screen_recording", aspect_ratio: "source", caption_identity: "anchor" },
-      captions: { enabled: true, identity: "anchor" },
-      cards: [
-        {
-          id: "card",
-          start: 0.2,
-          end: 1.2,
-          kind: "screenshot_focus",
-          block_id: "target_zoom",
-          title: "Point",
-          target_rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.2 },
-          anchor_point: { x: 0.42, y: 0.3 },
-          reason: "test",
-        },
-      ],
-      music: [],
-    });
-    const storyboard = buildEnrichmentStoryboard(dir, clean, subtitles, plan, parseAssetManifest({ assets: [] }), publicDir);
-    expect(storyboard.canvas.aspect_ratio).toBe(item.expected);
-    expect(storyboard.profile.source_mode).toBe("screen_recording");
-    expect(storyboard.captions.cues[0]).toEqual({ start: 0.1, end: 1, text: "hello caption" });
-    expect(storyboard.cards[0]?.style).toBe("minimal");
-    expect(storyboard.cards[0]?.block_id).toBe("target_zoom");
-    expect(storyboard.cards[0]?.template_family).toBe("target_zoom");
-    expect(storyboard.cards[0]?.motion).toContain("coordinate_zoom");
-    expect(storyboard.block_usage[0]?.block_id).toBe("target_zoom");
-    expect(storyboard.block_usage[0]?.visual_role).toBe("target zoom primitive");
-    expect(storyboard.block_usage[0]?.dependencies).toContain("gsap_3_14_2");
-    expect(storyboard.dependencies.some((dependency) => dependency.package_name === "gsap" && dependency.version === "3.14.2")).toBe(true);
-    expect(storyboard.cards[0]?.target_rect).toEqual({ x: 0.1, y: 0.2, width: 0.3, height: 0.2 });
-    expect(storyboard.cards[0]?.anchor_point).toEqual({ x: 0.42, y: 0.3 });
-    expect(storyboard.qa_checks[0]?.id).toBe("card-card");
-    expect(storyboard.qa_checks[0]?.frame_times.length).toBe(1);
-    expect(storyboard.qa_checks[0]?.warnings[0]).toContain("coordinate_source_frame");
-  }
-});
-
-test("stages generated asset elements into the recut workspace", () => {
-  if (!commandExists("ffmpeg")) return;
-  const dir = mkdtempSync(join(tmpdir(), "koubo-clip-generated-asset-"));
-  const clean = join(dir, "clean.mp4");
-  const subtitles = join(dir, "subtitles.srt");
-  const publicDir = join(dir, "public");
-  mkdirSync(join(dir, "assets", "images"), { recursive: true });
-  mkdirSync(join(publicDir, "assets"), { recursive: true });
-  makeSampleVideo(clean, 2);
-  writeFileSync(subtitles, "");
-  writeFileSync(join(dir, "assets", "images", "concept.svg"), '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="240"><rect width="400" height="240" fill="#111827"/></svg>');
-  const assets = parseAssetManifest({ assets: [{ id: "concept", path: "assets/images/concept.svg", type: "image", source: "agent_generated" }] });
-  const plan = parseEnrichmentPlan({
-    version: "1.2",
-    profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor" },
-    captions: { enabled: false, identity: "anchor" },
-    elements: [
-      {
-        id: "concept-overlay",
-        source: "agent",
-        element_id: "concept-card",
-        element_type: "generated_asset",
-        start: 0.2,
-        end: 1.4,
-        asset_id: "concept",
-        zone: "right_panel",
-        params: { title: "Concept", detail: "Real asset overlay" },
-        reason: "show generated visual",
-      },
-    ],
-    music: [],
-  });
-
-  const storyboard = buildEnrichmentStoryboard(dir, clean, subtitles, plan, assets, publicDir);
-  expect(storyboard.elements[0]?.adapter.render_strategy).toBe("asset_overlay");
-  expect(storyboard.elements[0]?.asset_path).toBe("assets/concept.svg");
-  expect(storyboard.qa_checks[0]?.asset_id).toBe("concept");
-  expect(storyboard.qa_checks[0]?.status).toBe("sampled");
-  expect(existsSync(join(publicDir, "assets", "concept.svg"))).toBe(true);
-});
-
-test("storyboard QA samples long visual elements at three points", () => {
-  if (!commandExists("ffmpeg")) return;
-  const dir = mkdtempSync(join(tmpdir(), "koubo-clip-qa-"));
-  const clean = join(dir, "clean.mp4");
-  const subtitles = join(dir, "subtitles.srt");
-  const publicDir = join(dir, "public");
-  mkdirSync(publicDir, { recursive: true });
-  makeSampleVideo(clean, 8);
-  writeFileSync(subtitles, "");
-  const plan = parseEnrichmentPlan({
-    version: "1.2",
-    profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor" },
-    captions: { enabled: false, identity: "anchor" },
-    elements: [{ id: "long-lower", source: "agent", element_id: "lt-accent-underline", element_type: "registry_block", start: 0.2, end: 6.8, params: { title: "Long", subtitle: "QA" }, reason: "long visual" }],
-    music: [],
-  });
-  const storyboard = buildEnrichmentStoryboard(dir, clean, subtitles, plan, parseAssetManifest({ assets: [] }), publicDir);
-  expect(storyboard.qa_checks[0]?.frame_times).toEqual([0.6, 3.5, 6.4]);
-});
-
-test("renders v1.1 screen-recording recut to final mp4 and reports it when HyperFrames is enabled", () => {
-  if (process.env.KOUBO_CLIP_TEST_HYPERFRAMES !== "1" || !commandExists("npx") || !commandExists("ffmpeg")) return;
-  const { project } = readyProject(2);
-  makeStillImage(join(project, "assets", "images", "card.png"));
-  writeFileSync(join(project, "asset-manifest.json"), JSON.stringify({ assets: [{ id: "card", path: "assets/images/card.png", type: "image" }] }));
-  mkdirSync(join(project, ".hyperframes", "recut", "public", "cards"), { recursive: true });
-  writeFileSync(join(project, ".hyperframes", "recut", "public", "cards", "stale.html"), "stale");
-  writeFileSync(
-    join(project, "enrichment-plan.json"),
-    JSON.stringify({
-      version: "1.1",
-      profile: { source_mode: "screen_recording", aspect_ratio: "source", caption_identity: "anchor" },
-      captions: { enabled: true, identity: "anchor" },
-      cards: [
-        {
-          id: "focus",
-          start: 0.2,
-          end: 0.8,
-          kind: "screenshot_focus",
-          title: "按钮位置",
-          target_rect: { x: 0.18, y: 0.2, width: 0.28, height: 0.18 },
-          reason: "highlight ui",
-        },
-        { id: "lower", start: 0.8, end: 1.2, kind: "lower_third", title: "关键步骤", anchor_point: { x: 0.08, y: 0.66 }, reason: "compact label" },
-        { id: "img", start: 1.2, end: 1.7, kind: "image", title: "示意图", asset_id: "card", zone: "right_panel", reason: "show card" },
-      ],
-      music: [],
-    }),
-  );
-  const rendered = renderProject(project);
-  if (!rendered.ok) throw new Error(rendered.error.message);
-  expect(rendered.ok).toBe(true);
-  expect(Boolean(rendered.data.final_render_path && existsSync(rendered.data.final_render_path))).toBe(true);
-  expect(existsSync(join(project, "storyboard.json"))).toBe(true);
-  const indexPath = join(project, ".hyperframes", "recut", "public", "index.html");
-  expect(existsSync(indexPath)).toBe(true);
-  const indexHtml = readFileSync(indexPath, "utf8");
-  expect(indexHtml).toContain("source-screen_recording");
-  expect(indexHtml).toContain("https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js");
-  expect(indexHtml).toContain('data-block-id="target_zoom"');
-  expect(indexHtml).toContain('data-template-family="target_zoom"');
-  expect(indexHtml).toContain("window.__timelines.recut");
-  expect(indexHtml).toContain("focus-corners");
-  expect(indexHtml).toContain("screen-chip");
-  expect(indexHtml).toContain("accent-sweep");
-  expect(indexHtml).toContain("allowlisted GSAP runtime failed to load");
-  expect(indexHtml).toContain("animateScreenFocus");
-  expect(indexHtml).toContain("right:auto;bottom:auto;min-height:auto;");
-  expect(indexHtml.includes("assets/gsap.min.js")).toBe(false);
-  expect(readFileSync(join(project, ".hyperframes", "recut", "public", "hyperframes.json"), "utf8").includes("https://")).toBe(false);
-  expect(existsSync(join(project, ".hyperframes", "recut", "public", "assets", "gsap.min.js"))).toBe(false);
-  expect(existsSync(join(project, ".hyperframes", "recut", "public", "cards", "stale.html"))).toBe(false);
-
-  const inspected = inspectProject(project);
-  expect(inspected.ok).toBe(true);
-  if (!inspected.ok) throw new Error(inspected.error.message);
-  expect(inspected.data.output_path.endsWith("final.mp4")).toBe(true);
-  expect(inspected.data.enrichment_applied).toBe(true);
-  expect(inspected.data.source_mode).toBe("screen_recording");
-  expect(inspected.data.block_usage.map((usage) => usage.block_id)).toEqual(["target_zoom", "keyword_glow", "macos_notification"]);
-  expect(inspected.data.block_usage.map((usage) => usage.visual_role)).toEqual(["target zoom primitive", "ASR keyword emphasis", "small notification insert"]);
-  expect(inspected.data.cdn_dependencies.some((dependency) => dependency.id === "gsap_3_14_2" && dependency.version === "3.14.2")).toBe(true);
-  expect(inspected.data.asset_summary[0]?.id).toBe("card");
-  expect(inspected.data.asset_summary[0]?.path).toBe("assets/images/card.png");
-  expect(inspected.data.asset_summary[0]?.type).toBe("image");
-  expect(inspected.data.asset_summary[0]?.exists).toBe(true);
-  expect(inspected.data.inspection_checks.length).toBe(3);
-  expect(inspected.data.inspection_checks[0]?.frame_paths.length).toBe(1);
-  expect(inspected.data.inspection_frames.length).toBe(3);
-  expect(existsSync(inspected.data.inspection_frames[0]!)).toBe(true);
-  expect(readFileSync(inspected.data.report_path, "utf8")).toContain("img image");
-  expect(readFileSync(inspected.data.report_path, "utf8")).toContain("focus screenshot_focus");
-  expect(readFileSync(inspected.data.report_path, "utf8")).toContain("## HyperFrames Blocks");
-  expect(readFileSync(inspected.data.report_path, "utf8")).toContain("focus: target_zoom");
-  expect(readFileSync(inspected.data.report_path, "utf8")).toContain("## CDN Dependencies");
-  expect(readFileSync(inspected.data.report_path, "utf8")).toContain("gsap_3_14_2 script gsap@3.14.2");
-  expect(readFileSync(inspected.data.report_path, "utf8")).toContain("## Assets");
-  expect(readFileSync(inspected.data.report_path, "utf8")).toContain("## QA Checks");
-  expect(/\.inspection\/[a-f0-9]{16}\/card-img\.jpg/.test(readFileSync(inspected.data.report_path, "utf8"))).toBe(true);
-});
-
-test("renders music enrichment with audio in final mp4", () => {
-  if (!commandExists("ffmpeg")) return;
-  const { project } = readyProject(2);
-  makeMusic(join(project, "assets", "music", "bed.wav"), 2);
-  writeFileSync(join(project, "asset-manifest.json"), JSON.stringify({ assets: [{ id: "bed", path: "assets/music/bed.wav", type: "music" }] }));
-  writeFileSync(
-    join(project, "enrichment-plan.json"),
-    JSON.stringify({ version: "1.0", slots: [{ id: "music", type: "music_segment", start: 0, end: 1.8, asset_id: "bed", volume: 0.1, fade_seconds: 0.1, ducking: false, reason: "bed" }] }),
-  );
-  const rendered = renderProject(project);
-  expect(rendered.ok).toBe(true);
-  if (!rendered.ok) throw new Error(rendered.error.message);
-  expect(Boolean(rendered.data.final_render_path && hasAudio(rendered.data.final_render_path))).toBe(true);
-});
 
 test("validates platform asset_usage_plan with prepared visual and audio assets", () => {
   if (!commandExists("ffmpeg")) return;
@@ -1864,14 +1354,11 @@ test("validates platform asset_usage_plan with prepared visual and audio assets"
     }),
   );
   writeFileSync(
-    join(project, "edit-plan.json"),
+    join(project, "asset-usage-plan.json"),
     JSON.stringify({
-      decisions: [],
-      asset_usage_plan: {
         music: [{ asset_ref: "assets/koubo-clip/bgm.wav", start: 0, end: 1.8, volume: 0.18, duck_original_audio: true, fade_in: 0.1, fade_out: 0.1, purpose: "增强科技感和节奏感" }],
         sfx: [{ asset_ref: "assets/koubo-clip/sfx-click.wav", time: 0.7, duration: 0.2, volume: 0.35, purpose: "语音拨打电话功能出现时的提示音" }],
         visual_assets: [{ asset_ref: "assets/koubo-clip/bluetooth-icon.png", start: 0.2, end: 1.1, position: "top-right", size: "small", animation: "fade-in", asset_type: "icon", purpose: "强化蓝牙耳机产品属性" }],
-      },
     }),
   );
 
@@ -1897,14 +1384,11 @@ test("renders platform asset_usage_plan audio assets and reports audio_usage", (
   makeMusic(join(assetDir, "bgm.wav"), 2);
   makeMusic(join(assetDir, "sfx-click.wav"), 0.3);
   writeFileSync(
-    join(project, "edit-plan.json"),
+    join(project, "asset-usage-plan.json"),
     JSON.stringify({
-      decisions: [],
-      asset_usage_plan: {
         music: [{ asset_ref: "assets/koubo-clip/bgm.wav", start: 0, end: 1.8, volume: 0.12, duck_original_audio: true, fade_in: 0.1, fade_out: 0.1, purpose: "背景节奏" }],
         sfx: [{ asset_ref: "assets/koubo-clip/sfx-click.wav", time: 0.7, duration: 0.2, volume: 0.2, purpose: "按钮提示音" }],
         visual_assets: [],
-      },
     }),
   );
 
@@ -1932,14 +1416,11 @@ test("asset_usage_plan normalization fails closed when an asset is missing", () 
   if (!commandExists("ffmpeg")) return;
   const { project } = readyProject(2, "platform");
   writeFileSync(
-    join(project, "edit-plan.json"),
+    join(project, "asset-usage-plan.json"),
     JSON.stringify({
-      decisions: [],
-      asset_usage_plan: {
         music: [{ asset_ref: "assets/koubo-clip/missing.wav", start: 0, end: 1, volume: 0.1, duck_original_audio: true, fade_in: 0.1, fade_out: 0.1, purpose: "missing" }],
         sfx: [],
         visual_assets: [],
-      },
     }),
   );
   const normalized = enrichPlanProject(project, { providerMode: "platform" });
@@ -1953,14 +1434,11 @@ test("asset_usage_plan normalization fails closed when the handoff is invalid", 
   if (!commandExists("ffmpeg")) return;
   const { project } = readyProject(2, "platform");
   writeFileSync(
-    join(project, "edit-plan.json"),
+    join(project, "asset-usage-plan.json"),
     JSON.stringify({
-      decisions: [],
-      asset_usage_plan: {
         music: [{ asset_ref: "assets/koubo-clip/bgm.wav", start: 0, end: 0, purpose: "bad timing" }],
         sfx: [],
         visual_assets: [],
-      },
     }),
   );
   const normalized = enrichPlanProject(project, { providerMode: "platform" });
@@ -2028,7 +1506,12 @@ test("acquires local music and reports provenance through inspect", async () => 
 
   writeFileSync(
     join(project, "enrichment-plan.json"),
-    JSON.stringify({ version: "1.0", slots: [{ id: "music", type: "music_segment", start: 0, end: 1.8, asset_id: "acquired-bed", volume: 0.1, fade_seconds: 0.1, ducking: false, reason: "bed" }] }),
+    JSON.stringify({
+      version: "2.0",
+      profile: { source_mode: "screen_recording", aspect_ratio: "source", caption_identity: "anchor", layout: "overlay", style: "minimal", frame: "clean" },
+      elements: [],
+      audio: { music: [{ id: "music", start: 0, end: 1.8, asset_id: "acquired-bed", volume: 0.1, fade_seconds: 0.1, ducking: false, reason: "bed" }], sfx: [] },
+    }),
   );
   const rendered = renderProject(project);
   expect(rendered.ok).toBe(true);
@@ -2224,11 +1707,26 @@ test("inspect ignores an uncommitted caption-only final render and plan", () => 
   writeFileSync(
     join(project, "enrichment-plan.json"),
     JSON.stringify({
-      version: "1.1",
-      profile: { source_mode: "screen_recording", aspect_ratio: "source", caption_identity: "anchor" },
-      captions: { enabled: true, identity: "anchor", emphasis: [{ start: 0.2, end: 0.8, text: "Caption", reason: "caption-only" }] },
-      cards: [],
-      music: [],
+      version: "2.0",
+      profile: {
+        source_mode: "screen_recording",
+        aspect_ratio: "source",
+        caption_identity: "anchor",
+        layout: "overlay",
+        style: "minimal",
+        frame: "clean",
+      },
+      elements: [{
+        id: "uncommitted-caption",
+        source: "agent",
+        element_id: "anchor",
+        element_type: "caption_identity",
+        start: 0.2,
+        end: 0.8,
+        caption_identity: "anchor",
+        reason: "caption-only",
+      }],
+      audio: { music: [], sfx: [] },
     }),
   );
 
@@ -2240,68 +1738,6 @@ test("inspect ignores an uncommitted caption-only final render and plan", () => 
   expect(inspected.data.enrichment_summary).toEqual([]);
   expect(inspected.data.inspection_checks).toEqual([]);
   expect(inspected.data.inspection_frames).toEqual([]);
-});
-
-test("renders a HyperFrames keyword slot when explicitly enabled", () => {
-  if (process.env.KOUBO_CLIP_TEST_HYPERFRAMES !== "1" || !commandExists("npx") || !commandExists("ffmpeg")) return;
-  const { project } = readyProject(2);
-  writeFileSync(join(project, "asset-manifest.json"), JSON.stringify({ assets: [] }));
-  writeFileSync(
-    join(project, "enrichment-plan.json"),
-    JSON.stringify({ version: "1.0", slots: [{ id: "kw", type: "keyword_callout", start: 0.2, end: 1.2, text: "KEY POINT", reason: "emphasis" }] }),
-  );
-  const rendered = renderProject(project);
-  if (!rendered.ok) throw new Error(rendered.error.message);
-  expect(rendered.ok).toBe(true);
-  expect(existsSync(join(project, "storyboard.json"))).toBe(true);
-  expect(existsSync(join(project, ".hyperframes", "recut", "public", "index.html"))).toBe(true);
-  expect(Boolean(rendered.data.final_render_path && existsSync(rendered.data.final_render_path))).toBe(true);
-});
-
-test("renders v1.2 vendored HyperFrames elements when explicitly enabled", () => {
-  if (process.env.KOUBO_CLIP_TEST_HYPERFRAMES !== "1" || !commandExists("npx") || !commandExists("ffmpeg")) return;
-  const { project } = readyProject(2);
-  writeFileSync(join(project, "asset-manifest.json"), JSON.stringify({ assets: [] }));
-  writeFileSync(
-    join(project, "enrichment-plan.json"),
-    JSON.stringify({
-      version: "1.2",
-      profile: { source_mode: "screen_recording", aspect_ratio: "source", caption_identity: "anchor" },
-      captions: { enabled: true, identity: "anchor", emphasis: [{ start: 0.4, end: 1.0, text: "真实字幕重点", reason: "same as caption component" }] },
-      elements: [
-        { id: "lower", source: "agent", element_id: "lt-accent-underline", element_type: "registry_block", start: 0.2, end: 0.9, zone: "lower_third", params: { title: "关键步骤", subtitle: "屏幕操作" }, reason: "real registry block" },
-        { id: "caption-pop", source: "agent", element_id: "caption-highlight", element_type: "registry_component", start: 0.4, end: 1.0, params: { text: "真实字幕重点" }, reason: "real caption component without demo words" },
-        { id: "shine", source: "agent", element_id: "shimmer-sweep", element_type: "registry_component", start: 0.9, end: 1.4, anchor_point: { x: 0.08, y: 0.68 }, params: { text: "关键节点" }, reason: "real registry component" },
-        { id: "click", source: "agent", element_id: "click", element_type: "sfx", start: 1.2, end: 1.45, sfx_id: "click", reason: "real vendored sfx" },
-      ],
-      music: [],
-    }),
-  );
-  const rendered = renderProject(project);
-  if (!rendered.ok) throw new Error(rendered.error.message);
-  expect(Boolean(rendered.data.final_render_path && existsSync(rendered.data.final_render_path))).toBe(true);
-  const indexHtml = readFileSync(join(project, ".hyperframes", "recut", "public", "index.html"), "utf8");
-  expect(indexHtml).toContain('data-composition-src="compositions/lt-accent-underline.html"');
-  expect(indexHtml).toContain("shimmer-sweep-target");
-  expect(indexHtml).toContain("caption-component-host");
-  expect(indexHtml).toContain("caption-component-host shimmer-sweep-target zone-caption");
-  expect(indexHtml.includes("caption-component-host shimmer-sweep-target zone-lower_third")).toBe(false);
-  expect(indexHtml.includes('class="clip emphasis-chip"')).toBe(false);
-  expect(indexHtml).toContain("max-width:min(820px, calc(100% - 160px))");
-  expect(indexHtml).toContain("真实字幕重点");
-  expect(indexHtml.includes("Every great")).toBe(false);
-  expect(existsSync(join(project, ".hyperframes", "recut", "public", "compositions", "lt-accent-underline.html"))).toBe(true);
-  const lowerHtml = readFileSync(join(project, ".hyperframes", "recut", "public", "compositions", "lt-accent-underline.html"), "utf8");
-  expect(lowerHtml).toContain("关键步骤");
-  expect(lowerHtml.includes("Dr. Maya Chen")).toBe(false);
-  expect(existsSync(join(project, ".hyperframes", "recut", "public", "compositions", "components", "shimmer-sweep.html"))).toBe(true);
-  const inspected = inspectProject(project);
-  expect(inspected.ok).toBe(true);
-  if (!inspected.ok) throw new Error(inspected.error.message);
-  expect(inspected.data.element_usage.map((usage) => usage.element_id)).toEqual(["anchor", "lt-accent-underline", "caption-highlight", "shimmer-sweep", "click"]);
-  expect(inspected.data.element_usage[1]?.adapter.family).toBe("lower_third");
-  expect(readFileSync(inspected.data.report_path, "utf8")).toContain("family=lower_third strategy=native_composition");
-  expect(inspected.data.inspection_frames.some((frame) => frame.includes("element-lower"))).toBe(true);
 });
 
 test("extracts ordered source-local semantic frames without an EDL", () => {
@@ -2657,12 +2093,13 @@ test("completes focus flow from candidates to proposed elements and enrich plan 
   writeFileSync(
     join(project, "enrichment-plan.json"),
     JSON.stringify({
-      version: "1.2",
-      profile: { source_mode: "screen_recording" },
-      captions: { enabled: true, identity: "anchor", emphasis: [] },
-      cards: [],
-      music: [],
-      elements: review.data.proposed_elements,
+      version: "2.0",
+      profile: { source_mode: "screen_recording", aspect_ratio: "source", caption_identity: "anchor", layout: "overlay", style: "minimal", frame: "clean" },
+      elements: [
+        { id: "captions-anchor", source: "agent", element_id: "anchor", element_type: "caption_identity", start: 0, end: 2, caption_identity: "anchor", reason: "captions" },
+        ...review.data.proposed_elements,
+      ],
+      audio: { music: [], sfx: [] },
     }),
   );
 
@@ -2720,6 +2157,7 @@ test("artifact lifecycle: focus consumers rebuild an EDL after the edit plan cha
       ],
     },
   );
+  confirmProposalAndWriteEditPlan(project);
 
   const firstRender = renderProject(project);
   expect(firstRender.ok).toBe(true);
@@ -2818,204 +2256,26 @@ test("artifact lifecycle: inspect rerun removes retired inspection-frame records
   expect(committed.stage_attempts["project.inspect"]?.output_artifact_keys.includes(retiredKey)).toBe(false);
 });
 
-test("artifact lifecycle: enrichment authority conflicts fail closed without rewriting canonical state", () => {
+
+
+test("artifact lifecycle: standalone asset usage is consumed, immutable in lineage, idempotent, and renderable", () => {
   if (!commandExists("ffmpeg")) return;
-
-  const canonicalProject = readyProject(2, "platform").project;
-  const canonicalAssetDir = join(canonicalProject, "assets", "koubo-clip");
-  mkdirSync(canonicalAssetDir, { recursive: true });
-  makeMusic(join(canonicalAssetDir, "handoff.wav"), 2);
-  const canonicalPath = join(canonicalProject, "enrichment-plan.json");
-  const canonicalText = JSON.stringify({
-    version: "1.2",
-    profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor" },
-    captions: { enabled: false, identity: "anchor", emphasis: [] },
-    cards: [],
-    music: [],
-    elements: [],
-  });
-  writeFileSync(canonicalPath, canonicalText);
-  writeFileSync(
-    join(canonicalProject, "asset-usage-plan.json"),
-    JSON.stringify({
-      version: "1.0",
-      music: [
-        {
-          asset_ref: "assets/koubo-clip/handoff.wav",
-          start: 0,
-          end: 1.8,
-          volume: 0.1,
-          duck_original_audio: true,
-          fade_in: 0.1,
-          fade_out: 0.1,
-          purpose: "compatibility handoff",
-        },
-      ],
-      sfx: [],
-      visual_assets: [],
-    }),
-  );
-  const canonicalConflict = enrichPlanProject(canonicalProject, { providerMode: "platform" });
-
-  const duplicateProject = readyProject(2, "platform").project;
-  const duplicateAssetDir = join(duplicateProject, "assets", "koubo-clip");
-  mkdirSync(duplicateAssetDir, { recursive: true });
-  makeMusic(join(duplicateAssetDir, "bed.wav"), 2);
-  makeMusic(join(duplicateAssetDir, "click.wav"), 0.3);
-  const projectMetadataPath = join(duplicateProject, "project.json");
-  const projectMetadata = JSON.parse(readFileSync(projectMetadataPath, "utf8")) as Record<string, unknown>;
-  writeFileSync(
-    projectMetadataPath,
-    JSON.stringify({
-      ...projectMetadata,
-      asset_usage_plan: {
-        music: [
-          {
-            asset_ref: "assets/koubo-clip/bed.wav",
-            start: 0,
-            end: 1.8,
-            volume: 0.1,
-            duck_original_audio: true,
-            fade_in: 0.1,
-            fade_out: 0.1,
-            purpose: "legacy project source",
-          },
-        ],
-        sfx: [],
-        visual_assets: [],
-      },
-    }),
-  );
-  const duplicateEditPlanPath = join(duplicateProject, "edit-plan.json");
-  const duplicateEditPlan = JSON.parse(readFileSync(duplicateEditPlanPath, "utf8")) as Record<string, unknown>;
-  writeFileSync(
-    duplicateEditPlanPath,
-    JSON.stringify({
-      ...duplicateEditPlan,
-      asset_usage_plan: {
-        music: [],
-        sfx: [
-          {
-            asset_ref: "assets/koubo-clip/click.wav",
-            time: 0.7,
-            duration: 0.2,
-            volume: 0.2,
-            fade_seconds: 0,
-            purpose: "legacy edit plan source",
-          },
-        ],
-        visual_assets: [],
-      },
-    }),
-  );
-  const duplicateConflict = enrichPlanProject(duplicateProject, { providerMode: "platform" });
-
-  expect({
-    canonical_ok: canonicalConflict.ok,
-    canonical_code: canonicalConflict.ok ? undefined : canonicalConflict.error.code,
-    canonical_unchanged: readFileSync(canonicalPath, "utf8") === canonicalText,
-    duplicate_ok: duplicateConflict.ok,
-    duplicate_code: duplicateConflict.ok ? undefined : duplicateConflict.error.code,
-    duplicate_did_not_create_canonical: !existsSync(join(duplicateProject, "enrichment-plan.json")),
-  }).toEqual({
-    canonical_ok: false,
-    canonical_code: "ASSET_USAGE_PLAN_CONFLICT",
-    canonical_unchanged: true,
-    duplicate_ok: false,
-    duplicate_code: "ASSET_USAGE_PLAN_CONFLICT",
-    duplicate_did_not_create_canonical: true,
-  });
-});
-
-test("artifact lifecycle: normalized asset usage is consumed, archived, idempotent, and renderable", async () => {
-  if (!commandExists("ffmpeg")) return;
-  const usagePlan = {
-    version: "1.0",
-    music: [
-      {
-        asset_ref: "assets/koubo-clip/bed.wav",
-        start: 0,
-        end: 1.8,
-        volume: 0.1,
-        duck_original_audio: true,
-        fade_in: 0.1,
-        fade_out: 0.1,
-        purpose: "compatibility handoff",
-      },
-    ],
-    sfx: [],
-    visual_assets: [],
-  };
-  const archivedUsageRecords = (project: string) => {
-    const manifest = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as {
-      artifacts: Record<string, { key: string; path: string }>;
-    };
-    return Object.values(manifest.artifacts).filter((record) => record.key.startsWith("asset-usage-plan:"));
-  };
-
-  const ready = readyProject(2, "platform");
-  const standaloneProject = ready.project;
-  const standaloneAssetDir = join(standaloneProject, "assets", "koubo-clip");
-  mkdirSync(standaloneAssetDir, { recursive: true });
-  makeMusic(join(standaloneAssetDir, "bed.wav"), 2);
-  const standaloneUsagePath = join(standaloneProject, "asset-usage-plan.json");
-  writeFileSync(standaloneUsagePath, JSON.stringify(usagePlan));
-
-  const normalizedStandalone = enrichPlanProject(standaloneProject, { providerMode: "platform" });
-  expect(normalizedStandalone.ok).toBe(true);
-  expect(existsSync(standaloneUsagePath)).toBe(false);
-  const standaloneArchives = archivedUsageRecords(standaloneProject);
-  expect(standaloneArchives.length).toBe(1);
-  expect(standaloneArchives[0]?.path.startsWith(".migration/asset-usage-plan/")).toBe(true);
-  expect(existsSync(join(standaloneProject, standaloneArchives[0]!.path))).toBe(true);
-  const secondStandalone = enrichPlanProject(standaloneProject, { providerMode: "platform" });
-  const renderedStandalone = renderProject(standaloneProject, { providerMode: "platform" });
-
-  const embeddedProject = join(nodePath.dirname(standaloneProject), "embedded-project");
-  const createdEmbedded = createProject([ready.source], { projectPath: embeddedProject, providerMode: "platform" });
-  expect(createdEmbedded.ok).toBe(true);
-  writeFileSync(
-    join(embeddedProject, "transcript.json"),
-    JSON.stringify({
-      timing_granularity: "segment",
-      segments: [{ source_id: "src-001", start: 0.1, end: 1.9, text: "hello world" }],
-    }),
-  );
-  expect((await exploreProject(embeddedProject, { asr: "external", providerMode: "platform" })).ok).toBe(true);
-  const embeddedAssetDir = join(embeddedProject, "assets", "koubo-clip");
-  mkdirSync(embeddedAssetDir, { recursive: true });
-  copyFileSync(join(standaloneAssetDir, "bed.wav"), join(embeddedAssetDir, "bed.wav"));
-  writeFileSync(join(embeddedProject, "edit-plan.json"), JSON.stringify({ decisions: [], asset_usage_plan: usagePlan }));
-
-  const normalizedEmbedded = enrichPlanProject(embeddedProject, { providerMode: "platform" });
-  expect(normalizedEmbedded.ok).toBe(true);
-  const consumedEditPlan = JSON.parse(readFileSync(join(embeddedProject, "edit-plan.json"), "utf8")) as Record<string, unknown>;
-  expect("asset_usage_plan" in consumedEditPlan).toBe(false);
-  const embeddedArchives = archivedUsageRecords(embeddedProject);
-  expect(embeddedArchives.length).toBe(1);
-  expect(embeddedArchives[0]?.path.startsWith(".migration/asset-usage-plan/")).toBe(true);
-  expect(existsSync(join(embeddedProject, embeddedArchives[0]!.path))).toBe(true);
-  const secondEmbedded = enrichPlanProject(embeddedProject, { providerMode: "platform" });
-  const renderedEmbedded = renderProject(embeddedProject, { providerMode: "platform" });
-  expect({
-    standalone_second_ok: secondStandalone.ok,
-    standalone_second_error: secondStandalone.ok ? undefined : `${secondStandalone.error.code}: ${secondStandalone.error.message}`,
-    standalone_render_ok: renderedStandalone.ok,
-    standalone_render_error: renderedStandalone.ok ? undefined : `${renderedStandalone.error.code}: ${renderedStandalone.error.message}`,
-    embedded_second_ok: secondEmbedded.ok,
-    embedded_second_error: secondEmbedded.ok ? undefined : `${secondEmbedded.error.code}: ${secondEmbedded.error.message}`,
-    embedded_render_ok: renderedEmbedded.ok,
-    embedded_render_error: renderedEmbedded.ok ? undefined : `${renderedEmbedded.error.code}: ${renderedEmbedded.error.message}`,
-  }).toEqual({
-    standalone_second_ok: true,
-    standalone_second_error: undefined,
-    standalone_render_ok: true,
-    standalone_render_error: undefined,
-    embedded_second_ok: true,
-    embedded_second_error: undefined,
-    embedded_render_ok: true,
-    embedded_render_error: undefined,
-  });
+  const { project } = readyProject(2, "platform");
+  const assetDir = join(project, "assets", "koubo-clip");
+  mkdirSync(assetDir, { recursive: true });
+  makeMusic(join(assetDir, "bed.wav"), 2);
+  const handoff = join(project, "asset-usage-plan.json");
+  writeFileSync(handoff, JSON.stringify({
+    music: [{ asset_ref: "assets/koubo-clip/bed.wav", start: 0, end: 1.8, volume: 0.1, duck_original_audio: true, fade_in: 0.1, fade_out: 0.1, purpose: "handoff" }],
+    sfx: [], visual_assets: [],
+  }));
+  expect(enrichPlanProject(project, { providerMode: "platform" }).ok).toBe(true);
+  expect(existsSync(handoff)).toBe(false);
+  expect(enrichPlanProject(project, { providerMode: "platform" }).ok).toBe(true);
+  expect(renderProject(project, { providerMode: "platform" }).ok).toBe(true);
+  const manifest = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as { artifacts: Record<string, { path: string }> };
+  const usage = Object.entries(manifest.artifacts).find(([key]) => key.startsWith("asset-usage-plan:"));
+  expect(usage?.[1].path.startsWith(".virtual/asset-usage-plan/")).toBe(true);
 });
 
 test("artifact lifecycle: failed source-frame regeneration preserves committed manifest and evidence bytes", () => {
@@ -3158,7 +2418,7 @@ async function projectWithAnalysis(timing: "word" | "segment" | "text-only", lan
   writeOwnedAnalysis(project, {
     candidates: [{ id: "c-001-filler", source_id: "src-001", start: 0, end: 1, text: "嗯", type: "filler", reason: "test", confidence: 0.9 }],
   });
-  writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ decisions: [{ action: "cut", candidate_id: "c-001-filler" }] }));
+  confirmProposalAndWriteEditPlan(project, [{ action: "cut", candidate_id: "c-001-filler" }]);
   return project;
 }
 
@@ -3192,7 +2452,7 @@ function readyProject(duration = 2, providerMode: "standalone" | "platform" = "s
     }),
   );
   exploreProject(project, { asr: "external" });
-  writeFileSync(join(project, "edit-plan.json"), JSON.stringify({ decisions: [] }));
+  confirmProposalAndWriteEditPlan(project);
   return { project, source };
 }
 

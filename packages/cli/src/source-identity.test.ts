@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import {
-  normalizeSourcesManifest,
   parseSourceMap,
   parseSourceMaterializationManifest,
   parseSourcesManifestV2,
@@ -51,6 +50,7 @@ test("sources v2 parser returns a canonical strict identity", () => {
 });
 
 test("sources v2 parser rejects unknown fields and incomplete or ambiguous identity", () => {
+  expect(() => parseSourcesManifestV2({ sources: [source()] })).toThrow("contract_version");
   expect(() => parseSourcesManifestV2({ contract_version: "2.0", sources: [{ ...source(), unexpected: true }] })).toThrow("unknown field");
   expect(() => parseSourcesManifestV2({ contract_version: "2.0", sources: [source({ source_id: "../raw" })] })).toThrow("opaque identifier");
   expect(() => parseSourcesManifestV2({ contract_version: "2.0", sources: [source({ original_filename: "source/raw.mp4" })] })).toThrow("filename");
@@ -91,39 +91,6 @@ test("source materialization parser binds verified bytes to safe project-relativ
       { source_id: "src-002", project_path: "source/a.mp4", sha256: HASH_B, size_bytes: 2 },
     ],
   })).toThrow("duplicate materialization project_path");
-});
-
-test("legacy source manifests normalize without inventing portable identity", () => {
-  const normalized = normalizeSourcesManifest({
-    sources: [{
-      source_id: "src-legacy",
-      order: 0,
-      original_filename: "legacy.mp4",
-      project_path: "source/001-legacy.mp4",
-      duration_seconds: 12,
-      probe: { streams: [] },
-    }],
-  });
-  expect(normalized).toEqual({
-    contract_version: "legacy",
-    sources: [{
-      source_id: "src-legacy",
-      order: 0,
-      original_filename: "legacy.mp4",
-      project_path: "source/001-legacy.mp4",
-      duration_seconds: 12,
-      probe: { streams: [] },
-    }],
-  });
-  expect(normalized.sources[0]?.identity).toBe(undefined);
-});
-
-test("portable source manifests normalize to the same common shape", () => {
-  const normalized = normalizeSourcesManifest({ contract_version: "2.0", sources: [source()] });
-  expect(normalized.contract_version).toBe("2.0");
-  expect(normalized.sources[0]?.duration_seconds).toBe(83.42);
-  expect(normalized.sources[0]?.project_path).toBe(undefined);
-  expect(normalized.sources[0]?.identity?.sha256).toBe(HASH_A);
 });
 
 test("identity fingerprint projection excludes display and host-only refs", () => {

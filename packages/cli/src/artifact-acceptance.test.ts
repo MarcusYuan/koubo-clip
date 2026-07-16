@@ -19,7 +19,7 @@ import {
   type ArtifactRecord,
   type ArtifactRole,
   type ProductionProposalArtifact,
-  type ProductionProposalOptionV1_1,
+  type ProductionProposalOption,
   type ProjectStatusArtifact,
   type RenderResult,
 } from "./artifacts";
@@ -43,7 +43,7 @@ import { projectStatus } from "./project-status";
 
 const RECORDED_AT = "2026-07-15T01:00:00.000Z";
 
-test("proposal v1.1 invalidation is scoped to the confirmed option", async () => {
+test("proposal v2 invalidation is scoped to the confirmed option", async () => {
   if (!commandExists("ffmpeg")) return;
   const project = await confirmedProject();
 
@@ -107,122 +107,6 @@ test("proposal v1.1 invalidation is scoped to the confirmed option", async () =>
   expect(afterSelectedChange.canonical_deliverable).toBe(undefined);
 });
 
-test("project status derives stage state from the exact current attempt inputs", () => {
-  const withoutAttempt = trackedRenderProject();
-  const withoutAttemptManifest = readManifest(withoutAttempt.project);
-  delete withoutAttemptManifest.stage_attempts["project.render"];
-  writeManifest(withoutAttempt.project, withoutAttemptManifest);
-  expect(stage(projectStatus(withoutAttempt.project), "render")?.state).toBe("ready");
-
-  const fixture = trackedRenderProject();
-  const renderStage = stage(projectStatus(fixture.project), "render");
-  expect(renderStage?.state).toBe("complete");
-  expect(renderStage?.input_fingerprint).toBe(fixture.renderInputFingerprint);
-  expect(renderStage?.last_attempt?.input_fingerprint).toBe(fixture.renderInputFingerprint);
-  expect(renderStage?.last_attempt?.status).toBe("success");
-
-  const manifest = readManifest(fixture.project);
-  manifest.stage_attempts["project.render"] = {
-    ...manifest.stage_attempts["project.render"]!,
-    status: "failed",
-    output_artifact_keys: [],
-    failure_code: "RENDER_RETRY_FAILED",
-    failure_message: "retry failed after the prior output was committed",
-    remediation: "Retry with the same current inputs.",
-  };
-  writeManifest(fixture.project, manifest);
-
-  const failedRetryWithCurrentOutput = stage(projectStatus(fixture.project), "render");
-  expect(failedRetryWithCurrentOutput?.state).toBe("complete");
-  expect(failedRetryWithCurrentOutput?.last_attempt?.status).toBe("failed");
-  expect(failedRetryWithCurrentOutput?.input_fingerprint).toBe(fixture.renderInputFingerprint);
-
-  unlinkSync(join(fixture.project, "render-result.json"));
-  const failedWithoutCurrentOutput = stage(projectStatus(fixture.project), "render");
-  expect(failedWithoutCurrentOutput?.state).toBe("failed");
-  expect(failedWithoutCurrentOutput?.last_attempt?.status).toBe("failed");
-
-  const transcriptPath = join(fixture.project, "transcript.json");
-  const changedTranscript = {
-    timing_granularity: "segment",
-    segments: [{ source_id: "src-001", start: 0, end: 2, text: "changed transcript" }],
-  } as const;
-  writeJson(transcriptPath, changedTranscript);
-  const changedManifest = readManifest(fixture.project);
-  changedManifest.artifacts.transcript!.fingerprint = semanticJsonFingerprint(
-    parseTranscript(changedTranscript, fixture.sources),
-  );
-  writeManifest(fixture.project, changedManifest);
-
-  const oldAttemptForNewInputs = stage(projectStatus(fixture.project), "render");
-  expect(oldAttemptForNewInputs?.input_fingerprint === fixture.renderInputFingerprint).toBe(false);
-  expect(oldAttemptForNewInputs?.state).toBe("ready");
-  expect(oldAttemptForNewInputs?.last_attempt?.status).toBe("failed");
-});
-
-test("project status fails closed for artifact and dependency schema tampering", () => {
-  const recordTamper = trackedRenderProject();
-  const recordManifest = readManifest(recordTamper.project);
-  recordManifest.artifacts["render-result"]!.schema_version = "9.9";
-  writeManifest(recordTamper.project, recordManifest);
-
-  const invalidRecordStatus = projectStatus(recordTamper.project);
-  expect(artifact(invalidRecordStatus, "render-result")?.state).toBe("invalid");
-  expect(artifact(invalidRecordStatus, "render-result")?.reason_code).toBe("MANIFEST_RECORD_MISMATCH");
-  expect(invalidRecordStatus.canonical_deliverable).toBe(undefined);
-
-  const dependencyTamper = trackedRenderProject();
-  const dependencyManifest = readManifest(dependencyTamper.project);
-  dependencyManifest.artifacts["render-output:clean"]!.inputs[0] = {
-    ...dependencyManifest.artifacts["render-output:clean"]!.inputs[0]!,
-    schema_version: "9.9",
-  };
-  writeManifest(dependencyTamper.project, dependencyManifest);
-
-  const staleDependencyStatus = projectStatus(dependencyTamper.project);
-  expect(artifact(staleDependencyStatus, "render-output:clean")?.state).toBe("stale");
-  expect(artifact(staleDependencyStatus, "render-output:clean")?.reason_code).toBe(
-    "DEPENDENCY_SCHEMA_CHANGED",
-  );
-  expect(artifact(staleDependencyStatus, "render-result")?.state).toBe("stale");
-  expect(staleDependencyStatus.canonical_deliverable).toBe(undefined);
-});
-
-test("changing or deleting Markdown views does not change machine workflow state", () => {
-  const fixture = trackedRenderProject();
-  const materialReportPath = join(fixture.project, "material-report.md");
-  const reportPath = join(fixture.project, "report.md");
-  writeFileSync(materialReportPath, "# Material\n");
-  writeFileSync(reportPath, "# Inspection report\n");
-
-  const manifest = readManifest(fixture.project);
-  manifest.artifacts["material-report"] = record({
-    key: "material-report",
-    path: "material-report.md",
-    role: "human_view",
-    schemaVersion: "text",
-    fingerprint: fileBytesFingerprint(materialReportPath),
-    command: "project.explore",
-  });
-  manifest.artifacts.report = record({
-    key: "report",
-    path: "report.md",
-    role: "human_view",
-    schemaVersion: "text",
-    fingerprint: fileBytesFingerprint(reportPath),
-    command: "project.inspect",
-  });
-  writeManifest(fixture.project, manifest);
-
-  const before = projectStatus(fixture.project);
-  writeFileSync(reportPath, "# Completely rewritten human report\n");
-  unlinkSync(materialReportPath);
-  const after = projectStatus(fixture.project);
-
-  expect(machineState(after)).toEqual(machineState(before));
-  expect(artifact(after, "report")?.state).toBe("current");
-  expect(artifact(after, "material-report")?.state).toBe("missing");
-});
 
 test("a real enriched render stays current through inspect and ignores unused asset bytes", async () => {
   if (!commandExists("ffmpeg")) return;
@@ -250,13 +134,12 @@ test("a real enriched render stays current through inspect and ignores unused as
     ],
   });
   writeJson(join(project, "enrichment-plan.json"), {
-    version: "1.1",
-    profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor" },
-    captions: { enabled: false, identity: "anchor" },
-    cards: [],
-    music: [
-      { id: "bed", type: "music_segment", start: 0, end: 1.7, asset_id: "bed", volume: 0.08, fade_seconds: 0.1, ducking: true, reason: "quiet bed" },
-    ],
+    version: "2.0",
+    profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor", layout: "stack", style: "whiteboard", frame: "clean" },
+    elements: [],
+    audio: { music: [
+      { id: "bed", start: 0, end: 1.7, asset_id: "bed", volume: 0.08, fade_seconds: 0.1, ducking: true, reason: "quiet bed" },
+    ], sfx: [] },
   });
 
   const enriched = enrichPlanProject(project);
@@ -316,21 +199,20 @@ async function confirmedProject(): Promise<string> {
   if (!reviewed.ok) throw new Error(reviewed.error.message);
   return project;
 }
-
 function proposalDocument(
   selectedTitle: string,
   alternativeTitle: string,
 ): ProductionProposalArtifact {
   return {
-    version: "1.1",
+    version: "2.0",
     source_mode: "talking_head_avatar",
     presentation_intent: "knowledge_explainer",
     goal_summary: "make a concise explainer",
     material_summary: "one short talking-head source",
     recommended_option_id: "selected",
     options: [
-      proposalOption("selected", selectedTitle, true),
-      proposalOption("alternative", alternativeTitle, false),
+      proposalOption("selected", selectedTitle),
+      proposalOption("alternative", alternativeTitle),
     ],
   };
 }
@@ -338,12 +220,10 @@ function proposalDocument(
 function proposalOption(
   id: string,
   title: string,
-  recommended: boolean,
-): ProductionProposalOptionV1_1 {
+): ProductionProposalOption {
   return {
     id,
     label: title,
-    recommended,
     reason: `${title} best fits this fixture`,
     cleanup: { cut_candidate_ids: [], keep_strategy: "keep the complete statement", risks: [] },
     subtitles: { enabled: true, style: "anchor", conflict_notes: [] },
@@ -358,7 +238,6 @@ function proposalOption(
     sfx: { enabled: false, usage: "none", restraint: "no decoration" },
     requires_confirmation: [],
     business_direction: {
-      direction_id: id,
       title,
       suitable_for: "knowledge sharing",
       editing_strategy: "keep the complete explanation",
@@ -377,10 +256,6 @@ function proposalOption(
       remove_segments: [],
       reorder_segments: [],
       text_overlays: [],
-      visual_asset_slots: [],
-      music_slots: [],
-      sfx_slots: [],
-      image_slots: [],
       user_confirmation_summary: `use ${title}`,
     },
     asset_requirements: {

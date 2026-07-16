@@ -14,8 +14,7 @@ import {
   verifyDeliveryManifest,
   type DeliveryDigest,
   type DeliveryIdentityErrorCode,
-  type DeliveryManifestV1,
-  type DeliveryManifestV2,
+  type DeliveryManifestV3,
 } from "./delivery-identity";
 
 test("delivery digest is sorted by POSIX path and ignores filesystem mtime", () => {
@@ -92,10 +91,12 @@ test("strict delivery manifest parser rejects unknown fields and malformed diges
     () => parseDeliveryManifest({ ...manifest, cli_payload_digest: "sha256:not-a-digest" }),
     "DELIVERY_MANIFEST_INVALID",
   );
+  expectDeliveryError(() => parseDeliveryManifest({ ...manifest, schema_version: "1.0" }), "DELIVERY_MANIFEST_INVALID");
+  expectDeliveryError(() => parseDeliveryManifest({ ...manifest, schema_version: "2.0" }), "DELIVERY_MANIFEST_INVALID");
 });
 
-test("delivery manifest v2 binds every released component to one aggregate digest", () => {
-  const manifest = manifestV2Fixture();
+test("delivery manifest v3 binds every released component to one aggregate digest", () => {
+  const manifest = manifestFixture();
   expect(parseDeliveryManifest(manifest)).toEqual(manifest);
   expect(computeDeliveryDigest(manifest)).toBe(manifest.delivery_digest);
   expectDeliveryError(
@@ -106,6 +107,7 @@ test("delivery manifest v2 binds every released component to one aggregate diges
           cli_payload_digest: manifest.cli_payload_digest,
           renderer_resources_digest: manifest.renderer_resources_digest,
           official_skill_digest: digest("9"),
+          artifact_contracts_digest: manifest.artifact_contracts_digest,
         },
       ),
     "DELIVERY_DIGEST_MISMATCH",
@@ -133,6 +135,7 @@ test("manifest verification detects delivered byte and runtime contract tamperin
       cli_payload_digest: cli.digest,
       renderer_resources_digest: resources.digest,
       official_skill_digest: skill.digest,
+      artifact_contracts_digest: manifest.artifact_contracts_digest,
     }),
   ).toEqual(manifest);
 
@@ -143,6 +146,7 @@ test("manifest verification detects delivered byte and runtime contract tamperin
         cli_payload_digest: computeCliPayloadDigest({ root: cliRoot }).digest,
         renderer_resources_digest: resources.digest,
         official_skill_digest: skill.digest,
+        artifact_contracts_digest: manifest.artifact_contracts_digest,
       }),
     "DELIVERY_DIGEST_MISMATCH",
   );
@@ -155,46 +159,52 @@ test("manifest verification detects delivered byte and runtime contract tamperin
           cli_payload_digest: manifest.cli_payload_digest,
           renderer_resources_digest: resources.digest,
           official_skill_digest: skill.digest,
+          artifact_contracts_digest: manifest.artifact_contracts_digest,
         },
       ),
     "DELIVERY_DIGEST_MISMATCH",
   );
+
+  expectDeliveryError(
+    () =>
+      verifyDeliveryManifest(manifest, {
+        cli_payload_digest: manifest.cli_payload_digest,
+        renderer_resources_digest: resources.digest,
+        official_skill_digest: skill.digest,
+        artifact_contracts_digest: digest("9"),
+      }),
+    "DELIVERY_DIGEST_MISMATCH",
+  );
 });
 
-function manifestFixture(overrides: Partial<DeliveryManifestV1> = {}): DeliveryManifestV1 {
+function manifestFixture(overrides: Partial<DeliveryManifestV3> = {}): DeliveryManifestV3 {
+  const { delivery_digest: deliveryDigest, ...identityOverrides } = overrides;
   const base = {
-    schema_version: "1.0" as const,
+    schema_version: "3.0" as const,
     cli_version: "0.0.1",
     source_revision: "abc123",
     distribution_kind: "npm",
     cli_payload_digest: digest("1"),
     renderer_resources_digest: digest("2"),
     official_skill_digest: digest("3"),
-    schema_versions: { "artifact-manifest.json": "1.0", "delivery-manifest.json": "1.0" },
+    artifact_contracts_digest: digest("4"),
+    schema_versions: { "artifact-manifest.json": "1.0", "delivery-manifest.json": "3.0" },
     capability_ids: ["project.render", "project.status"],
     runtime_dependencies: ["bun_stdlib", "ffmpeg"],
   };
-  return {
+  const manifest: Omit<DeliveryManifestV3, "delivery_digest"> = {
     ...base,
-    runtime_compatibility_digest: computeRuntimeCompatibilityDigest(base),
-    ...overrides,
-    ...(overrides.runtime_compatibility_digest
-      ? {}
-      : {
-          runtime_compatibility_digest: computeRuntimeCompatibilityDigest({
-            renderer_resources_digest: overrides.renderer_resources_digest ?? base.renderer_resources_digest,
-            schema_versions: overrides.schema_versions ?? base.schema_versions,
-            capability_ids: overrides.capability_ids ?? base.capability_ids,
-            runtime_dependencies: overrides.runtime_dependencies ?? base.runtime_dependencies,
-          }),
-        }),
+    ...identityOverrides,
+    runtime_compatibility_digest:
+      identityOverrides.runtime_compatibility_digest ??
+      computeRuntimeCompatibilityDigest({
+        renderer_resources_digest: identityOverrides.renderer_resources_digest ?? base.renderer_resources_digest,
+        schema_versions: identityOverrides.schema_versions ?? base.schema_versions,
+        capability_ids: identityOverrides.capability_ids ?? base.capability_ids,
+        runtime_dependencies: identityOverrides.runtime_dependencies ?? base.runtime_dependencies,
+      }),
   };
-}
-
-function manifestV2Fixture(): DeliveryManifestV2 {
-  const v1 = manifestFixture();
-  const base = { ...v1, schema_version: "2.0" as const };
-  return { ...base, delivery_digest: computeDeliveryDigest(base) };
+  return { ...manifest, delivery_digest: deliveryDigest ?? computeDeliveryDigest(manifest) };
 }
 
 function fixtureRoot(label: string): string {

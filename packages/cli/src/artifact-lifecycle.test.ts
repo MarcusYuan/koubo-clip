@@ -140,7 +140,7 @@ test("dependency evaluation propagates pending and stale state through the full 
   expect(states.render?.reason_code).toBe("DEPENDENCY_STALE");
 });
 
-test("legacy inputs remain pending while legacy derived artifacts report LINEAGE_UNPROVEN", () => {
+test("unregistered inputs remain pending while unproven derived artifacts report LINEAGE_UNPROVEN", () => {
   const states = evaluateArtifactStates([
     node("edit-plan", "authoritative_input", FP_A),
     node("old-edl", "derived", FP_B),
