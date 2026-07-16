@@ -15,12 +15,14 @@ import {
   type ArtifactManifest,
   type ArtifactRecord,
   type CommandResult,
+  type CaptionEmphasis,
   type EdlArtifact,
   type EdlEntry,
   type EnrichmentCard,
   type EnrichmentElement,
   type EnrichmentPlanArtifact,
   type EnrichmentMusic,
+  type EnrichmentSfx,
   type EnrichmentSourceMode,
   type FocusCandidate,
   type FocusCandidatesArtifact,
@@ -74,8 +76,10 @@ import {
   parseVisualCandidates,
   parseVisualRequest,
   parseVisualReview,
+  defaultEnrichmentProfile,
   projectArtifacts,
 } from "./artifacts";
+import { ArtifactValidationError, productionProposalContractInfo, type ArtifactValidationIssue } from "./artifact-contracts";
 import {
   artifactReference,
   assetManifestFingerprintProjection,
@@ -185,7 +189,7 @@ export type EnrichmentStoryboard = {
     enabled: boolean;
     identity: "anchor";
     cues: Array<{ start: number; end: number; text: string }>;
-    emphasis: EnrichmentPlanArtifact["captions"]["emphasis"];
+    emphasis: CaptionEmphasis[];
   };
   qa_checks: ProjectQaCheck[];
   asset_summary: ProjectAssetSummary[];
@@ -608,7 +612,7 @@ export function createProject(
       key: "project",
       path: projectArtifacts.project,
       role: "authoritative_input",
-      schema_version: projectMetadata.contract_version ?? "legacy",
+      schema_version: projectMetadata.contract_version,
       authored_by: "cli",
       command: "project.create",
       mode: "produced",
@@ -735,7 +739,7 @@ function finishExploreProject(
       {
         path: projectArtifacts.project,
         role: "authoritative_input",
-        schema_version: projectMetadata.contract_version ?? "legacy",
+        schema_version: projectMetadata.contract_version,
       },
       "project.explore",
     );
@@ -745,50 +749,7 @@ function finishExploreProject(
       lifecycleManifest,
       "project.explore",
     ));
-  } else {
-    const projectRecord = recordJsonArtifact({
-      project_path: projectPath,
-      key: "project",
-      path: projectArtifacts.project,
-      role: "authoritative_input",
-      schema_version: projectMetadata.contract_version ?? "legacy",
-      authored_by: "cli",
-      command: "project.explore",
-      mode: "validated",
-      value: projectMetadataFingerprintProjection(projectMetadata),
-      recorded_at: recordedAt,
-    });
-    sourceRecords = manifest.sources.map((source) => {
-      projectSourceFingerprint(projectPath, source.source_id, source.project_path, "project.explore");
-      return recordFileArtifact({
-        project_path: projectPath,
-        key: `source:${source.source_id}`,
-        path: source.project_path,
-        role: "authoritative_input",
-        schema_version: "bytes-v1",
-        authored_by: "cli",
-        command: "project.explore",
-        mode: "validated",
-        recorded_at: recordedAt,
-      });
-    });
-    const sourceReferences = sourceRecords.map(artifactReference);
-    sourcesRecord = recordJsonArtifact({
-      project_path: projectPath,
-      key: "sources",
-      path: projectArtifacts.sources,
-      role: "authoritative_input",
-      schema_version: "1.0",
-      authored_by: "cli",
-      command: "project.explore",
-      mode: "validated",
-      inputs: sourceReferences,
-      value: manifest,
-      file_sha256: projectFileBytesFingerprint(projectPath, projectArtifacts.sources, "sources manifest"),
-      recorded_at: recordedAt,
-    });
-    records.push(projectRecord, ...sourceRecords, sourcesRecord);
-  }
+  } else throw lifecycleCommandError("LINEAGE_UNPROVEN", "artifact-manifest.json is required", "artifact-manifest", "Create the project with the current CLI.", "project.explore");
 
   const transcript = clampTranscriptToSources(parseTranscript(readProjectJson(projectPath, projectArtifacts.transcriptJson, "transcript"), manifest), manifest);
   writeJson(transcriptPath, transcript);
@@ -998,7 +959,7 @@ export function proposalProject(projectPath: string, options: ProviderModeOption
     const warnings = productionProposalWarnings(proposal);
     const markdownPath = join(projectPath, projectArtifacts.productionProposalMarkdown);
     atomicWriteText(markdownPath, renderProductionProposalMarkdown(proposal, warnings));
-    const summaries = proposal.options.map(productionProposalOptionSummary);
+    const summaries = proposal.options.map((option) => productionProposalOptionSummary(option, proposal.recommended_option_id));
     const recommendedOption = proposal.options.find((option) => option.id === proposal.recommended_option_id)!;
     const proposal_fingerprint = proposalFingerprint(proposal);
     const option_selection_fingerprints = proposalSelectionFingerprints(proposal);
@@ -1064,7 +1025,7 @@ export function proposalProject(projectPath: string, options: ProviderModeOption
       source_mode: proposal.source_mode,
       presentation_intent: proposal.presentation_intent,
       recommended_option_id: proposal.recommended_option_id,
-      recommended_option: productionProposalOptionSummary(recommendedOption),
+      recommended_option: productionProposalOptionSummary(recommendedOption, proposal.recommended_option_id),
       options: summaries,
       proposal_fingerprint,
       option_selection_fingerprints,
@@ -1081,8 +1042,8 @@ export function enrichPlanProject(projectPath: string, options: ProviderModeOpti
     resolveProjectProviderMode(projectPath, options.providerMode);
     const { plan, assets, duration, warnings, normalized } = validateEnrichmentPlan(projectPath, undefined, undefined, { normalizeUsage: true });
     if (!normalized) commitCanonicalEnrichmentValidation(projectPath, plan, assets);
-    const visualCount = plan.cards.length;
-    const musicCount = plan.music.length;
+    const visualCount = plan.elements.filter((element) => element.element_type !== "caption_identity").length;
+    const musicCount = plan.audio.music.length;
     const hyperframes = summarizeHyperframesBlocks(plan, assets);
     const elementUsage = summarizeHyperframesElements(plan);
     const qaChecks = buildQaChecks(projectPath, plan, assets);
@@ -1251,13 +1212,12 @@ export function focusFramesProject(projectPath: string, options: ProviderModeOpt
       fingerprint: candidatesFingerprint,
       schema_version: candidates.version,
     };
-    const materializedSources = readManifest(projectPath);
-    const materializedPathById = new Map(materializedSources.sources.map((source) => [source.source_id, source.project_path]));
+    const materializedPathById = materializedSourcePaths(projectPath, readManifest(projectPath));
     const timeline = buildOutputTimeline({
       ...edl,
       entries: edl.entries.map((entry) => ({
         ...entry,
-        source_path: entry.source_path || readableProjectSource(projectPath, entry.source_id, materializedPathById.get(entry.source_id) || ""),
+        source_path: readableProjectSource(projectPath, entry.source_id, materializedPathById.get(entry.source_id) || ""),
       })),
     });
     const samples: FocusFrameSample[] = candidates.candidates
@@ -1476,7 +1436,7 @@ export function sourceFramesProject(projectPath: string, options: ProviderModeOp
       ...sources.sources.map((source) => ({
         key: `source:${source.source_id}`,
         schema_version: "bytes-v1",
-        fingerprint: sourceFrameInputFingerprint(projectPath, source.source_id, source.project_path),
+        fingerprint: sourceFrameInputFingerprint(projectPath, source.source_id, materializedSourcePaths(projectPath, sources).get(source.source_id)!),
       } satisfies ArtifactFingerprintReference)),
     ];
     stageInputFingerprint = inputFingerprint(stageInputs);
@@ -1499,15 +1459,17 @@ export function sourceFramesProject(projectPath: string, options: ProviderModeOp
     atomicWriteJson(stagedManifestPath, artifact);
 
     const recordedAt = new Date().toISOString();
+    const materialization = materializedSourcePaths(projectPath, sources);
     const sourceRecords = sources.sources.map((source) => {
       const existing = lifecycleManifest?.artifacts[`source:${source.source_id}`];
-      const currentFingerprint = fileBytesFingerprint(readableProjectSource(projectPath, source.source_id, source.project_path));
+      const projectPathForSource = materialization.get(source.source_id)!;
+      const currentFingerprint = fileBytesFingerprint(readableProjectSource(projectPath, source.source_id, projectPathForSource));
       if (existing && existing.fingerprint === currentFingerprint) return existing;
       if (existing) throw sourceFrameError("SOURCE_FRAME_SOURCE_CHANGED", `source ${source.source_id} changed after project creation`);
       return recordFileArtifact({
         project_path: projectPath,
         key: `source:${source.source_id}`,
-        path: source.project_path,
+        path: projectPathForSource,
         role: "authoritative_input",
         schema_version: "bytes-v1",
         authored_by: "cli",
@@ -3431,8 +3393,8 @@ function prepareRenderLineage(
   if (!enrichment) return { inputs, records };
   const recordedAt = new Date().toISOString();
   const referencedAssetIds = new Set([
-    ...enrichment.plan.cards.flatMap((item) => (item.asset_id ? [item.asset_id] : [])),
-    ...enrichment.plan.music.map((item) => item.asset_id),
+    ...enrichment.plan.audio.music.map((item) => item.asset_id),
+    ...enrichment.plan.audio.sfx.flatMap((item) => (item.asset_id ? [item.asset_id] : [])),
     ...enrichment.plan.elements.flatMap((item) => (item.asset_id ? [item.asset_id] : [])),
   ]);
   const assetRecords = enrichment.assets.assets
@@ -3602,12 +3564,7 @@ function assertExploreSourceBoundary(projectPath: string, sources: SourcesManife
     );
   }
   const manifest = readProjectArtifactManifest(projectPath);
-  if (!manifest) {
-    for (const source of sources.sources) {
-      projectSourceFingerprint(projectPath, source.source_id, source.project_path, "project.explore");
-    }
-    return;
-  }
+  if (!manifest) throw lifecycleCommandError("LINEAGE_UNPROVEN", "artifact-manifest.json is required", "artifact-manifest", "Create the project with the current CLI.", "project.explore");
   const projectRecord = assertArtifactRecordCurrent(
     projectPath,
     manifest,
@@ -3622,7 +3579,7 @@ function assertExploreSourceBoundary(projectPath: string, sources: SourcesManife
     {
       path: projectArtifacts.project,
       role: "authoritative_input",
-      schema_version: projectMetadata.contract_version ?? "legacy",
+      schema_version: projectMetadata.contract_version,
     },
     "project.explore",
   );
@@ -3671,8 +3628,8 @@ function assertCurrentSourceLineage(
   verified: Set<string>;
 } {
   const verified = new Set<string>();
-  if (sources.contract_version === "2.0") {
-    const sourceRecords = sources.sources.map((source) => {
+  const paths = existsSync(join(projectPath, projectArtifacts.sourceMaterialization)) ? materializedSourcePaths(projectPath, sources) : new Map<string, string>();
+  const sourceRecords = sources.sources.map((source) => {
       const key = `source-identity:${source.source_id}`;
       const expected = semanticJsonFingerprint(sourceIdentityProjection(source));
       const record = assertArtifactRecordCurrent(projectPath, manifest, key, expected, new Set(), verified, stage);
@@ -3681,11 +3638,12 @@ function assertCurrentSourceLineage(
         role: "authoritative_input",
         schema_version: "2.0",
       }, stage);
-      if (source.project_path) {
+      const materializedPath = paths.get(source.source_id);
+      if (materializedPath) {
         const mediaKey = `source:${source.source_id}`;
         const mediaRecord = manifest.artifacts[mediaKey];
-        const currentMediaFingerprint = projectSourceFingerprint(projectPath, source.source_id, source.project_path, stage);
-        if (!mediaRecord || mediaRecord.fingerprint !== currentMediaFingerprint || mediaRecord.path !== source.project_path) {
+        const currentMediaFingerprint = projectSourceFingerprint(projectPath, source.source_id, materializedPath, stage);
+        if (!mediaRecord || mediaRecord.fingerprint !== currentMediaFingerprint || mediaRecord.path !== materializedPath) {
           throw lifecycleCommandError(
             "SOURCE_CONTENT_CHANGED",
             `source bytes changed after project creation: ${source.source_id}`,
@@ -3697,77 +3655,18 @@ function assertCurrentSourceLineage(
       }
       return record;
     });
-    const sourceReferences = sourceRecords.map(artifactReference);
-    const rawSources = parseSourcesManifest(readProjectJson(projectPath, projectArtifacts.sources, "sources manifest"));
-    const sourcesRecord = assertArtifactRecordCurrent(
-      projectPath,
-      manifest,
-      "sources",
-      semanticJsonFingerprint(rawSources),
-      new Set(),
-      verified,
-      stage,
-    );
-    assertArtifactRecordContract(sourcesRecord, { path: projectArtifacts.sources, role: "authoritative_input", schema_version: "2.0" }, stage);
-    assertArtifactInputs(sourcesRecord, sourceReferences, stage);
-    return { source_records: sourceRecords, sources_record: sourcesRecord, verified };
-  }
-  const sourceRecords = sources.sources.map((source) => {
-    const key = `source:${source.source_id}`;
-    const existing = manifest.artifacts[key];
-    let expectedFingerprint: Fingerprint;
-    try {
-      expectedFingerprint = projectSourceFingerprint(projectPath, source.source_id, source.project_path, stage);
-    } catch (error) {
-      if (!existing) throw error;
-      throw lifecycleCommandError(
-        "SOURCE_CONTENT_CHANGED",
-        `source bytes changed after project creation: ${source.source_id}`,
-        key,
-        "Restore the original project source or create a new project from the replacement media.",
-        stage,
-      );
-    }
-    if (
-      existing
-      && (existing.path !== source.project_path
-        || existing.role !== "authoritative_input"
-        || existing.schema_version !== "bytes-v1"
-        || existing.fingerprint !== expectedFingerprint)
-    ) {
-      throw lifecycleCommandError(
-        "SOURCE_CONTENT_CHANGED",
-        `source bytes changed after project creation: ${source.source_id}`,
-        key,
-        "Restore the original project source or create a new project from the replacement media.",
-        stage,
-      );
-    }
-    return assertArtifactRecordCurrent(
-      projectPath,
-      manifest,
-      key,
-      expectedFingerprint,
-      new Set(),
-      verified,
-      stage,
-    );
-  });
   const sourceReferences = sourceRecords.map(artifactReference);
+  const rawSources = parseSourcesManifest(readProjectJson(projectPath, projectArtifacts.sources, "sources manifest"));
   const sourcesRecord = assertArtifactRecordCurrent(
     projectPath,
     manifest,
     "sources",
-    semanticJsonFingerprint(sources),
+    semanticJsonFingerprint(rawSources),
     new Set(),
     verified,
     stage,
   );
-  assertArtifactRecordContract(
-    sourcesRecord,
-    { path: projectArtifacts.sources, role: "authoritative_input", schema_version: "1.0" },
-    stage,
-  );
+  assertArtifactRecordContract(sourcesRecord, { path: projectArtifacts.sources, role: "authoritative_input", schema_version: "2.0" }, stage);
   assertArtifactInputs(sourcesRecord, sourceReferences, stage);
   return { source_records: sourceRecords, sources_record: sourcesRecord, verified };
 }
@@ -4244,22 +4143,22 @@ export function validateEnrichmentPlan(
   const normalizedEdl = normalization ? compileCurrentEdl(projectPath) : undefined;
   const duration = edlDuration(edl ?? normalizedEdl?.edl ?? readOrBuildEdl(projectPath));
   const assetIds = new Set(assets.assets.map((asset) => asset.id));
-  for (const item of [...plan.cards, ...plan.music, ...plan.elements]) {
+  for (const item of [...plan.audio.music, ...plan.audio.sfx, ...plan.elements]) {
     if (item.end > duration + 0.05) throw new Error(`slot ${item.id} exceeds output duration`);
     if (item.asset_id) {
       if (!assetIds.has(item.asset_id)) throw new Error(`slot ${item.id} references missing asset_id: ${item.asset_id}`);
       const asset = assets.assets.find((assetItem) => assetItem.id === item.asset_id)!;
       projectAssetPath(projectPath, asset.path);
       if ("element_type" in item && item.element_type === "visual_asset") validateVisualAssetForRender(projectPath, item, asset);
-      if ("type" in item && item.type === "music_segment") validateAudioAssetForRender(asset, "music", item.id);
-      if ("element_type" in item && item.element_type === "sfx") validateAudioAssetForRender(asset, "sfx", item.id);
+      if (plan.audio.music.includes(item as EnrichmentMusic)) validateAudioAssetForRender(asset, "music", item.id);
+      if (plan.audio.sfx.includes(item as never)) validateAudioAssetForRender(asset, "sfx", item.id);
     }
-    if ("element_type" in item && item.element_type === "sfx" && !item.asset_id) getVendoredSfx(item.sfx_id ?? item.element_id);
+    if (plan.audio.sfx.includes(item as never) && !item.asset_id) getVendoredSfx((item as EnrichmentPlanArtifact["audio"]["sfx"][number]).sfx_id!);
   }
   for (const element of plan.elements) {
     validateElementAdapter(plan, element);
   }
-  for (const emphasis of plan.captions.emphasis) {
+  for (const emphasis of compiledCaptionPlan(plan).emphasis) {
     if (emphasis.end > duration + 0.05) throw new Error(`caption emphasis ${emphasis.text} exceeds output duration`);
   }
   if (normalization) commitNormalizedAssetUsage(projectPath, normalization, plan, assets, normalizedEdl!.edl_record);
@@ -4358,8 +4257,8 @@ function commitCanonicalEnrichmentValidation(
 
 function referencedEnrichmentAssetIds(plan: EnrichmentPlanArtifact): Set<string> {
   return new Set([
-    ...plan.cards.flatMap((item) => (item.asset_id ? [item.asset_id] : [])),
-    ...plan.music.map((item) => item.asset_id),
+    ...plan.audio.music.map((item) => item.asset_id),
+    ...plan.audio.sfx.flatMap((item) => (item.asset_id ? [item.asset_id] : [])),
     ...plan.elements.flatMap((item) => (item.asset_id ? [item.asset_id] : [])),
   ]);
 }
@@ -4417,7 +4316,7 @@ function readEffectiveEnrichment(
   return { plan: usageEnrichment.plan, assets, normalization: usageSources[0] };
 }
 
-type AssetUsageSourceName = "asset-usage-plan.json" | "project.json#asset_usage_plan" | "edit-plan.json#asset_usage_plan";
+type AssetUsageSourceName = "asset-usage-plan.json";
 
 function assetUsageSources(
   projectPath: string,
@@ -4429,15 +4328,17 @@ function assetUsageSources(
   }> = [];
   const handoffPath = join(projectPath, projectArtifacts.assetUsagePlan);
   if (existsSync(handoffPath)) {
+    let plan: AssetUsagePlanArtifact;
+    try {
+      plan = parseAssetUsagePlan(readProjectJson(projectPath, projectArtifacts.assetUsagePlan, "asset usage plan"));
+    } catch (error) {
+      throw assetUsageError("asset_usage_plan_invalid", error instanceof Error ? error.message : String(error));
+    }
     sources.push({
       name: "asset-usage-plan.json",
-      plan: parseAssetUsagePlan(readProjectJson(projectPath, projectArtifacts.assetUsagePlan, "asset usage plan")),
+      plan,
     });
   }
-  const metadata = readProjectMetadata(projectPath);
-  const resolvedEditPlan = editPlan ?? (existsSync(join(projectPath, projectArtifacts.editPlan)) ? readEditPlan(projectPath, readManifest(projectPath)) : undefined);
-  if (metadata?.asset_usage_plan) sources.push({ name: "project.json#asset_usage_plan", plan: metadata.asset_usage_plan });
-  if (resolvedEditPlan?.asset_usage_plan) sources.push({ name: "edit-plan.json#asset_usage_plan", plan: resolvedEditPlan.asset_usage_plan });
   return sources;
 }
 
@@ -4453,19 +4354,16 @@ function commitNormalizedAssetUsage(
   const assetManifestPath = join(projectPath, projectArtifacts.assetManifest);
   const enrichmentPlanPath = join(projectPath, projectArtifacts.enrichmentPlan);
   const usageFingerprint = semanticJsonFingerprint(source.plan);
-  const archiveName = `${source.name.replaceAll(".json", "").replaceAll("#", "-")}-${usageFingerprint.slice("sha256:".length)}.json`;
-  const sourcePath = `.migration/asset-usage-plan/${archiveName}`;
-  const archivePath = join(projectPath, sourcePath);
+  const sourcePath = `.virtual/asset-usage-plan/${usageFingerprint.slice("sha256:".length)}`;
   const sourceOwnerPath = assetUsageSourceOwnerPath(projectPath, source.name);
   const pathsToRestore = new Map<string, string | undefined>(
-    [archivePath, assetManifestPath, enrichmentPlanPath, sourceOwnerPath].map((path) => [
+    [assetManifestPath, enrichmentPlanPath, sourceOwnerPath].map((path) => [
       path,
       existsSync(path) ? readFileSync(path, "utf8") : undefined,
     ]),
   );
 
   try {
-    atomicWriteJson(archivePath, source.plan);
     atomicWriteJson(assetManifestPath, assets);
     atomicWriteJson(enrichmentPlanPath, plan);
     consumeAssetUsageSource(projectPath, source.name);
@@ -4480,7 +4378,6 @@ function commitNormalizedAssetUsage(
     command: "project.enrich-plan",
     mode: "validated",
     value: source.plan,
-    file_sha256: fileBytesFingerprint(archivePath),
     recorded_at: recordedAt,
   });
   const referencedAssetIds = referencedEnrichmentAssetIds(plan);
@@ -4563,30 +4460,12 @@ function commitNormalizedAssetUsage(
 }
 
 function assetUsageSourceOwnerPath(projectPath: string, source: AssetUsageSourceName): string {
-  if (source === "asset-usage-plan.json") return join(projectPath, projectArtifacts.assetUsagePlan);
-  if (source === "project.json#asset_usage_plan") return join(projectPath, projectArtifacts.project);
-  return join(projectPath, projectArtifacts.editPlan);
+  return join(projectPath, projectArtifacts.assetUsagePlan);
 }
 
 function consumeAssetUsageSource(projectPath: string, source: AssetUsageSourceName): void {
   const ownerPath = assetUsageSourceOwnerPath(projectPath, source);
-  if (source === "asset-usage-plan.json") {
-    unlinkSync(ownerPath);
-    return;
-  }
-  if (source === "project.json#asset_usage_plan") {
-    const { asset_usage_plan: _usage, ...metadata } = parseProjectMetadata(readJson(ownerPath));
-    const persisted = metadata.contract_version === "legacy"
-      ? (({ contract_version: _legacy, ...value }) => value)(metadata)
-      : metadata;
-    atomicWriteJson(ownerPath, persisted);
-    return;
-  }
-  const { asset_usage_plan: _usage, ...editPlan } = parseEditPlan(readJson(ownerPath), readManifest(projectPath));
-  const persisted = editPlan.contract_version === "legacy"
-    ? (({ contract_version: _legacy, ...value }) => value)(editPlan)
-    : editPlan;
-  atomicWriteJson(ownerPath, persisted);
+  unlinkSync(ownerPath);
 }
 
 function assetUsagePlanToEnrichment(
@@ -4612,7 +4491,6 @@ function assetUsagePlanToEnrichment(
     });
     return {
       id,
-      type: "music_segment",
       start: item.start,
       end: item.end,
       asset_id: id,
@@ -4623,7 +4501,7 @@ function assetUsagePlanToEnrichment(
     };
   });
 
-  const sfx: EnrichmentElement[] = usage.sfx.map((item, index) => {
+  const sfx: EnrichmentPlanArtifact["audio"]["sfx"] = usage.sfx.map((item, index) => {
     const id = usageId("sfx", index, item.id, item.asset_ref);
     assertUsableAssetRef(projectPath, item.asset_ref, "audio");
     assets.push({
@@ -4639,14 +4517,12 @@ function assetUsagePlanToEnrichment(
     });
     return {
       id,
-      source: "asset_usage_plan",
-      element_id: "project-local-sfx",
-      element_type: "sfx",
       start: item.time,
       end: item.time + item.duration,
       asset_id: id,
+      volume: item.volume,
+      fade_seconds: item.fade_seconds,
       reason: item.purpose,
-      params: { volume: item.volume, fade_seconds: item.fade_seconds },
     };
   });
 
@@ -4679,12 +4555,10 @@ function assetUsagePlanToEnrichment(
   });
 
   const plan = parseEnrichmentPlan({
-    version: "1.2",
-    profile: { source_mode: sourceMode, aspect_ratio: "source", caption_identity: "anchor" },
-    captions: { enabled: false, identity: "anchor", emphasis: [] },
-    cards: [],
-    music,
-    elements: [...sfx, ...visualAssets],
+    version: "2.0",
+    profile: { ...defaultEnrichmentProfile(sourceMode) },
+    elements: visualAssets,
+    audio: { music, sfx },
   });
   return { plan, assets: parseAssetManifest({ assets }) };
 }
@@ -4772,7 +4646,7 @@ function assetUsageError(
 
 type OutputTimelineSegment = {
   source_id: string;
-  source_path: string;
+  source_path?: string;
   source_start: number;
   source_end: number;
   output_start: number;
@@ -4798,7 +4672,7 @@ function validateFocusCandidates(candidates: FocusCandidatesArtifact, duration: 
     if (candidates.source_mode === "screen_recording" && !adapter.screen_safe && element.zone !== "full_frame") {
       warnings.push(`${candidate.id}: ${candidate.element_id} is not screen-safe outside full_frame`);
     }
-    if (candidate.recommended_treatment === "generated_asset" && candidate.element_type !== "generated_asset" && candidate.element_type !== "visual_asset") {
+    if (candidate.recommended_treatment === "generated_asset" && candidate.element_type !== "visual_asset") {
       warnings.push(`${candidate.id}: recommended_treatment=generated_asset but element_type=${candidate.element_type}`);
     }
     if (candidate.recommended_treatment === "source_ui_component" && candidates.source_mode === "screen_recording" && !candidate.requires_grounding) {
@@ -4821,7 +4695,7 @@ function readSourceFrameRequest(projectPath: string): SourceFrameRequestArtifact
 function readSourcesForSourceFrames(projectPath: string): SourcesManifest {
   try {
     const manifest = readManifest(projectPath);
-    if (manifest.sources.some((source) => !source.project_path)) throw sourceFrameError("SOURCE_BINDING_REQUIRED", "source bytes must be materialized before extracting frames");
+    materializedSourcePaths(projectPath, manifest);
     return manifest;
   } catch (error) {
     if (isSourceFrameError(error) && (error as { code?: string }).code === "SOURCE_BINDING_REQUIRED") throw error;
@@ -4843,6 +4717,7 @@ function sourceFrameDuplicateWarnings(request: SourceFrameRequestArtifact): stri
 
 function extractSourceFrames(projectPath: string, request: SourceFrameRequestArtifact, manifest: SourcesManifest, outputDir = join(projectPath, ".source-frames")): SourceFrame[] {
   const sourceById = new Map(manifest.sources.map((source) => [source.source_id, source]));
+  const materialization = materializedSourcePaths(projectPath, manifest);
   const sourcePaths = new Map<string, string>();
   const dir = outputDir;
   mkdirSync(dir, { recursive: true });
@@ -4854,7 +4729,7 @@ function extractSourceFrames(projectPath: string, request: SourceFrameRequestArt
     }
     let sourcePath = sourcePaths.get(source.source_id);
     if (!sourcePath) {
-      sourcePath = readableProjectSource(projectPath, source.source_id, source.project_path);
+      sourcePath = readableProjectSource(projectPath, source.source_id, materialization.get(source.source_id)!);
       sourcePaths.set(source.source_id, sourcePath);
     }
     const relativePath = `.source-frames/frame-${String(index + 1).padStart(4, "0")}.jpg`;
@@ -5057,6 +4932,7 @@ function extractFocusFrames(samples: FocusFrameSample[], outputDir: string): Foc
     const id = `${candidate.id}-source-${index + 1}`;
     const relativePath = join(".focus", "frames", `${safeFileName(id)}.jpg`);
     const framePath = join(outputDir, `${safeFileName(id)}.jpg`);
+    if (!mapped.source_path) throw sourceFrameError("SOURCE_BINDING_REQUIRED", `source bytes are not materialized for ${mapped.source_id}`);
     const result = extractJpegFrame(mapped.source_path, formatSeconds(mapped.source_time), framePath, { quality: 3 });
     if (result.status !== 0) throw new Error(`ffmpeg focus frame failed for ${candidate.id}: ${result.stderr || result.stdout}`);
     probeVideoSize(framePath);
@@ -5139,7 +5015,7 @@ function buildOutputTimeline(edl: EdlArtifact): OutputTimelineSegment[] {
       const duration = entry.end - entry.start;
       const segment = {
         source_id: entry.source_id,
-        source_path: entry.source_path,
+        source_path: (entry as EdlEntry & { source_path?: string }).source_path,
         source_start: entry.start,
         source_end: entry.end,
         output_start: outputCursor,
@@ -5191,20 +5067,26 @@ function focusPlanFor(sourceMode: EnrichmentSourceMode): EnrichmentPlanArtifact 
 
 function validateProductionProposalAgainstReview(proposal: ProductionProposalArtifact, review: { proposed_cuts: AnalysisCandidate[] }) {
   const candidateIds = new Set(review.proposed_cuts.map((candidate) => candidate.id));
-  for (const option of proposal.options) {
-    for (const candidateId of option.cleanup.cut_candidate_ids) {
-      if (!candidateIds.has(candidateId)) throw new Error(`production proposal option ${option.id} references unknown cleanup candidate_id: ${candidateId}`);
-    }
+  const issues: ArtifactValidationIssue[] = [];
+  proposal.options.forEach((option, optionIndex) => {
+    option.cleanup.cut_candidate_ids.forEach((candidateId, candidateIndex) => {
+      if (!candidateIds.has(candidateId)) {
+        issues.push({
+          path: `/options/${optionIndex}/cleanup/cut_candidate_ids/${candidateIndex}`,
+          keyword: "reference",
+          message: `unknown cleanup candidate_id: ${candidateId}`,
+        });
+      }
+    });
+  });
+  if (issues.length) {
+    const contract = productionProposalContractInfo();
+    throw new ArtifactValidationError("production-proposal.json", contract.schema_version, contract.schema_digest, issues);
   }
 }
 
 function productionProposalWarnings(proposal: ProductionProposalArtifact): string[] {
   const warnings: string[] = [];
-  const recommended = proposal.options.find((option) => option.id === proposal.recommended_option_id);
-  if (recommended && !recommended.recommended) warnings.push(`recommended_option_id ${recommended.id} is not marked recommended=true`);
-  const marked = proposal.options.filter((option) => option.recommended);
-  if (marked.length === 0) warnings.push("no option is marked recommended=true");
-  if (marked.length > 1) warnings.push(`multiple options are marked recommended=true: ${marked.map((option) => option.id).join(", ")}`);
   for (const option of proposal.options) {
     if (option.images.needed) warnings.push(`option ${option.id} needs image asset work after confirmation`);
     if (option.music.source !== "none") warnings.push(`option ${option.id} needs music acquisition after confirmation`);
@@ -5213,11 +5095,11 @@ function productionProposalWarnings(proposal: ProductionProposalArtifact): strin
   return warnings;
 }
 
-function productionProposalOptionSummary(option: ProductionProposalOption): ProjectProposalOptionSummary {
+function productionProposalOptionSummary(option: ProductionProposalOption, recommendedOptionId: string): ProjectProposalOptionSummary {
   return {
     id: option.id,
     label: option.label,
-    recommended: option.recommended,
+    recommended: option.id === recommendedOptionId,
     reason: option.reason,
     cut_candidate_count: option.cleanup.cut_candidate_ids.length,
     image_needed: option.images.needed,
@@ -5577,21 +5459,29 @@ function projectAssetExists(projectPath: string, relativePath: string): boolean 
   }
 }
 
+function compiledCaptionPlan(plan: EnrichmentPlanArtifact): { enabled: boolean; identity: "anchor"; emphasis: CaptionEmphasis[] } {
+  const captionElements = plan.elements.filter((element) => element.element_type === "caption_identity");
+  return {
+    enabled: captionElements.length > 0,
+    identity: captionElements[0]?.caption_identity ?? plan.profile.caption_identity,
+    emphasis: captionElements.map((element) => ({
+      start: element.start,
+      end: element.end,
+      text: elementParamText(element, "text") ?? element.element_id,
+      reason: element.reason,
+    })),
+  };
+}
+
 function summarizeEnrichment(
   plan: EnrichmentPlanArtifact,
   blockUsage: ProjectEnrichmentBlockUsage[] = summarizeHyperframesBlocks(plan).block_usage,
   elementUsage: ProjectEnrichmentElementUsage[] = summarizeHyperframesElements(plan),
 ): string[] {
-  const blockByCard = new Map(blockUsage.map((usage) => [usage.card_id, usage]));
+  const captions = compiledCaptionPlan(plan);
   return [
-    ...(plan.captions.enabled ? [`captions ${plan.captions.identity} emphasis=${plan.captions.emphasis.length}`] : []),
-    ...plan.cards.map((card) => {
-      const asset = card.asset_id ? ` asset=${card.asset_id}` : "";
-      const block = blockByCard.get(card.id);
-      const blockText = block ? ` block=${block.block_id} family=${block.template_family}` : "";
-      return `${card.id} ${card.kind} ${card.start.toFixed(2)}-${card.end.toFixed(2)} ${card.title}${asset}${blockText}`;
-    }),
-    ...plan.music.map((slot) => `${slot.id} music_segment ${slot.start.toFixed(2)}-${slot.end.toFixed(2)} asset=${slot.asset_id}`),
+    ...(captions.enabled ? [`captions ${captions.identity} emphasis=${captions.emphasis.length}`] : []),
+    ...plan.audio.music.map((slot) => `${slot.id} music_segment ${slot.start.toFixed(2)}-${slot.end.toFixed(2)} asset=${slot.asset_id}`),
     ...elementUsage.map((element) => `${element.id} ${element.element_type} ${element.element_id} ${element.start.toFixed(2)}-${element.end.toFixed(2)} renderable=${element.renderable ? "yes" : "no"} source=${element.source}`),
   ];
 }
@@ -5602,7 +5492,7 @@ function emptyAudioUsage(): ProjectAudioUsage {
 
 function summarizeAudioUsage(plan: EnrichmentPlanArtifact): ProjectAudioUsage {
   return {
-    music: plan.music.map((slot) => ({
+    music: plan.audio.music.map((slot) => ({
       id: slot.id,
       asset_id: slot.asset_id,
       start: slot.start,
@@ -5612,16 +5502,14 @@ function summarizeAudioUsage(plan: EnrichmentPlanArtifact): ProjectAudioUsage {
       fade_seconds: slot.fade_seconds,
       reason: slot.reason,
     })),
-    sfx: plan.elements
-      .filter((element) => element.element_type === "sfx")
-      .map((element) => ({
-        id: element.id,
-        asset_id: element.asset_id,
-        sfx_id: element.sfx_id ?? (element.asset_id ? undefined : element.element_id),
-        start: element.start,
-        end: element.end,
-        volume: typeof element.params?.volume === "number" ? element.params.volume : 0.35,
-        reason: element.reason,
+    sfx: plan.audio.sfx.map((item) => ({
+        id: item.id,
+        asset_id: item.asset_id,
+        sfx_id: item.sfx_id,
+        start: item.start,
+        end: item.end,
+        volume: item.volume,
+        reason: item.reason,
       })),
   };
 }
@@ -5629,7 +5517,7 @@ function summarizeAudioUsage(plan: EnrichmentPlanArtifact): ProjectAudioUsage {
 function summarizeHyperframesElements(plan: EnrichmentPlanArtifact): ProjectEnrichmentElementUsage[] {
   return plan.elements.map((element) => {
     const catalogType = vendoredElementType(element);
-    const catalog = catalogType ? getVendoredElement(element.sfx_id ?? element.element_id, catalogType) : undefined;
+    const catalog = catalogType ? getVendoredElement(element.element_id, catalogType) : undefined;
     const adapter = catalog ? adapterForVendoredElement(catalog) : adapterForElement(element);
     const renderable = (catalog?.renderable ?? false) || adapter.render_strategy !== "guidance_only" || isAssetElement(element);
     const guidanceOnly = (catalog?.guidance_only ?? false) && adapter.render_strategy === "guidance_only";
@@ -5646,7 +5534,6 @@ function summarizeHyperframesElements(plan: EnrichmentPlanArtifact): ProjectEnri
       title: catalog?.title,
       tags: catalog?.tags ?? [],
       asset_id: element.asset_id,
-      sfx_id: element.sfx_id,
       zone: element.zone,
       target_rect: element.target_rect,
       anchor_point: element.anchor_point,
@@ -5656,7 +5543,7 @@ function summarizeHyperframesElements(plan: EnrichmentPlanArtifact): ProjectEnri
 }
 
 function requiresHyperframesRecut(plan: EnrichmentPlanArtifact): boolean {
-  if (plan.cards.length > 0 || plan.captions.enabled) return true;
+  if (compiledCaptionPlan(plan).enabled) return true;
   return plan.elements.some((element) => {
     const strategy = adapterForPlanElement(element).render_strategy;
     return (
@@ -5670,19 +5557,7 @@ function requiresHyperframesRecut(plan: EnrichmentPlanArtifact): boolean {
 }
 
 function summarizeHyperframesBlocks(plan: EnrichmentPlanArtifact, assets?: AssetManifestArtifact): { block_usage: ProjectEnrichmentBlockUsage[]; cdn_dependencies: HyperframesDependencySummary[] } {
-  const block_usage = plan.cards.map((card) => {
-    const blockId = assertRenderableHyperframesBlockForCard(card.block_id ?? defaultHyperframesBlockForCard(card.kind, plan.profile.source_mode), card.kind, plan.profile.source_mode, `${card.id}.block_id`);
-    const block = getHyperframesCatalogEntry(blockId);
-    if (!block) throw new Error(`unknown HyperFrames block id: ${blockId}`);
-    return {
-      card_id: card.id,
-      block_id: block.id,
-      source: block.source,
-      visual_role: block.visual_role,
-      template_family: block.template_family,
-      dependencies: [...block.dependencies],
-    };
-  });
+  const block_usage: ProjectEnrichmentBlockUsage[] = [];
   const dependencyIds = new Set<string>();
   for (const dependency of dependenciesForHyperframesBlocks(uniqueStrings(block_usage.map((usage) => usage.block_id)))) dependencyIds.add(dependency.id);
   if (requiresHyperframesRecut(plan)) dependencyIds.add("gsap_3_14_2");
@@ -5716,25 +5591,7 @@ function summarizeAssets(projectPath: string, assets: AssetManifestArtifact): Pr
 
 function buildQaChecks(projectPath: string, plan: EnrichmentPlanArtifact, assets: AssetManifestArtifact): ProjectQaCheck[] {
   const checks: ProjectQaCheck[] = [];
-
-  for (const card of plan.cards) {
-    const asset = card.asset_id ? assets.assets.find((item) => item.id === card.asset_id) : undefined;
-    checks.push(
-      qaCheck({
-        id: `card-${card.id}`,
-        source_element_id: card.id,
-        kind: "card",
-        start: card.start,
-        end: card.end,
-        expected: `${card.kind}: ${card.title}. ${card.reason}`,
-        frame_times: qaFrameTimes(card.start, card.end),
-        warnings: [...assetWarnings(projectPath, asset, card.asset_id, false), ...coordinateWarnings(plan.profile.source_mode, card)],
-        asset,
-      }),
-    );
-  }
-
-  plan.captions.emphasis.forEach((emphasis, index) => {
+  compiledCaptionPlan(plan).emphasis.forEach((emphasis, index) => {
     checks.push(
       qaCheck({
         id: `caption-${index + 1}`,
@@ -5750,33 +5607,29 @@ function buildQaChecks(projectPath: string, plan: EnrichmentPlanArtifact, assets
   });
 
   for (const element of plan.elements) {
-    if (element.source.startsWith("compat:") || element.element_type === "caption_identity") continue;
+    if (element.element_type === "caption_identity") continue;
     const asset = element.asset_id ? assets.assets.find((item) => item.id === element.asset_id) : undefined;
     const visualAsset = element.element_type === "visual_asset";
-    const generatedAsset = element.element_type === "generated_asset";
     const warnings = [
-      ...assetWarnings(projectPath, asset, element.asset_id, visualAsset || generatedAsset),
+      ...assetWarnings(projectPath, asset, element.asset_id, visualAsset),
       ...coordinateWarnings(plan.profile.source_mode, element),
     ];
-    if (plan.profile.source_mode === "screen_recording" && element.element_type === "sfx" && !hasSubtleUiSfxReason(element)) {
-      warnings.push(`${element.id}: SFX should be subtle and tied to a visible UI action`);
-    }
     checks.push(
       qaCheck({
         id: `element-${element.id}`,
         source_element_id: element.id,
-        kind: element.element_type === "sfx" ? "sfx" : "element",
+        kind: "element",
         start: element.start,
         end: element.end,
         expected: `${element.element_type} ${element.element_id}: ${element.reason}`,
-        frame_times: element.element_type === "sfx" ? [] : qaFrameTimes(element.start, element.end),
+        frame_times: qaFrameTimes(element.start, element.end),
         warnings,
         asset,
       }),
     );
   }
 
-  for (const music of plan.music) {
+  for (const music of plan.audio.music) {
     const asset = assets.assets.find((item) => item.id === music.asset_id);
     const warnings = assetWarnings(projectPath, asset, music.asset_id, false);
     if (music.volume > 0.18) warnings.push(`${music.id}: music volume may cover speech`);
@@ -5845,13 +5698,6 @@ function enrichmentWarnings(plan: EnrichmentPlanArtifact): string[] {
   const sourceMode = plan.profile.source_mode;
   const screenLike = sourceMode === "screen_recording" || sourceMode === "mixed";
   const heavyStyles = new Set(["whiteboard", "audit", "xhs", "editorial"]);
-  for (const card of plan.cards) {
-    if (screenLike && card.zone === "full_frame" && card.kind !== "title") warnings.push(`${card.id}: full_frame ${card.kind} may hide source UI in ${sourceMode}`);
-    if (sourceMode === "screen_recording" && heavyStyles.has(card.style) && !(card.kind === "title" && card.zone === "full_frame")) {
-      warnings.push(`${card.id}: ${card.style} style may be too heavy for screen_recording`);
-    }
-    if (sourceMode === "screen_recording" && (card.kind === "image" || card.asset_id)) warnings.push(`${card.id}: image asset in screen_recording should be justified by the user goal`);
-  }
   for (const element of plan.elements) {
     const adapter = adapterForPlanElement(element);
     if (screenLike && element.zone === "full_frame" && element.element_type !== "caption_identity") warnings.push(`${element.id}: full_frame ${element.element_type} may hide source UI in ${sourceMode}`);
@@ -5864,22 +5710,20 @@ function enrichmentWarnings(plan: EnrichmentPlanArtifact): string[] {
       warnings.push(`${element.id}: screen_recording coordinates should include params.coordinate_source_frame`);
     }
     if (sourceMode === "screen_recording" && (isVisualAssetElement(element) || element.asset_id)) warnings.push(`${element.id}: visual asset in screen_recording should be justified by the user goal`);
-    if (sourceMode === "screen_recording" && element.element_type === "sfx" && !hasSubtleUiSfxReason(element)) warnings.push(`${element.id}: SFX in screen_recording should be subtle and synced to an explicit UI action`);
     if (element.element_type === "animation_rule") {
       const catalog = getVendoredElement(element.element_id, "animation_rule");
       if (catalog?.guidance_only && adapter.render_strategy === "guidance_only") warnings.push(`${element.id}: ${element.element_id} is guidance_only and requires a renderable block/component adapter`);
     }
   }
-  if (sourceMode === "screen_recording" && plan.music.length > 0) warnings.push("screen_recording includes music; keep it off unless short-form packaging needs it");
+  if (sourceMode === "screen_recording" && plan.audio.music.length > 0) warnings.push("screen_recording includes music; keep it off unless short-form packaging needs it");
   return warnings;
 }
 
 function validateElementAdapter(plan: EnrichmentPlanArtifact, element: EnrichmentElement): void {
-  if (element.source.startsWith("compat:")) return;
   const adapter = adapterForPlanElement(element);
   if (adapter.requires_target_rect && !element.target_rect) throw new Error(`${element.id}: ${element.element_id} requires target_rect`);
   if (adapter.requires_anchor_point && !element.anchor_point) throw new Error(`${element.id}: ${element.element_id} requires anchor_point`);
-  if (adapter.asset_requirements.length > 0 && !element.asset_id && element.element_type !== "sfx") {
+  if (adapter.asset_requirements.length > 0 && !element.asset_id) {
     throw new Error(`${element.id}: ${element.element_id} requires asset_id (${adapter.asset_requirements.join(", ")})`);
   }
   for (const param of adapter.required_params) {
@@ -5939,13 +5783,16 @@ export function normalizeCloudflareWhisperResult(value: unknown, sourceId: strin
 }
 
 function readManifest(projectPath: string): SourcesManifest {
-  const manifest = parseSourcesManifest(readProjectJson(projectPath, projectArtifacts.sources, "sources manifest"));
-  if (manifest.contract_version !== "2.0") return manifest;
+  return parseSourcesManifest(readProjectJson(projectPath, projectArtifacts.sources, "sources manifest"));
+}
+
+function materializedSourcePaths(projectPath: string, manifest: SourcesManifest): Map<string, string> {
   const materializationPath = join(projectPath, projectArtifacts.sourceMaterialization);
-  if (!existsSync(materializationPath)) return manifest;
+  if (!existsSync(materializationPath)) throw commandError("SOURCE_BINDING_REQUIRED", "source bytes must be materialized before this operation");
   const materialization = parseSourceMaterialization(readProjectJson(projectPath, projectArtifacts.sourceMaterialization, "source materialization"), manifest);
   const paths = new Map(materialization.sources.map((source) => [source.source_id, source.project_path]));
-  return { ...manifest, sources: manifest.sources.map((source) => ({ ...source, project_path: paths.get(source.source_id) ?? "" })) };
+  if (manifest.sources.some((source) => !paths.has(source.source_id))) throw commandError("SOURCE_BINDING_REQUIRED", "all source bytes must be materialized before this operation");
+  return paths;
 }
 
 function readEditPlan(projectPath: string, manifest: SourcesManifest): ReturnType<typeof parseEditPlan> {
@@ -5967,8 +5814,9 @@ async function transcribeProject(projectPath: string, manifest: SourcesManifest,
 
 function transcribeWithWhisperCli(projectPath: string, manifest: SourcesManifest): TranscriptArtifact {
   if (!commandExists("whisper-cli")) throw new Error("whisper-cli not found for --asr auto");
+  const paths = materializedSourcePaths(projectPath, manifest);
   const segments = manifest.sources.flatMap((source) => {
-    const audioPath = audioInputPath(projectPath, source.source_id, join(projectPath, source.project_path));
+    const audioPath = audioInputPath(projectPath, source.source_id, join(projectPath, paths.get(source.source_id)!));
     const outputBase = join(projectPath, ".asr", source.source_id);
     const modelArgs = process.env.WHISPER_MODEL ? ["-m", process.env.WHISPER_MODEL] : [];
     const result = spawnSync("whisper-cli", [...modelArgs, "-l", "auto", "-oj", "-of", outputBase, "-np", audioPath], { encoding: "utf8" });
@@ -5985,8 +5833,9 @@ async function transcribeWithCloudflareWhisper(projectPath: string, manifest: So
   if (!accountId || !token) throw new Error("Cloudflare Whisper env is missing");
   const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
   const segments: TranscriptArtifact["segments"] = [];
+  const paths = materializedSourcePaths(projectPath, manifest);
   for (const source of manifest.sources) {
-    const audioPath = onlineAudioInputPath(projectPath, source.source_id, join(projectPath, source.project_path));
+    const audioPath = onlineAudioInputPath(projectPath, source.source_id, join(projectPath, paths.get(source.source_id)!));
     const payload: Record<string, unknown> = {
       audio: Buffer.from(readFileSync(audioPath)).toString("base64"),
       task: "transcribe",
@@ -6141,7 +5990,7 @@ function buildEdl(
 }
 
 function edlEntry(sourceId: string, start: number, end: number, outputOrder: number, reason: string): EdlEntry {
-  return { source_id: sourceId, source_path: undefined as unknown as string, start, end, output_order: outputOrder, reason };
+  return { source_id: sourceId, start, end, output_order: outputOrder, reason };
 }
 
 function renderEnrichedVideo(
@@ -6172,17 +6021,17 @@ function renderEnrichedVideo(
     atomicWriteJson(output.storyboardPath, resolvedStoryboard ?? buildEnrichmentStoryboard(projectPath, cleanRenderPath, subtitlesPath, plan, assets, storyboardPublicDir));
   }
 
-  for (const slot of plan.music) {
+  for (const slot of plan.audio.music) {
     const asset = assetForSlot(assets, slot);
     const next = join(workDir, `${safeFileName(slot.id)}-music.mp4`);
     mixMusic(current, projectAssetPath(projectPath, asset.path), slot, next);
     current = next;
   }
 
-  for (const element of plan.elements.filter((item) => item.element_type === "sfx")) {
-    const next = join(workDir, `${safeFileName(element.id)}-sfx.mp4`);
-    const sfxPath = element.asset_id ? projectAssetPath(projectPath, assetForSlot(assets, element).path) : getVendoredSfx(element.sfx_id ?? element.element_id).path;
-    mixSfx(current, sfxPath, element, next);
+  for (const item of plan.audio.sfx) {
+    const next = join(workDir, `${safeFileName(item.id)}-sfx.mp4`);
+    const sfxPath = item.asset_id ? projectAssetPath(projectPath, assetForSlot(assets, item).path) : getVendoredSfx(item.sfx_id!).path;
+    mixSfx(current, sfxPath, item, next);
     current = next;
   }
 
@@ -6252,7 +6101,7 @@ export function buildEnrichmentStoryboard(
 ): EnrichmentStoryboard {
   const size = probeVideoSize(cleanRenderPath);
   const probe = probeMedia(cleanRenderPath);
-  const cards = stageStoryboardAssets(projectPath, assets, plan.cards, publicDir).map((card) => resolveStoryboardCard(card, plan.profile.source_mode));
+  const cards: StoryboardCard[] = [];
   const elements = stageStoryboardElements(projectPath, assets, plan.elements, publicDir);
   const hyperframes = summarizeHyperframesBlocks(plan, assets);
   const referencedAssetIds = referencedEnrichmentAssetIds(plan);
@@ -6282,19 +6131,17 @@ export function buildEnrichmentStoryboard(
       };
     }),
     element_usage: summarizeHyperframesElements(plan),
-    captions: {
-      enabled: plan.captions.enabled,
-      identity: plan.captions.identity,
-      cues: plan.captions.enabled && existsSync(subtitlesPath) ? parseSrtCues(readFileSync(subtitlesPath, "utf8")) : [],
-      emphasis: plan.captions.emphasis,
-    },
+    captions: (() => {
+      const captionPlan = compiledCaptionPlan(plan);
+      return { ...captionPlan, cues: captionPlan.enabled && existsSync(subtitlesPath) ? parseSrtCues(readFileSync(subtitlesPath, "utf8")) : [] };
+    })(),
     qa_checks: buildQaChecks(projectPath, plan, assets),
     asset_summary: summarizeAssets(projectPath, {
       assets: assets.assets.filter((asset) => referencedAssetIds.has(asset.id)),
     }),
     cards,
     elements,
-    music: plan.music,
+    music: plan.audio.music,
   };
 }
 
@@ -6309,13 +6156,10 @@ export function resolveRenderContractStoryboard(input: {
   bundlePaths: Record<string, string>;
 }): EnrichmentStoryboard {
   const { projectPath, width, height, durationSeconds, captions, plan, assets, bundlePaths } = input;
-  const cards = plan.cards.map((card) => ({
-    ...resolveStoryboardCard(card, plan.profile.source_mode),
-    ...(card.asset_id ? { asset_path: requiredBundleAssetPath(bundlePaths, card.asset_id) } : {}),
-  }));
+  const cards: StoryboardCard[] = [];
   const elements = plan.elements.map((element): StoryboardElement => {
     const catalogType = vendoredElementType(element);
-    const catalog = catalogType ? getVendoredElement(element.sfx_id ?? element.element_id, catalogType) : undefined;
+    const catalog = catalogType ? getVendoredElement(element.element_id, catalogType) : undefined;
     const adapter = catalog ? adapterForVendoredElement(catalog) : adapterForElement(element);
     const resolved: StoryboardElement = {
       ...element,
@@ -6344,7 +6188,10 @@ export function resolveRenderContractStoryboard(input: {
       return { card_id: card.id, block_id: card.block_id, source: block.source, visual_role: block.visual_role, template_family: block.template_family, dependencies: [...block.dependencies] };
     }),
     element_usage: summarizeHyperframesElements(plan),
-    captions: { enabled: plan.captions.enabled, identity: plan.captions.identity, cues: plan.captions.enabled ? captions : [], emphasis: plan.captions.emphasis },
+    captions: (() => {
+      const captionPlan = compiledCaptionPlan(plan);
+      return { ...captionPlan, cues: captionPlan.enabled ? captions : [] };
+    })(),
     qa_checks: buildQaChecks(projectPath, plan, assets).map((check) => ({
       ...check,
       ...(check.asset_id ? { asset_path: requiredBundleAssetPath(bundlePaths, check.asset_id) } : {}),
@@ -6364,7 +6211,7 @@ export function resolveRenderContractStoryboard(input: {
     })),
     cards,
     elements,
-    music: plan.music,
+    music: plan.audio.music,
   };
 }
 
@@ -7111,15 +6958,14 @@ function renderCliOverlayFragment(element: StoryboardElement): string {
 }
 
 function isAssetElement(element: EnrichmentElement): boolean {
-  return element.element_type === "generated_asset" || element.element_type === "visual_asset";
+  return element.element_type === "visual_asset";
 }
 
 function isVisualAssetElement(element: EnrichmentElement): boolean {
-  return (element.element_type === "generated_asset" && element.params?.slot_type !== "music_segment") || element.element_type === "visual_asset";
+  return element.element_type === "visual_asset";
 }
 
 function vendoredElementType(element: EnrichmentElement): VendoredElementType | undefined {
-  if (element.element_type === "sfx" && element.asset_id) return undefined;
   return isAssetElement(element) ? undefined : element.element_type as VendoredElementType;
 }
 
@@ -7319,11 +7165,11 @@ function mixMusic(basePath: string, musicPath: string, slot: EnrichmentMusic, ou
   ffmpeg(["-y", "-i", basePath, "-i", musicPath, "-filter_complex", mix, "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart", outputPath], "ffmpeg music mix failed");
 }
 
-function mixSfx(basePath: string, sfxPath: string, element: EnrichmentElement, outputPath: string): void {
+function mixSfx(basePath: string, sfxPath: string, element: EnrichmentSfx, outputPath: string): void {
   const duration = Math.max(0.01, element.end - element.start);
   const delay = Math.round(element.start * 1000);
-  const volume = typeof element.params?.volume === "number" ? Math.max(0, Math.min(1, element.params.volume)) : 0.35;
-  const fade = Math.min(typeof element.params?.fade_seconds === "number" ? element.params.fade_seconds : 0.03, duration / 2);
+  const volume = element.volume;
+  const fade = Math.min(element.fade_seconds, duration / 2);
   const voice = "[0:a]aformat=sample_fmts=fltp:channel_layouts=stereo[voice]";
   const sfx = `[1:a]atrim=0:${duration},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${volume},afade=t=in:st=0:d=${fade},afade=t=out:st=${Math.max(0, duration - fade)}:d=${fade},adelay=${delay}|${delay}[sfx]`;
   const mix = `${voice};${sfx};[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0[a]`;
@@ -7421,14 +7267,14 @@ function ffmpegFilterExists(name: string): boolean {
 function renderEdl(projectPath: string, edl: EdlArtifact, outputPath: string) {
   if (!commandExists("ffmpeg")) throw new Error("ffmpeg not found for render");
   const sources = readManifest(projectPath);
-  const sourcePaths = new Map(sources.sources.map((source) => [source.source_id, source.project_path]));
+  const sourcePaths = materializedSourcePaths(projectPath, sources);
   const workDir = resolve(projectPath, ".render");
   mkdirSync(workDir, { recursive: true });
   const partPaths = edl.entries.map((entry, index) => {
     const partPath = join(workDir, `part-${String(index).padStart(3, "0")}.mp4`);
     const result = spawnSync(
       "ffmpeg",
-      ["-y", "-ss", String(entry.start), "-i", entry.source_path || readableProjectSource(projectPath, entry.source_id, sourcePaths.get(entry.source_id) ?? ""), "-t", String(entry.end - entry.start), "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-movflags", "+faststart", partPath],
+      ["-y", "-ss", String(entry.start), "-i", readableProjectSource(projectPath, entry.source_id, sourcePaths.get(entry.source_id) ?? ""), "-t", String(entry.end - entry.start), "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-movflags", "+faststart", partPath],
       { encoding: "utf8" },
     );
     if (result.status !== 0) throw new Error(`ffmpeg segment render failed: ${result.stderr || result.stdout}`);
@@ -7785,7 +7631,6 @@ function writeProjectMetadata(projectPath: string, providerMode: ProviderExecuti
     provider_execution_mode: providerMode,
     created_at: existing?.created_at ?? now,
     updated_at: now,
-    asset_usage_plan: existing?.asset_usage_plan,
   } satisfies ProjectMetadataArtifact);
   return metadataPath;
 }
@@ -8102,12 +7947,18 @@ function fail<TCommand extends string, TData>(command: TCommand, code: string, e
     artifact?: string;
     remediation?: string;
     request?: Record<string, unknown>;
+    schema_version?: string;
+    schema_digest?: string;
+    issues?: Array<{ path: string; keyword: string; message: string }>;
   };
   if (details.provider_execution_mode === "standalone" || details.provider_execution_mode === "platform") response.provider_execution_mode = details.provider_execution_mode;
   if (typeof details.stage === "string") response.stage = details.stage;
   if (typeof details.artifact === "string") response.artifact = details.artifact;
   if (typeof details.remediation === "string") response.remediation = details.remediation;
   if (details.request && typeof details.request === "object" && !Array.isArray(details.request)) response.request = details.request as Record<string, unknown>;
+  if (typeof details.schema_version === "string") response.schema_version = details.schema_version;
+  if (typeof details.schema_digest === "string") response.schema_digest = details.schema_digest;
+  if (Array.isArray(details.issues)) response.issues = details.issues as Array<{ path: string; keyword: string; message: string }>;
   return { ok: false, command, error: response };
 }
 

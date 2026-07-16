@@ -134,13 +134,13 @@ export function adapterForVendoredElement(item: VendoredElementCatalogItem): Hyp
 }
 
 export function adapterForElement(element: EnrichmentElement): HyperframesElementAdapter {
-  if (element.element_type === "generated_asset" || element.element_type === "visual_asset") {
+  if (element.element_type === "visual_asset") {
     return {
       family: "app_showcase",
       render_strategy: "asset_overlay",
       source_modes: sourceModes,
-      screen_safe: element.element_type === "visual_asset",
-      default_zone: element.element_type === "visual_asset" ? "upper_third" : "right_panel",
+      screen_safe: true,
+      default_zone: "upper_third",
       required_params: [],
       requires_target_rect: false,
       requires_anchor_point: false,
@@ -234,7 +234,6 @@ function requiredParamsFor(family: HyperframesElementFamily, item: VendoredEleme
 }
 
 function assetRequirementsFor(family: HyperframesElementFamily, item: VendoredElementCatalogItem): string[] {
-  if (item.element_type === "generated_asset") return ["image"];
   if (item.element_id.includes("follow") || family === "app_showcase" || family === "device") return ["image"];
   return [];
 }

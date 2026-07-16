@@ -46,7 +46,7 @@ import {
   resolveRenderContractStoryboard,
   type EnrichmentStoryboard,
 } from "./project";
-import { computeRendererResourcesDigest, computeRuntimeCompatibilityDigest } from "./delivery-identity";
+import { computeRendererResourcesDigest } from "./delivery-identity";
 import { verifyInstalledDelivery } from "./delivery-runtime";
 
 const fsRuntime = nodeFs as unknown as { realpathSync(path: string): string; lstatSync(path: string): { isSymbolicLink(): boolean }; renameSync(from: string, to: string): void };
@@ -58,12 +58,6 @@ const CAPABILITY_IDS = [
   "render_contract.consume_strict.v1",
   "source_binding.v1",
 ] as const;
-const SCHEMA_VERSIONS = {
-  "sources.json": "2.0",
-  "source-materialization.json": "1.0",
-  "edl.json": "2.0",
-  "render-contract.json": "1.0",
-} as const;
 const RUNTIME_DEPENDENCIES = ["gsap@3.15.0", "hyperframes@0.7.36"] as const;
 
 type CommandResult<T extends string, D> = { ok: true; command: T; data: D } | { ok: false; command: T; error: { code: string; message: string } };
@@ -136,7 +130,7 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
       captions: { cues },
       composition: json({ mode: plan ? "resolved_storyboard" : "clean_captions", ...(plan ? { enrichment_plan: plan, storyboard } : {}) }),
       assets: contractAssets,
-      audio: json(plan ? { music: plan.music, sfx: plan.elements.filter((element) => element.element_type === "sfx") } : { music: [], sfx: [] }),
+      audio: json(plan?.audio ?? { music: [], sfx: [] }),
       output: json({ container: "mp4", width: output.width, height: output.height, fps: 30, video_codec: "h264", pixel_format: "yuv420p", audio_codec: "aac", audio_sample_rate: 48000, audio_channels: 2, canonical_filename: "koubo-final.mp4" }),
       preflight: json({ required_tools: ["ffmpeg", "ffprobe"], required_filters: ["scale", "pad", "fps", "format", "aresample", "aformat"], runtime_dependencies: [...RUNTIME_DEPENDENCIES], expected_duration_seconds: duration, source_probe_tolerance_seconds: 0.05 }),
       inspection: json({ duration_tolerance_seconds: Math.max(0.05, 2 / 30), require_video: true, require_audio: rawSources.sources.some((source) => Boolean(source.identity?.audio)), checks: storyboard?.qa_checks ?? [], hard_acceptance: true }),
@@ -223,7 +217,7 @@ export function renderBoundContract(bundleDir: string, bindingsPath: string, run
     const output = contract.payload.output as Record<string, unknown>;
     const executed = executeResolvedRenderPlan({
       runRoot: staging,
-      timeline: { contract_version: "2.0", entries: contract.payload.timeline.entries.map((entry) => ({ ...entry, source_path: undefined as unknown as string })) },
+      timeline: { contract_version: "2.0", entries: contract.payload.timeline.entries },
       sourcePaths: Object.fromEntries(binding.sources.map((source) => [source.source_id, source.resolved_path])),
       captions: contract.payload.captions.cues,
       output: { filename: text(output.canonical_filename, "output.canonical_filename"), width: integer(output.width, "output.width"), height: integer(output.height, "output.height"), fps: integer(output.fps, "output.fps") },
@@ -319,12 +313,12 @@ function readContract(bundleDir: string): RenderContractV1 {
 function liveRuntimeIdentity(): JsonObject {
   const delivery = verifyInstalledDelivery();
   const resources = computeRendererResourcesDigest({ root: resolveHyperframesRoot() }).digest;
-  const runtime = computeRuntimeCompatibilityDigest({ renderer_resources_digest: resources, schema_versions: SCHEMA_VERSIONS, capability_ids: [...CAPABILITY_IDS], runtime_dependencies: [...RUNTIME_DEPENDENCIES] });
   return json({
     cli_version: cliVersion(),
     delivery_manifest_schema_version: delivery.schema_version,
-    ...(delivery.schema_version === "2.0" ? { delivery_digest: delivery.delivery_digest } : {}),
-    runtime_compatibility_digest: runtime,
+    delivery_digest: delivery.delivery_digest,
+    artifact_contracts_digest: delivery.artifact_contracts_digest,
+    runtime_compatibility_digest: delivery.runtime_compatibility_digest,
     renderer_resources_digest: resources,
     required_capability_ids: [...CAPABILITY_IDS],
     hyperframes_version: "0.7.36",
@@ -333,14 +327,13 @@ function liveRuntimeIdentity(): JsonObject {
 }
 
 function assertRuntimeCompatible(contract: RenderContractV1): void {
-  verifyInstalledDelivery();
+  const delivery = verifyInstalledDelivery();
   const expected = liveRuntimeIdentity();
   const actual = contract.payload.runtime as Record<string, unknown>;
   if (actual.runtime_compatibility_digest !== expected.runtime_compatibility_digest) throw coded("CONTRACT_RUNTIME_MISMATCH", "runtime compatibility digest does not match installed Koubo Clip delivery");
   if (actual.renderer_resources_digest !== expected.renderer_resources_digest) throw coded("CONTRACT_RUNTIME_MISMATCH", "renderer resources digest does not match installed Koubo Clip delivery");
-  if (actual.delivery_digest !== undefined && actual.delivery_digest !== expected.delivery_digest) throw coded("CONTRACT_RUNTIME_MISMATCH", "complete delivery digest does not match installed Koubo Clip delivery");
   const required = Array.isArray(actual.required_capability_ids) ? actual.required_capability_ids : [];
-  if (required.some((capability) => typeof capability !== "string" || !CAPABILITY_IDS.includes(capability as typeof CAPABILITY_IDS[number]))) throw coded("CONTRACT_CAPABILITY_MISSING", "contract requires an unavailable capability");
+  if (required.some((capability) => typeof capability !== "string" || !delivery.capability_ids.includes(capability))) throw coded("CONTRACT_CAPABILITY_MISSING", "contract requires an unavailable capability");
   if (actual.hyperframes_version !== "0.7.36" || actual.gsap_version !== "3.15.0") throw coded("CONTRACT_RUNTIME_MISMATCH", "contract runtime dependency versions do not match");
 }
 
@@ -368,8 +361,8 @@ function stageReferencedAssets(projectPath: string, plan: EnrichmentPlanArtifact
 
 function referencedAssetIds(plan: EnrichmentPlanArtifact): Set<string> {
   return new Set([
-    ...plan.cards.flatMap((item) => item.asset_id ? [item.asset_id] : []),
-    ...plan.music.map((item) => item.asset_id),
+    ...plan.audio.music.map((item) => item.asset_id),
+    ...plan.audio.sfx.flatMap((item) => item.asset_id ? [item.asset_id] : []),
     ...plan.elements.flatMap((item) => item.asset_id ? [item.asset_id] : []),
   ]);
 }

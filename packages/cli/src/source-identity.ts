@@ -52,22 +52,6 @@ export type SourceMaterializationManifest = {
   sources: SourceMaterialization[];
 };
 
-export type NormalizedSourceAsset = {
-  source_id: string;
-  order: number;
-  original_filename: string;
-  duration_seconds: number;
-  local_media_ref?: string;
-  identity?: SourceIdentity;
-  project_path?: string;
-  probe?: Record<string, unknown>;
-};
-
-export type NormalizedSourcesManifest = {
-  contract_version: "legacy" | typeof SOURCES_CONTRACT_VERSION;
-  sources: NormalizedSourceAsset[];
-};
-
 export type SourceMap = Record<string, string>;
 
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
@@ -106,44 +90,6 @@ export function parseSourceMaterializationManifest(value: unknown): SourceMateri
   assertUnique(sources.map((source) => source.source_id), "source_id");
   assertUnique(sources.map((source) => source.project_path), "materialization project_path");
   return { contract_version: SOURCE_MATERIALIZATION_CONTRACT_VERSION, sources };
-}
-
-export function normalizeSourcesManifest(value: unknown): NormalizedSourcesManifest {
-  const obj = plainRecord(value, "sources manifest");
-  if (obj.contract_version !== undefined) {
-    const manifest = parseSourcesManifestV2(value);
-    return {
-      contract_version: SOURCES_CONTRACT_VERSION,
-      sources: manifest.sources.map((source) => ({
-        ...source,
-        duration_seconds: source.identity.duration_seconds,
-      })),
-    };
-  }
-
-  const legacy = strictRecord(value, "legacy sources manifest", ["sources"]);
-  const sources = strictArray(legacy.sources, "sources").map((item, index): NormalizedSourceAsset => {
-    const name = `sources[${index}]`;
-    const source = strictRecord(item, name, [
-      "source_id",
-      "order",
-      "original_filename",
-      "project_path",
-      "duration_seconds",
-      "probe",
-    ]);
-    return {
-      source_id: nonBlankString(source.source_id, `${name}.source_id`),
-      order: nonNegativeInteger(source.order, `${name}.order`),
-      original_filename: filename(source.original_filename, `${name}.original_filename`),
-      project_path: validateMaterializationPath(source.project_path, `${name}.project_path`),
-      duration_seconds: nonNegativeNumber(source.duration_seconds, `${name}.duration_seconds`),
-      probe: source.probe === undefined ? undefined : plainRecord(source.probe, `${name}.probe`),
-    };
-  });
-  assertUnique(sources.map((source) => source.source_id), "source_id");
-  assertUnique(sources.map((source) => String(source.order)), "source order");
-  return { contract_version: "legacy", sources };
 }
 
 export function parseSourceMap(value: unknown): SourceMap {

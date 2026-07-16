@@ -131,7 +131,7 @@ const artifactDefinitions: readonly ArtifactDefinition[] = [
     key: "sources",
     path: projectArtifacts.sources,
     role: "authoritative_input",
-    schemaVersion: "1.0",
+    schemaVersion: "2.0",
     format: "json",
     parse: (value) => parseSourcesManifest(value),
     capture: (value, parsed) => {
@@ -195,7 +195,7 @@ const artifactDefinitions: readonly ArtifactDefinition[] = [
     key: "production-proposal",
     path: projectArtifacts.productionProposal,
     role: "authoritative_input",
-    schemaVersion: "1.1",
+    schemaVersion: "2.0",
     format: "json",
     parse: (value) => parseProductionProposal(value),
     capture: (value, parsed) => {
@@ -232,7 +232,7 @@ const artifactDefinitions: readonly ArtifactDefinition[] = [
     key: "edl",
     path: projectArtifacts.edl,
     role: "derived",
-    schemaVersion: "1.0",
+    schemaVersion: "2.0",
     format: "json",
     parse: (value, parsed) => parseEdl(value, parsed.sources),
   },
@@ -424,7 +424,7 @@ const artifactDefinitions: readonly ArtifactDefinition[] = [
     key: "enrichment-plan",
     path: projectArtifacts.enrichmentPlan,
     role: "authoritative_input",
-    schemaVersion: "1.2",
+    schemaVersion: "2.0",
     format: "json",
     parse: (value) => parseEnrichmentPlan(value),
   },
@@ -432,7 +432,7 @@ const artifactDefinitions: readonly ArtifactDefinition[] = [
     key: "storyboard",
     path: projectArtifacts.storyboard,
     role: "derived",
-    schemaVersion: "1.0",
+    schemaVersion: "1.1",
     format: "json",
     parse: genericJsonObject,
   },
@@ -495,11 +495,13 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
   const blockers: StatusBlocker[] = [];
   const diagnosticCycleMembers = new Set<string>();
   let manifest: ArtifactManifest | undefined;
-  let manifestState: ProjectStatusArtifact["manifest_state"] = "legacy_untracked";
+  let manifestState: ProjectStatusArtifact["manifest_state"] = "invalid";
   let manifestError: string | undefined;
 
   if (!existsSync(rootPath) || !safeStat(rootPath)?.isDirectory()) {
     blockers.push(blocker("PROJECT_NOT_FOUND", "Project directory does not exist.", undefined, "Create the project before requesting status."));
+  } else {
+    assertCurrentProjectContract(rootPath);
   }
 
   const manifestPath = resolveManagedPath(rootPath, projectArtifacts.artifactManifest);
@@ -602,8 +604,8 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
     ...(lastSuccessfulCheckpoint(manifest) ? { last_successful_checkpoint: lastSuccessfulCheckpoint(manifest)! } : {}),
     sources: (parsed.sources?.sources ?? []).map((source) => ({
       source_id: source.source_id,
-      identity: source.identity ? "available" as const : "legacy" as const,
-      materialization: evaluations.get(`source:${source.source_id}`)?.state === "current" ? "verified" as const : source.project_path ? "invalid" as const : "unbound" as const,
+      identity: "available" as const,
+      materialization: evaluations.get(`source:${source.source_id}`)?.state === "current" ? "verified" as const : "unbound" as const,
     })),
     render_contract: {
       ready: evaluations.get("edl")?.state === "current" && (!nodes.get("enrichment-plan")?.exists || evaluations.get("enrichment-plan")?.state === "current"),
@@ -708,9 +710,6 @@ function addSourceMembers(
       }
       continue;
     }
-    const key = `source:${source.source_id}`;
-    const record = manifest?.artifacts[key];
-    nodes.set(key, readPhysicalNode(rootPath, key, source.project_path, "authoritative_input", record?.schema_version ?? "bytes-v1", record));
   }
 }
 
@@ -1387,7 +1386,7 @@ function buildStages(
       prerequisites: ["review-package"],
       outputs: ["production-proposal"],
       acceptsPending: ["production-proposal"],
-      notApplicable: parsed.editPlan?.contract_version === "legacy" && !nodes.get("production-proposal")?.exists,
+      notApplicable: false,
     },
     {
       stage: "compile-edl",
@@ -1631,17 +1630,73 @@ function readProjectIdentity(rootPath: string): {
 } {
   const path = resolveManagedPath(rootPath, projectArtifacts.project);
   if (!path || !existsSync(path)) {
-    return { contractVersion: "legacy", providerMode: "standalone", error: "project.json is missing." };
+    return { contractVersion: "1.0", providerMode: "standalone", error: "project.json is missing." };
   }
   try {
     const metadata = parseProjectMetadata(readJson(path));
     return {
-      contractVersion: metadata.contract_version ?? "legacy",
+      contractVersion: metadata.contract_version,
       providerMode: metadata.provider_execution_mode,
     };
   } catch (error) {
-    return { contractVersion: "legacy", providerMode: "standalone", error: `project.json is invalid: ${errorMessage(error)}` };
+    return { contractVersion: "1.0", providerMode: "standalone", error: `project.json is invalid: ${errorMessage(error)}` };
   }
+}
+
+function assertCurrentProjectContract(rootPath: string): void {
+  const projectPath = resolveManagedPath(rootPath, projectArtifacts.project);
+  const sourcesPath = resolveManagedPath(rootPath, projectArtifacts.sources);
+  const manifestPath = resolveManagedPath(rootPath, projectArtifacts.artifactManifest);
+  const unsupported = (message: string): never => {
+    const error = new Error(message) as Error & { code: string };
+    error.code = "CONTRACT_SCHEMA_UNSUPPORTED";
+    throw error;
+  };
+  if (!projectPath || !existsSync(projectPath)) unsupported('project.json contract_version "1.0" is required');
+  if (!sourcesPath || !existsSync(sourcesPath)) unsupported('sources.json contract_version "2.0" is required');
+  if (!manifestPath || !existsSync(manifestPath)) unsupported('artifact-manifest.json contract_version "1.0" is required');
+  try {
+    const project = readJson(projectPath!) as Record<string, unknown>;
+    if (project.contract_version !== "1.0") unsupported('project.json contract_version must be "1.0"');
+    if ("asset_usage_plan" in project) unsupported("project.json embedded asset_usage_plan is unsupported");
+    const sources = readJson(sourcesPath!) as Record<string, unknown>;
+    if (sources.contract_version !== "2.0") unsupported('sources.json contract_version must be "2.0"');
+    const manifest = readJson(manifestPath!) as Record<string, unknown>;
+    if (manifest.contract_version !== "1.0") unsupported('artifact-manifest.json contract_version must be "1.0"');
+
+    assertOptionalArtifactVersion(rootPath, projectArtifacts.productionProposal, "version", "2.0", unsupported);
+    assertOptionalArtifactVersion(rootPath, projectArtifacts.editPlan, "contract_version", "1.0", unsupported, ["asset_usage_plan"]);
+    assertOptionalArtifactVersion(rootPath, projectArtifacts.edl, "contract_version", "2.0", unsupported);
+    assertOptionalArtifactVersion(
+      rootPath,
+      projectArtifacts.enrichmentPlan,
+      "version",
+      "2.0",
+      unsupported,
+      ["cards", "slots", "captions", "music"],
+    );
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error) throw error;
+    unsupported(`project contract files are unreadable: ${errorMessage(error)}`);
+  }
+}
+
+function assertOptionalArtifactVersion(
+  rootPath: string,
+  filename: string,
+  versionField: "version" | "contract_version",
+  expected: string,
+  unsupported: (message: string) => never,
+  removedFields: readonly string[] = [],
+): void {
+  const path = resolveManagedPath(rootPath, filename);
+  if (!path || !existsSync(path)) return;
+  const value = readJson(path) as Record<string, unknown>;
+  if (!value || typeof value !== "object" || Array.isArray(value) || value[versionField] !== expected) {
+    unsupported(`${filename} ${versionField} must be "${expected}"`);
+  }
+  const removed = removedFields.find((field) => field in value);
+  if (removed) unsupported(`${filename}.${removed} is unsupported by the current contract`);
 }
 
 function genericJsonObject(value: unknown): Record<string, unknown> {

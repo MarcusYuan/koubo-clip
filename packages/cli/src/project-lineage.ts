@@ -275,25 +275,15 @@ export function inspectionFingerprintProjection(inspection: InspectionArtifact):
 }
 
 export function proposalSelectionProjection(proposal: ProductionProposalArtifact, optionId: string): unknown {
-  if (proposal.version === "1.1") {
-    const option = proposal.options.find((candidate) => candidate.id === optionId);
-    if (!option) throw new Error(`proposal option not found: ${optionId}`);
-    return {
-      proposal_contract_version: proposal.version,
-      option_id: option.id,
-      goal_summary: proposal.goal_summary,
-      business_direction: option.business_direction,
-      edit_execution_plan: option.edit_execution_plan,
-      asset_requirements: option.asset_requirements,
-    };
-  }
   const option = proposal.options.find((candidate) => candidate.id === optionId);
   if (!option) throw new Error(`proposal option not found: ${optionId}`);
   return {
     proposal_contract_version: proposal.version,
     option_id: option.id,
     goal_summary: proposal.goal_summary,
-    option,
+    business_direction: option.business_direction,
+    edit_execution_plan: option.edit_execution_plan,
+    asset_requirements: option.asset_requirements,
   };
 }
 

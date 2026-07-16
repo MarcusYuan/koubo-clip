@@ -1,5 +1,5 @@
-import { assertRenderableHyperframesBlockForCard } from "./hyperframes-catalog";
 import { assertKnownVendoredElement, type VendoredElementType } from "./hyperframes-registry";
+import { assertProductionProposalContract } from "./artifact-contracts";
 
 export type TimingGranularity = "word" | "segment" | "text-only";
 
@@ -7,12 +7,9 @@ export type SourceAsset = {
   source_id: string;
   order: number;
   original_filename: string;
-  local_media_ref?: string;
-  /** Legacy/materialized compatibility view. Empty for detached sources. */
-  project_path: string;
+  local_media_ref: string;
   duration_seconds: number;
-  probe?: Record<string, unknown>;
-  identity?: {
+  identity: {
     sha256: string;
     size_bytes: number;
     duration_seconds: number;
@@ -36,7 +33,7 @@ export type SourceAsset = {
 };
 
 export type SourcesManifest = {
-  contract_version?: "2.0";
+  contract_version: "2.0";
   sources: SourceAsset[];
 };
 
@@ -90,18 +87,15 @@ export type EditDecision = {
 };
 
 export type EditPlanArtifact = {
-  contract_version: ProjectContractVersion;
-  confirmed_option_id?: string;
-  proposal_selection_fingerprint?: ArtifactFingerprint;
+  contract_version: "1.0";
+  confirmed_option_id: string;
+  proposal_selection_fingerprint: ArtifactFingerprint;
   decisions: EditDecision[];
   source_order?: string[];
-  asset_usage_plan?: AssetUsagePlanArtifact;
 };
 
 export type EdlEntry = {
   source_id: string;
-  /** Legacy compatibility view. Omitted from serialized EDL v2. */
-  source_path: string;
   start: number;
   end: number;
   output_order: number;
@@ -111,12 +105,11 @@ export type EdlEntry = {
 };
 
 export type EdlArtifact = {
-  contract_version?: "2.0";
+  contract_version: "2.0";
   entries: EdlEntry[];
 };
 
 export type EnrichmentPosition = "full_frame" | "upper_third" | "lower_third" | "left_panel" | "right_panel" | "center";
-export type EnrichmentSlotType = "title_card" | "keyword_callout" | "key_point_card" | "image_overlay" | "music_segment";
 export type EnrichmentSourceMode = "talking_head_avatar" | "screen_recording" | "mixed";
 export type EnrichmentAspectRatio = "source" | "16:9" | "9:16" | "4:5";
 export type EnrichmentCaptionIdentity = "anchor";
@@ -126,7 +119,7 @@ export type EnrichmentFrame = "clean" | "hairline" | "polaroid";
 export type EnrichmentCardKind = "title" | "key_point" | "quote" | "flowchart" | "image" | "screenshot_focus" | "lower_third";
 export type EnrichmentPoint = { x: number; y: number };
 export type EnrichmentRect = { x: number; y: number; width: number; height: number };
-export type EnrichmentElementType = VendoredElementType | "generated_asset" | "visual_asset";
+export type EnrichmentElementType = Exclude<VendoredElementType, "sfx"> | "visual_asset";
 export type AssetUsagePosition = "top-left" | "top-right" | "bottom-left" | "bottom-right" | EnrichmentPosition;
 
 export type AssetUsageMusic = {
@@ -178,28 +171,13 @@ export type VisualAssetType = "icon" | "animated_icon" | "lottie" | "ui_componen
 export type VisualProvider = "iconify" | "lordicon" | "lottie" | "shadcn" | "21st" | "mcp-handoff" | "local" | "url";
 export type VisualRequestStatus = "candidate" | "selected" | "rejected";
 export type ProviderExecutionMode = "standalone" | "platform";
-export type ProjectContractVersion = "legacy" | "1.0";
+export type ProjectContractVersion = "1.0";
 
 export type ProjectMetadataArtifact = {
-  contract_version?: ProjectContractVersion;
+  contract_version: ProjectContractVersion;
   provider_execution_mode: ProviderExecutionMode;
   created_at?: string;
   updated_at?: string;
-  asset_usage_plan?: AssetUsagePlanArtifact;
-};
-
-export type EnrichmentSlot = {
-  id: string;
-  type: EnrichmentSlotType;
-  start: number;
-  end: number;
-  reason: string;
-  text?: string;
-  asset_id?: string;
-  position?: EnrichmentPosition;
-  volume?: number;
-  fade_seconds?: number;
-  ducking?: boolean;
 };
 
 export type EnrichmentProfile = {
@@ -246,13 +224,23 @@ export type EnrichmentCard = {
 
 export type EnrichmentMusic = {
   id: string;
-  type: "music_segment";
   start: number;
   end: number;
   asset_id: string;
   volume: number;
   fade_seconds: number;
   ducking: boolean;
+  reason: string;
+};
+
+export type EnrichmentSfx = {
+  id: string;
+  start: number;
+  end: number;
+  asset_id?: string;
+  sfx_id?: string;
+  volume: number;
+  fade_seconds: number;
   reason: string;
 };
 
@@ -381,13 +369,13 @@ export type AssetManifestSource = "user" | "agent_generated" | "imported" | "bun
 export type AssetManifestDimensions = { width: number; height: number };
 
 export type EnrichmentPlanArtifact = {
-  version: string;
+  version: "2.0";
   profile: EnrichmentProfile;
-  captions: EnrichmentCaptions;
-  cards: EnrichmentCard[];
-  music: EnrichmentMusic[];
   elements: EnrichmentElement[];
-  slots?: EnrichmentSlot[];
+  audio: {
+    music: EnrichmentMusic[];
+    sfx: EnrichmentSfx[];
+  };
 };
 
 export type AssetManifestEntry = {
@@ -582,7 +570,6 @@ export type ProductionProposalSfx = {
 export type ProductionProposalOption = {
   id: string;
   label: string;
-  recommended: boolean;
   reason: string;
   cleanup: ProductionProposalCleanup;
   subtitles: ProductionProposalSubtitles;
@@ -591,10 +578,12 @@ export type ProductionProposalOption = {
   music: ProductionProposalMusic;
   sfx: ProductionProposalSfx;
   requires_confirmation: string[];
+  business_direction: ProductionBusinessDirection;
+  edit_execution_plan: ProductionEditExecutionPlan;
+  asset_requirements: ProductionAssetRequirements;
 };
 
 export type ProductionBusinessDirection = {
-  direction_id: string;
   title: string;
   suitable_for: string;
   editing_strategy: string;
@@ -669,32 +658,18 @@ export type ProductionEditExecutionPlan = {
   remove_segments: ProductionRemoveSegment[];
   reorder_segments: ProductionReorderSegment[];
   text_overlays: ProductionTextOverlay[];
-  visual_asset_slots: ProductionAssetRequirementSlot[];
-  music_slots: ProductionAssetRequirementSlot[];
-  sfx_slots: ProductionAssetRequirementSlot[];
-  image_slots: ProductionAssetRequirementSlot[];
   user_confirmation_summary: string;
 };
 
-export type ProductionProposalOptionV1_1 = ProductionProposalOption & {
-  business_direction: ProductionBusinessDirection;
-  edit_execution_plan: ProductionEditExecutionPlan;
-  asset_requirements: ProductionAssetRequirements;
-};
-
-type ProductionProposalBase<TVersion extends "1.0" | "1.1", TOption extends ProductionProposalOption> = {
-  version: TVersion;
+export type ProductionProposalArtifact = {
+  version: "2.0";
   source_mode: EnrichmentSourceMode;
   presentation_intent: FocusPresentationIntent;
   goal_summary: string;
   material_summary: string;
   recommended_option_id: string;
-  options: TOption[];
+  options: ProductionProposalOption[];
 };
-
-export type ProductionProposalArtifact =
-  | ProductionProposalBase<"1.0", ProductionProposalOption>
-  | ProductionProposalBase<"1.1", ProductionProposalOptionV1_1>;
 
 export type ArtifactFingerprint = `sha256:${string}`;
 export type ArtifactRole = "authoritative_input" | "command_request" | "evidence" | "derived" | "human_view" | "execution_result" | "temporary";
@@ -877,10 +852,10 @@ export type MusicReviewArtifact = {
   duration_seconds?: number;
   license?: string;
   warnings: string[];
-  recommended_music_segment?: EnrichmentMusic;
+  recommended_music_segment?: EnrichmentMusic & { type: "music_segment" };
 };
 
-export type ProjectManifestState = "tracked" | "legacy_untracked" | "invalid";
+export type ProjectManifestState = "tracked" | "invalid";
 
 export type ProjectArtifactStatus = {
   key: string;
@@ -914,7 +889,7 @@ export type ProjectStatusArtifact = {
   next_commands: string[];
   blockers: StatusBlocker[];
   last_successful_checkpoint?: { stage: string; completed_at: string; output_artifact_keys: string[] };
-  sources?: Array<{ source_id: string; identity: "available" | "legacy"; materialization: "verified" | "unbound" | "invalid" }>;
+  sources?: Array<{ source_id: string; identity: "available"; materialization: "verified" | "unbound" | "invalid" }>;
   render_contract?: { ready: boolean; blockers: StatusBlocker[]; current_authoring_fingerprint?: ArtifactFingerprint; current_contract_digest?: string };
 };
 
@@ -936,6 +911,7 @@ export type CapabilitiesArtifact = {
   capability_ids?: string[];
   delivery?: Record<string, unknown>;
   render_contract?: Record<string, unknown>;
+  artifact_contracts?: Record<string, unknown>;
 };
 
 export type CommandResult<TCommand extends string, TData> =
@@ -951,6 +927,9 @@ export type CommandResult<TCommand extends string, TData> =
         artifact?: string;
         remediation?: string;
         request?: Record<string, unknown>;
+        schema_version?: string;
+        schema_digest?: string;
+        issues?: Array<{ path: string; keyword: string; message: string }>;
       };
     };
 
@@ -1005,24 +984,20 @@ export const projectArtifacts = {
 } as const;
 
 export function parseProjectMetadata(value: unknown): ProjectMetadataArtifact {
-  const obj = record(value, "project metadata");
+  const obj = strictRecord(value, "project metadata", ["contract_version", "provider_execution_mode", "created_at", "updated_at"]);
   return {
     contract_version: projectContractVersion(obj.contract_version, "contract_version"),
     provider_execution_mode: providerExecutionMode(obj.provider_execution_mode, "provider_execution_mode"),
     created_at: obj.created_at === undefined ? undefined : string(obj.created_at, "created_at"),
     updated_at: obj.updated_at === undefined ? undefined : string(obj.updated_at, "updated_at"),
-    asset_usage_plan: obj.asset_usage_plan === undefined ? undefined : parseAssetUsagePlan(obj.asset_usage_plan),
   };
 }
 
 export function parseSourcesManifest(value: unknown): SourcesManifest {
-  const obj = record(value, "sources manifest");
-  const contractVersion = obj.contract_version === undefined ? undefined : string(obj.contract_version, "contract_version");
-  if (contractVersion !== undefined && contractVersion !== "2.0") throw new Error('sources contract_version must be "2.0"');
+  const obj = strictRecord(value, "sources manifest", ["contract_version", "sources"]);
+  const contractVersion = literalVersion(obj.contract_version, "sources contract_version", "2.0");
   const sources = array(obj.sources, "sources").map((item, index): SourceAsset => {
-    const source = record(item, `sources[${index}]`);
-    if (contractVersion === "2.0") {
-      if (source.project_path !== undefined) throw new Error(`sources[${index}].project_path is forbidden in sources contract_version 2.0`);
+    const source = strictRecord(item, `sources[${index}]`, ["source_id", "order", "original_filename", "local_media_ref", "identity"]);
       const identity = record(source.identity, `sources[${index}].identity`);
       const video = record(identity.video, `sources[${index}].identity.video`);
       const sha256 = string(identity.sha256, `sources[${index}].identity.sha256`);
@@ -1034,7 +1009,6 @@ export function parseSourcesManifest(value: unknown): SourcesManifest {
         order: integer(source.order, `sources[${index}].order`),
         original_filename: string(source.original_filename, `sources[${index}].original_filename`),
         local_media_ref: string(source.local_media_ref, `sources[${index}].local_media_ref`),
-        project_path: "",
         duration_seconds: duration,
         identity: {
           sha256,
@@ -1058,19 +1032,10 @@ export function parseSourcesManifest(value: unknown): SourcesManifest {
           },
         },
       };
-    }
-    return {
-      source_id: string(source.source_id, `sources[${index}].source_id`),
-      order: integer(source.order, `sources[${index}].order`),
-      original_filename: string(source.original_filename, `sources[${index}].original_filename`),
-      project_path: string(source.project_path, `sources[${index}].project_path`),
-      duration_seconds: nonNegativeNumber(source.duration_seconds, `sources[${index}].duration_seconds`),
-      probe: source.probe === undefined ? undefined : record(source.probe, `sources[${index}].probe`),
-    };
   });
   unique(sources.map((source) => source.source_id), "source_id");
   unique(sources.map((source) => String(source.order)), "source order");
-  return { contract_version: contractVersion as "2.0" | undefined, sources };
+  return { contract_version: contractVersion, sources };
 }
 
 export function parseSourceMaterialization(value: unknown, manifest?: SourcesManifest): SourceMaterializationArtifact {
@@ -1132,15 +1097,10 @@ export function parseReviewPackage(value: unknown, manifest?: SourcesManifest): 
 
 export function parseEditPlan(value: unknown, manifest?: SourcesManifest): EditPlanArtifact {
   const known = sourceIds(manifest);
-  const obj = record(value, "edit plan");
+  const obj = strictRecord(value, "edit plan", ["contract_version", "confirmed_option_id", "proposal_selection_fingerprint", "decisions", "source_order"]);
   const contract_version = projectContractVersion(obj.contract_version, "contract_version");
-  const confirmed_option_id = obj.confirmed_option_id === undefined ? undefined : nonBlankString(obj.confirmed_option_id, "confirmed_option_id");
-  const proposal_selection_fingerprint =
-    obj.proposal_selection_fingerprint === undefined ? undefined : artifactFingerprint(obj.proposal_selection_fingerprint, "proposal_selection_fingerprint");
-  if (contract_version === "1.0") {
-    if (!confirmed_option_id) throw new Error("confirmed_option_id is required for edit plan contract_version 1.0");
-    if (!proposal_selection_fingerprint) throw new Error("proposal_selection_fingerprint is required for edit plan contract_version 1.0");
-  }
+  const confirmed_option_id = nonBlankString(obj.confirmed_option_id, "confirmed_option_id");
+  const proposal_selection_fingerprint = artifactFingerprint(obj.proposal_selection_fingerprint, "proposal_selection_fingerprint");
   const source_order = obj.source_order === undefined ? undefined : array(obj.source_order, "source_order").map((item, index) => {
     const id = string(item, `source_order[${index}]`);
     requireKnownSource(id, known, `source_order[${index}]`);
@@ -1166,7 +1126,6 @@ export function parseEditPlan(value: unknown, manifest?: SourcesManifest): EditP
       };
     }),
     source_order,
-    asset_usage_plan: obj.asset_usage_plan === undefined ? undefined : parseAssetUsagePlan(obj.asset_usage_plan),
   };
 }
 
@@ -1183,11 +1142,10 @@ export function parseAssetUsagePlan(value: unknown): AssetUsagePlanArtifact {
 
 export function parseEdl(value: unknown, manifest?: SourcesManifest): EdlArtifact {
   const known = sourceIds(manifest);
-  const obj = record(value, "edl");
-  const contractVersion = obj.contract_version === undefined ? undefined : string(obj.contract_version, "contract_version");
-  if (contractVersion !== undefined && contractVersion !== "2.0") throw new Error('EDL contract_version must be "2.0"');
+  const obj = strictRecord(value, "edl", ["contract_version", "entries"]);
+  const contractVersion = literalVersion(obj.contract_version, "EDL contract_version", "2.0");
   const entries = array(obj.entries, "entries").map((item, index): EdlEntry => {
-    const entry = record(item, `entries[${index}]`);
+    const entry = strictRecord(item, `entries[${index}]`, ["source_id", "start", "end", "output_order", "reason", "quote", "label"]);
     const source_id = string(entry.source_id, `entries[${index}].source_id`);
     requireKnownSource(source_id, known, `entries[${index}].source_id`);
     const start = nonNegativeNumber(entry.start, `entries[${index}].start`);
@@ -1195,10 +1153,8 @@ export function parseEdl(value: unknown, manifest?: SourcesManifest): EdlArtifac
     if (end <= start) throw new Error(`entries[${index}].end must be greater than start`);
     const source = manifest?.sources.find((item) => item.source_id === source_id);
     if (source && end > source.duration_seconds) throw new Error(`entries[${index}].end exceeds source duration`);
-    if (contractVersion === "2.0" && entry.source_path !== undefined) throw new Error(`entries[${index}].source_path is forbidden in EDL contract_version 2.0`);
     return {
       source_id,
-      source_path: contractVersion === "2.0" ? (undefined as unknown as string) : string(entry.source_path, `entries[${index}].source_path`),
       start,
       end,
       output_order: integer(entry.output_order, `entries[${index}].output_order`),
@@ -1209,47 +1165,19 @@ export function parseEdl(value: unknown, manifest?: SourcesManifest): EdlArtifac
   });
   unique(entries.map((entry) => String(entry.output_order)), "output_order");
   rejectOverlaps(entries, "EDL entries");
-  return { contract_version: contractVersion as "2.0" | undefined, entries };
+  return { contract_version: contractVersion, entries };
 }
 
 export function parseEnrichmentPlan(value: unknown): EnrichmentPlanArtifact {
-  const obj = record(value, "enrichment plan");
-  const version = string(obj.version, "version");
-  if (version === "1.0") {
-    if (!Array.isArray(obj.slots)) throw new Error('version "1.0" enrichment plans require slots[]');
-    return legacyEnrichmentPlan(version, obj.slots);
-  }
-  if (version !== "1.1" && version !== "1.2") throw new Error('version must be "1.0", "1.1", or "1.2"');
-  if (Array.isArray(obj.slots)) throw new Error(`version "${version}" enrichment plans must not include legacy slots[]`);
-
+  const obj = strictRecord(value, "enrichment plan", ["version", "profile", "elements", "audio"]);
+  const version = literalVersion(obj.version, "enrichment plan version", "2.0");
   const profile = enrichmentProfile(obj.profile, "profile");
-  const captions = enrichmentCaptions(obj.captions, "captions");
-  const cards = array(obj.cards ?? [], "cards").map((item, index): EnrichmentCard => enrichmentCard(item, `cards[${index}]`, profile));
-  const music = array(obj.music ?? [], "music").map((item, index): EnrichmentMusic => enrichmentMusic(item, `music[${index}]`));
-  const explicitElements = version === "1.2" ? array(obj.elements ?? [], "elements").map((item, index): EnrichmentElement => enrichmentElement(item, `elements[${index}]`)) : [];
-  const elements = explicitElements.length > 0 ? withImplicitCaptionElement(captions, cards, music, explicitElements) : compatibilityElements(profile, captions, cards, music);
-  unique([...cards.map((card) => card.id), ...music.map((slot) => slot.id), ...explicitElements.map((element) => element.id)], "enrichment id");
-  return { version, profile, captions, cards, music, elements };
-}
-
-function legacyEnrichmentPlan(version: string, values: unknown[]): EnrichmentPlanArtifact {
-  const slots = values.map((item, index): EnrichmentSlot => enrichmentSlot(item, `slots[${index}]`));
-  unique(slots.map((slot) => slot.id), "slot id");
-  rejectTimelineOverlaps(slots.filter((slot) => slot.type !== "music_segment"), "enrichment visual slots");
-  const profile = defaultEnrichmentProfile();
-  const hasVisual = slots.some((slot) => slot.type !== "music_segment");
-  const captions: EnrichmentCaptions = { enabled: hasVisual, identity: "anchor", emphasis: [] };
-  const cards = slots.filter((slot) => slot.type !== "music_segment").map((slot) => legacySlotCard(slot, profile));
-  const music = slots.filter((slot) => slot.type === "music_segment").map(legacySlotMusic);
-  return {
-    version,
-    profile,
-    captions,
-    cards,
-    music,
-    elements: compatibilityElements(profile, captions, cards, music),
-    slots,
-  };
+  const elements = array(obj.elements, "elements").map((item, index): EnrichmentElement => enrichmentElement(item, `elements[${index}]`));
+  const audio = strictRecord(obj.audio, "audio", ["music", "sfx"]);
+  const music = array(audio.music, "audio.music").map((item, index) => enrichmentMusic(item, `audio.music[${index}]`));
+  const sfx = array(audio.sfx, "audio.sfx").map((item, index) => enrichmentSfx(item, `audio.sfx[${index}]`));
+  unique([...elements.map((item) => item.id), ...music.map((item) => item.id), ...sfx.map((item) => item.id)], "enrichment id");
+  return { version, profile, elements, audio: { music, sfx } };
 }
 
 export function parseAssetManifest(value: unknown): AssetManifestArtifact {
@@ -1291,29 +1219,18 @@ export function parseAssetManifest(value: unknown): AssetManifestArtifact {
 }
 
 export function parseProductionProposal(value: unknown): ProductionProposalArtifact {
-  const obj = record(value, "production proposal");
-  const version = string(obj.version, "version");
-  if (version !== "1.0" && version !== "1.1") throw new Error('production proposal version must be "1.0" or "1.1"');
+  assertProductionProposalContract(value);
+  const obj = strictRecord(value, "production proposal", ["version", "source_mode", "presentation_intent", "goal_summary", "material_summary", "recommended_option_id", "options"]);
   const recommendedOptionId = string(obj.recommended_option_id, "recommended_option_id");
-  const base = {
+  return {
+    version: "2.0",
     source_mode: sourceMode(obj.source_mode, "source_mode"),
     presentation_intent: focusPresentationIntent(obj.presentation_intent, "presentation_intent"),
-    goal_summary: string(obj.goal_summary, "goal_summary"),
-    material_summary: string(obj.material_summary, "material_summary"),
+    goal_summary: nonBlankString(obj.goal_summary, "goal_summary"),
+    material_summary: nonBlankString(obj.material_summary, "material_summary"),
     recommended_option_id: recommendedOptionId,
+    options: array(obj.options, "options").map((item, index): ProductionProposalOption => productionProposalOption(item, `options[${index}]`)),
   };
-  if (version === "1.1") {
-    const options = array(obj.options, "options").map(
-      (item, index): ProductionProposalOptionV1_1 => productionProposalOptionV1_1(item, `options[${index}]`),
-    );
-    validateProductionProposalOptions(options, recommendedOptionId);
-    return { version, ...base, options };
-  }
-  const options = array(obj.options, "options").map(
-    (item, index): ProductionProposalOption => productionProposalOption(item, `options[${index}]`),
-  );
-  validateProductionProposalOptions(options, recommendedOptionId);
-  return { version, ...base, options };
 }
 
 export function parseArtifactManifest(value: unknown): ArtifactManifest {
@@ -1469,8 +1386,9 @@ export function parseMusicReview(value: unknown): MusicReviewArtifact {
   const status = musicReviewStatus(obj.status, "status");
   const asset_id = obj.asset_id === undefined ? undefined : nonBlankString(obj.asset_id, "asset_id");
   const path = obj.path === undefined ? undefined : managedProjectPath(obj.path, "path");
-  const recommended_music_segment =
-    obj.recommended_music_segment === undefined ? undefined : enrichmentMusic(obj.recommended_music_segment, "recommended_music_segment");
+  const recommended_music_segment = obj.recommended_music_segment === undefined
+    ? undefined
+    : musicReviewSegment(obj.recommended_music_segment);
   if (status === "ready" && (!asset_id || !path || !recommended_music_segment)) {
     throw new Error("ready music review requires asset_id, path, and recommended_music_segment");
   }
@@ -1637,12 +1555,25 @@ export function parseFocusReview(value: unknown): FocusReviewArtifact {
 }
 
 function productionProposalOption(value: unknown, name: string): ProductionProposalOption {
-  const obj = record(value, name);
+  const obj = strictRecord(value, name, [
+    "id",
+    "label",
+    "reason",
+    "cleanup",
+    "subtitles",
+    "visuals",
+    "images",
+    "music",
+    "sfx",
+    "requires_confirmation",
+    "business_direction",
+    "edit_execution_plan",
+    "asset_requirements",
+  ]);
   return {
-    id: string(obj.id, `${name}.id`),
-    label: string(obj.label, `${name}.label`),
-    recommended: obj.recommended === undefined ? false : boolean(obj.recommended, `${name}.recommended`),
-    reason: string(obj.reason, `${name}.reason`),
+    id: opaqueIdentifier(obj.id, `${name}.id`),
+    label: nonBlankString(obj.label, `${name}.label`),
+    reason: nonBlankString(obj.reason, `${name}.reason`),
     cleanup: productionProposalCleanup(obj.cleanup, `${name}.cleanup`),
     subtitles: productionProposalSubtitles(obj.subtitles, `${name}.subtitles`),
     visuals: productionProposalVisuals(obj.visuals, `${name}.visuals`),
@@ -1650,23 +1581,7 @@ function productionProposalOption(value: unknown, name: string): ProductionPropo
     music: productionProposalMusic(obj.music, `${name}.music`),
     sfx: productionProposalSfx(obj.sfx, `${name}.sfx`),
     requires_confirmation: optionalStringArray(obj.requires_confirmation, `${name}.requires_confirmation`),
-  };
-}
-
-function validateProductionProposalOptions(options: ProductionProposalOption[], recommendedOptionId: string): void {
-  if (options.length === 0) throw new Error("options must include at least one option");
-  unique(options.map((option) => option.id), "production proposal option id");
-  if (!options.some((option) => option.id === recommendedOptionId)) throw new Error("recommended_option_id must match an option id");
-}
-
-function productionProposalOptionV1_1(value: unknown, name: string): ProductionProposalOptionV1_1 {
-  const base = productionProposalOption(value, name);
-  const obj = record(value, name);
-  const business_direction = productionBusinessDirection(obj.business_direction, `${name}.business_direction`);
-  if (business_direction.direction_id !== base.id) throw new Error(`${name}.business_direction.direction_id must match ${name}.id`);
-  return {
-    ...base,
-    business_direction,
+    business_direction: productionBusinessDirection(obj.business_direction, `${name}.business_direction`),
     edit_execution_plan: productionEditExecutionPlan(obj.edit_execution_plan, `${name}.edit_execution_plan`),
     asset_requirements: productionAssetRequirements(obj.asset_requirements, `${name}.asset_requirements`),
   };
@@ -1674,7 +1589,6 @@ function productionProposalOptionV1_1(value: unknown, name: string): ProductionP
 
 function productionBusinessDirection(value: unknown, name: string): ProductionBusinessDirection {
   const obj = strictRecord(value, name, [
-    "direction_id",
     "title",
     "suitable_for",
     "editing_strategy",
@@ -1684,7 +1598,6 @@ function productionBusinessDirection(value: unknown, name: string): ProductionBu
     "tradeoffs",
   ]);
   return {
-    direction_id: nonBlankString(obj.direction_id, `${name}.direction_id`),
     title: nonBlankString(obj.title, `${name}.title`),
     suitable_for: nonBlankString(obj.suitable_for, `${name}.suitable_for`),
     editing_strategy: nonBlankString(obj.editing_strategy, `${name}.editing_strategy`),
@@ -1705,10 +1618,6 @@ function productionEditExecutionPlan(value: unknown, name: string): ProductionEd
     "remove_segments",
     "reorder_segments",
     "text_overlays",
-    "visual_asset_slots",
-    "music_slots",
-    "sfx_slots",
-    "image_slots",
     "user_confirmation_summary",
   ]);
   return {
@@ -1722,10 +1631,6 @@ function productionEditExecutionPlan(value: unknown, name: string): ProductionEd
     remove_segments: array(obj.remove_segments, `${name}.remove_segments`).map((item, index) => productionRemoveSegment(item, `${name}.remove_segments[${index}]`)),
     reorder_segments: array(obj.reorder_segments, `${name}.reorder_segments`).map((item, index) => productionReorderSegment(item, `${name}.reorder_segments[${index}]`)),
     text_overlays: array(obj.text_overlays, `${name}.text_overlays`).map((item, index) => productionTextOverlay(item, `${name}.text_overlays[${index}]`)),
-    visual_asset_slots: productionAssetRequirementSlots(obj.visual_asset_slots, `${name}.visual_asset_slots`, "visual_asset"),
-    music_slots: productionAssetRequirementSlots(obj.music_slots, `${name}.music_slots`, "music"),
-    sfx_slots: productionAssetRequirementSlots(obj.sfx_slots, `${name}.sfx_slots`, "sfx"),
-    image_slots: productionAssetRequirementSlots(obj.image_slots, `${name}.image_slots`, "image"),
     user_confirmation_summary: nonBlankString(obj.user_confirmation_summary, `${name}.user_confirmation_summary`),
   };
 }
@@ -1834,7 +1739,7 @@ function productionAssetRequirementSlot(value: unknown, name: string, expectedKi
 }
 
 function productionProposalCleanup(value: unknown, name: string): ProductionProposalCleanup {
-  const obj = record(value, name);
+  const obj = strictRecord(value, name, ["cut_candidate_ids", "keep_strategy", "risks"]);
   return {
     cut_candidate_ids: array(obj.cut_candidate_ids ?? [], `${name}.cut_candidate_ids`).map((item, index) => string(item, `${name}.cut_candidate_ids[${index}]`)),
     keep_strategy: string(obj.keep_strategy, `${name}.keep_strategy`),
@@ -1843,7 +1748,7 @@ function productionProposalCleanup(value: unknown, name: string): ProductionProp
 }
 
 function productionProposalSubtitles(value: unknown, name: string): ProductionProposalSubtitles {
-  const obj = record(value, name);
+  const obj = strictRecord(value, name, ["enabled", "style", "conflict_notes"]);
   return {
     enabled: boolean(obj.enabled, `${name}.enabled`),
     style: string(obj.style, `${name}.style`),
@@ -1852,7 +1757,7 @@ function productionProposalSubtitles(value: unknown, name: string): ProductionPr
 }
 
 function productionProposalVisuals(value: unknown, name: string): ProductionProposalVisuals {
-  const obj = record(value, name);
+  const obj = strictRecord(value, name, ["direction", "viewer_job", "requires_grounding", "notes"]);
   return {
     direction: string(obj.direction, `${name}.direction`),
     viewer_job: string(obj.viewer_job, `${name}.viewer_job`),
@@ -1862,7 +1767,7 @@ function productionProposalVisuals(value: unknown, name: string): ProductionProp
 }
 
 function productionProposalImages(value: unknown, name: string): ProductionProposalImages {
-  const obj = record(value, name);
+  const obj = strictRecord(value, name, ["needed", "reason", "missing_assets"]);
   rejectPrematureAssetRefs(obj, name);
   return {
     needed: boolean(obj.needed, `${name}.needed`),
@@ -1872,7 +1777,7 @@ function productionProposalImages(value: unknown, name: string): ProductionPropo
 }
 
 function productionProposalMusic(value: unknown, name: string): ProductionProposalMusic {
-  const obj = record(value, name);
+  const obj = strictRecord(value, name, ["source", "mood", "ducking", "notes"]);
   rejectPrematureAssetRefs(obj, name);
   return {
     source: musicRequestSource(obj.source, `${name}.source`),
@@ -1883,7 +1788,7 @@ function productionProposalMusic(value: unknown, name: string): ProductionPropos
 }
 
 function productionProposalSfx(value: unknown, name: string): ProductionProposalSfx {
-  const obj = record(value, name);
+  const obj = strictRecord(value, name, ["enabled", "usage", "restraint"]);
   return {
     enabled: boolean(obj.enabled, `${name}.enabled`),
     usage: string(obj.usage, `${name}.usage`),
@@ -1897,7 +1802,7 @@ function rejectPrematureAssetRefs(obj: Record<string, unknown>, name: string) {
   }
 }
 
-function defaultEnrichmentProfile(sourceMode: EnrichmentSourceMode = "talking_head_avatar"): EnrichmentProfile {
+export function defaultEnrichmentProfile(sourceMode: EnrichmentSourceMode = "talking_head_avatar"): EnrichmentProfile {
   const screenSafe = sourceMode === "screen_recording" || sourceMode === "mixed";
   return {
     source_mode: sourceMode,
@@ -1910,82 +1815,58 @@ function defaultEnrichmentProfile(sourceMode: EnrichmentSourceMode = "talking_he
 }
 
 function enrichmentProfile(value: unknown, name: string): EnrichmentProfile {
-  const obj = value === undefined ? {} : record(value, name);
-  const source_mode = obj.source_mode === undefined ? "talking_head_avatar" : sourceMode(obj.source_mode, `${name}.source_mode`);
-  const defaults = defaultEnrichmentProfile(source_mode);
+  const obj = strictRecord(value, name, ["source_mode", "aspect_ratio", "caption_identity", "layout", "style", "frame"]);
+  const source_mode = sourceMode(obj.source_mode, `${name}.source_mode`);
   return {
     source_mode,
-    aspect_ratio: obj.aspect_ratio === undefined ? defaults.aspect_ratio : aspectRatio(obj.aspect_ratio, `${name}.aspect_ratio`),
-    caption_identity: obj.caption_identity === undefined ? defaults.caption_identity : captionIdentity(obj.caption_identity, `${name}.caption_identity`),
-    layout: obj.layout === undefined ? defaults.layout : enrichmentLayout(obj.layout, `${name}.layout`),
-    style: obj.style === undefined ? defaults.style : enrichmentStyle(obj.style, `${name}.style`),
-    frame: obj.frame === undefined ? defaults.frame : enrichmentFrame(obj.frame, `${name}.frame`),
-  };
-}
-
-function enrichmentCaptions(value: unknown, name: string): EnrichmentCaptions {
-  const obj = value === undefined ? {} : record(value, name);
-  return {
-    enabled: obj.enabled === undefined ? true : boolean(obj.enabled, `${name}.enabled`),
-    identity: obj.identity === undefined ? "anchor" : captionIdentity(obj.identity, `${name}.identity`),
-    emphasis: array(obj.emphasis ?? [], `${name}.emphasis`).map((item, index): CaptionEmphasis => {
-      const emphasis = record(item, `${name}.emphasis[${index}]`);
-      const start = nonNegativeNumber(emphasis.start, `${name}.emphasis[${index}].start`);
-      const end = nonNegativeNumber(emphasis.end, `${name}.emphasis[${index}].end`);
-      if (end <= start) throw new Error(`${name}.emphasis[${index}].end must be greater than start`);
-      return {
-        start,
-        end,
-        text: string(emphasis.text, `${name}.emphasis[${index}].text`),
-        reason: string(emphasis.reason, `${name}.emphasis[${index}].reason`),
-      };
-    }),
-  };
-}
-
-function enrichmentCard(value: unknown, name: string, profile: EnrichmentProfile): EnrichmentCard {
-  const obj = record(value, name);
-  const kind = cardKind(obj.kind, `${name}.kind`);
-  const start = nonNegativeNumber(obj.start, `${name}.start`);
-  const end = nonNegativeNumber(obj.end, `${name}.end`);
-  if (end <= start) throw new Error(`${name}.end must be greater than start`);
-  return {
-    id: string(obj.id, `${name}.id`),
-    start,
-    end,
-    kind,
-    block_id: obj.block_id === undefined ? undefined : assertRenderableHyperframesBlockForCard(string(obj.block_id, `${name}.block_id`), kind, profile.source_mode, `${name}.block_id`),
-    visual_intent: obj.visual_intent === undefined ? undefined : string(obj.visual_intent, `${name}.visual_intent`),
-    layout: obj.layout === undefined ? profile.layout : enrichmentLayout(obj.layout, `${name}.layout`),
-    style: obj.style === undefined ? profile.style : enrichmentStyle(obj.style, `${name}.style`),
-    frame: obj.frame === undefined ? profile.frame : enrichmentFrame(obj.frame, `${name}.frame`),
-    zone: obj.zone === undefined ? defaultCardZone(kind) : position(obj.zone, `${name}.zone`),
-    kicker: obj.kicker === undefined ? undefined : string(obj.kicker, `${name}.kicker`),
-    title: string(obj.title, `${name}.title`),
-    detail: obj.detail === undefined ? undefined : string(obj.detail, `${name}.detail`),
-    asset_id: obj.asset_id === undefined ? undefined : string(obj.asset_id, `${name}.asset_id`),
-    target_rect: obj.target_rect === undefined ? undefined : normalizedRect(obj.target_rect, `${name}.target_rect`),
-    anchor_point: obj.anchor_point === undefined ? undefined : normalizedPoint(obj.anchor_point, `${name}.anchor_point`),
-    reason: string(obj.reason, `${name}.reason`),
+    aspect_ratio: aspectRatio(obj.aspect_ratio, `${name}.aspect_ratio`),
+    caption_identity: captionIdentity(obj.caption_identity, `${name}.caption_identity`),
+    layout: enrichmentLayout(obj.layout, `${name}.layout`),
+    style: enrichmentStyle(obj.style, `${name}.style`),
+    frame: enrichmentFrame(obj.frame, `${name}.frame`),
   };
 }
 
 function enrichmentMusic(value: unknown, name: string): EnrichmentMusic {
-  const obj = record(value, name);
-  const type = obj.type === undefined ? "music_segment" : string(obj.type, `${name}.type`);
-  if (type !== "music_segment") throw new Error(`${name}.type must be music_segment`);
+  const obj = strictRecord(value, name, ["id", "asset_id", "start", "end", "volume", "fade_seconds", "ducking", "reason"]);
   const start = nonNegativeNumber(obj.start, `${name}.start`);
   const end = nonNegativeNumber(obj.end, `${name}.end`);
   if (end <= start) throw new Error(`${name}.end must be greater than start`);
   return {
     id: string(obj.id, `${name}.id`),
-    type: "music_segment",
     start,
     end,
     asset_id: string(obj.asset_id, `${name}.asset_id`),
-    volume: bounded(obj.volume ?? 0.18, `${name}.volume`, 0, 1),
-    fade_seconds: bounded(obj.fade_seconds ?? 0.5, `${name}.fade_seconds`, 0, end - start),
-    ducking: obj.ducking === undefined ? true : boolean(obj.ducking, `${name}.ducking`),
+    volume: bounded(obj.volume, `${name}.volume`, 0, 1),
+    fade_seconds: bounded(obj.fade_seconds, `${name}.fade_seconds`, 0, end - start),
+    ducking: boolean(obj.ducking, `${name}.ducking`),
+    reason: string(obj.reason, `${name}.reason`),
+  };
+}
+
+function musicReviewSegment(value: unknown): EnrichmentMusic & { type: "music_segment" } {
+  const { type, ...segment } = record(value, "recommended_music_segment");
+  if (type !== "music_segment") throw new Error("recommended_music_segment.type must be music_segment");
+  return { ...enrichmentMusic(segment, "recommended_music_segment"), type };
+}
+
+function enrichmentSfx(value: unknown, name: string): EnrichmentSfx {
+  const obj = strictRecord(value, name, ["id", "asset_id", "sfx_id", "start", "end", "volume", "fade_seconds", "reason"]);
+  const start = nonNegativeNumber(obj.start, `${name}.start`);
+  const end = nonNegativeNumber(obj.end, `${name}.end`);
+  if (end <= start) throw new Error(`${name}.end must be greater than start`);
+  const assetId = obj.asset_id === undefined ? undefined : string(obj.asset_id, `${name}.asset_id`);
+  const sfxId = obj.sfx_id === undefined ? undefined : string(obj.sfx_id, `${name}.sfx_id`);
+  if (Boolean(assetId) === Boolean(sfxId)) throw new Error(`${name} requires exactly one of asset_id or sfx_id`);
+  if (sfxId) assertKnownVendoredElement(sfxId, "sfx", `${name}.sfx_id`);
+  return {
+    id: string(obj.id, `${name}.id`),
+    start,
+    end,
+    asset_id: assetId,
+    sfx_id: sfxId,
+    volume: bounded(obj.volume, `${name}.volume`, 0, 1),
+    fade_seconds: bounded(obj.fade_seconds, `${name}.fade_seconds`, 0, end - start),
     reason: string(obj.reason, `${name}.reason`),
   };
 }
@@ -2042,17 +1923,14 @@ function assetUsageVisual(value: unknown, name: string): AssetUsageVisual {
 }
 
 function enrichmentElement(value: unknown, name: string): EnrichmentElement {
-  const obj = record(value, name);
+  const obj = strictRecord(value, name, ["id", "source", "element_id", "element_type", "start", "end", "reason", "zone", "target_rect", "anchor_point", "params", "asset_id", "caption_identity"]);
   const type = enrichmentElementType(obj.element_type, `${name}.element_type`);
   const start = nonNegativeNumber(obj.start, `${name}.start`);
   const end = nonNegativeNumber(obj.end, `${name}.end`);
   if (end <= start) throw new Error(`${name}.end must be greater than start`);
   const elementId = string(obj.element_id, `${name}.element_id`);
-  const sfxId = obj.sfx_id === undefined ? undefined : string(obj.sfx_id, `${name}.sfx_id`);
-  if ((type === "generated_asset" || type === "visual_asset") && obj.asset_id === undefined) throw new Error(`${name}.asset_id is required for ${type} elements`);
-  if (type === "sfx" && obj.asset_id === undefined) {
-    assertKnownVendoredElement(sfxId ?? elementId, "sfx", `${name}.sfx_id`);
-  } else if (type !== "sfx" && type !== "generated_asset" && type !== "visual_asset") {
+  if (type === "visual_asset" && obj.asset_id === undefined) throw new Error(`${name}.asset_id is required for visual_asset elements`);
+  if (type !== "visual_asset") {
     assertKnownVendoredElement(elementId, type, `${name}.element_id`);
   }
   return {
@@ -2068,7 +1946,6 @@ function enrichmentElement(value: unknown, name: string): EnrichmentElement {
     anchor_point: obj.anchor_point === undefined ? undefined : normalizedPoint(obj.anchor_point, `${name}.anchor_point`),
     params: obj.params === undefined ? undefined : elementParams(obj.params, `${name}.params`),
     asset_id: obj.asset_id === undefined ? undefined : string(obj.asset_id, `${name}.asset_id`),
-    sfx_id: sfxId,
     caption_identity: obj.caption_identity === undefined ? undefined : captionIdentity(obj.caption_identity, `${name}.caption_identity`),
   };
 }
@@ -2166,7 +2043,7 @@ function focusCandidate(value: unknown, name: string): FocusCandidate {
   if (end <= start) throw new Error(`${name}.end must be greater than start`);
   const type = enrichmentElementType(obj.element_type, `${name}.element_type`);
   const elementId = string(obj.element_id, `${name}.element_id`);
-  if (type !== "generated_asset" && type !== "visual_asset") assertKnownVendoredElement(elementId, type, `${name}.element_id`);
+  if (type !== "visual_asset") assertKnownVendoredElement(elementId, type, `${name}.element_id`);
   return {
     id: string(obj.id, `${name}.id`),
     start,
@@ -2241,7 +2118,7 @@ function focusReviewItem(value: unknown, name: string): FocusReviewItem {
 }
 
 function validateFocusReviewProposedElement(element: EnrichmentElement, name: string) {
-  const catalog = element.element_type === "generated_asset" || element.element_type === "visual_asset" ? undefined : assertKnownVendoredElement(element.sfx_id ?? element.element_id, element.element_type, `${name}.element_id`);
+  const catalog = element.element_type === "visual_asset" ? undefined : assertKnownVendoredElement(element.element_id, element.element_type, `${name}.element_id`);
   const haystack = [element.element_id, catalog?.title ?? "", ...(catalog?.tags ?? [])].join(" ").toLowerCase();
   if ((element.element_type === "registry_block" || element.element_type === "animation_rule") && /zoom|focus|cursor|spotlight|marker/.test(haystack) && !element.target_rect) {
     throw new Error(`${name}.target_rect is required for focus proposed elements`);
@@ -2249,166 +2126,6 @@ function validateFocusReviewProposedElement(element: EnrichmentElement, name: st
   if (element.element_type === "registry_component" && /shimmer|highlight|callout|effect/.test(haystack) && !haystack.includes("caption") && !element.anchor_point) {
     throw new Error(`${name}.anchor_point is required for anchored proposed elements`);
   }
-}
-
-function compatibilityElements(profile: EnrichmentProfile, captions: EnrichmentCaptions, cards: EnrichmentCard[], music: EnrichmentMusic[]): EnrichmentElement[] {
-  const timelineEnd = Math.max(0.001, ...captions.emphasis.map((item) => item.end), ...cards.map((card) => card.end), ...music.map((slot) => slot.end));
-  const elements: EnrichmentElement[] = [];
-  if (captions.enabled) {
-    elements.push(captionCompatibilityElement(captions, timelineEnd));
-  }
-  for (const card of cards) {
-    const elementId = legacyCardRegistryElementId(card, profile.source_mode);
-    assertKnownVendoredElement(elementId, "registry_block", `${card.id}.compat_element`);
-    elements.push({
-      id: `card-${card.id}`,
-      source: "compat:v1.cards",
-      element_id: elementId,
-      element_type: "registry_block",
-      start: card.start,
-      end: card.end,
-      reason: card.reason,
-      zone: card.zone,
-      target_rect: card.target_rect,
-      anchor_point: card.anchor_point,
-      asset_id: card.asset_id,
-      params: {
-        kind: card.kind,
-        title: card.title,
-        detail: card.detail ?? null,
-        legacy_block_id: card.block_id ?? null,
-        visual_intent: card.visual_intent ?? null,
-      },
-    });
-  }
-  for (const slot of music) {
-    elements.push({
-      id: `music-${slot.id}`,
-      source: "compat:v1.music",
-      element_id: slot.asset_id,
-      element_type: "generated_asset",
-      start: slot.start,
-      end: slot.end,
-      asset_id: slot.asset_id,
-      reason: slot.reason,
-      params: {
-        slot_type: "music_segment",
-        volume: slot.volume,
-        fade_seconds: slot.fade_seconds,
-        ducking: slot.ducking,
-      },
-    });
-  }
-  return elements;
-}
-
-function withImplicitCaptionElement(captions: EnrichmentCaptions, cards: EnrichmentCard[], music: EnrichmentMusic[], elements: EnrichmentElement[]): EnrichmentElement[] {
-  if (!captions.enabled || elements.some((element) => element.element_type === "caption_identity")) return elements;
-  const timelineEnd = Math.max(0.001, ...captions.emphasis.map((item) => item.end), ...cards.map((card) => card.end), ...music.map((slot) => slot.end), ...elements.map((element) => element.end));
-  return [captionCompatibilityElement(captions, timelineEnd), ...elements];
-}
-
-function captionCompatibilityElement(captions: EnrichmentCaptions, timelineEnd: number): EnrichmentElement {
-  return {
-    id: "captions-anchor",
-    source: "compat:v1.captions",
-    element_id: captions.identity,
-    element_type: "caption_identity",
-    start: 0,
-    end: timelineEnd,
-    caption_identity: captions.identity,
-    reason: "compatibility element generated from captions config",
-  };
-}
-
-function legacyCardRegistryElementId(card: EnrichmentCard, sourceMode: EnrichmentSourceMode): string {
-  if (card.block_id) return LEGACY_BLOCK_TO_REGISTRY_BLOCK[card.block_id] ?? card.block_id.replaceAll("_", "-");
-  if (sourceMode === "screen_recording") {
-    if (card.kind === "screenshot_focus") return "cinematic-zoom";
-    if (card.kind === "flowchart") return "flowchart";
-    if (card.kind === "quote" || card.kind === "image") return "macos-notification";
-    if (card.kind === "title" || card.kind === "lower_third") return "lt-accent-underline";
-    return "code-highlight";
-  }
-  if (sourceMode === "mixed") {
-    if (card.kind === "screenshot_focus") return "cinematic-zoom";
-    if (card.kind === "quote") return "x-post";
-    if (card.kind === "image") return "app-showcase";
-    if (card.kind === "flowchart") return "flowchart";
-    return "lt-accent-underline";
-  }
-  if (card.kind === "title") return "lt-bold-block";
-  if (card.kind === "quote") return "lt-mask-reveal";
-  if (card.kind === "image") return "app-showcase";
-  if (card.kind === "flowchart") return "flowchart";
-  if (card.kind === "lower_third") return "lt-clean-bar";
-  return "lt-stack-bars";
-}
-
-const LEGACY_BLOCK_TO_REGISTRY_BLOCK: Record<string, string> = {
-  lt_clean_bar: "lt-clean-bar",
-  lt_accent_underline: "lt-accent-underline",
-  lt_soft_pill: "lt-soft-pill",
-  lt_bold_block: "lt-bold-block",
-  lt_mask_reveal: "lt-mask-reveal",
-  lt_side_rule: "lt-side-rule",
-  lt_stack_bars: "lt-stack-bars",
-  yt_lower_third: "yt-lower-third",
-  news_ticker: "news-ticker",
-  instagram_follow: "instagram-follow",
-  tiktok_follow: "tiktok-follow",
-  code_highlight: "code-highlight",
-  code_scroll: "code-scroll",
-  code_typing: "code-typing",
-  code_diff: "code-diff",
-  code_morph: "code-morph",
-  flowchart_steps: "flowchart",
-  zoom_focus: "cinematic-zoom",
-  target_zoom: "cinematic-zoom",
-  whip_pan_transition: "whip-pan",
-  macos_notification: "macos-notification",
-  x_post: "x-post",
-  reddit_post: "reddit-post",
-  app_showcase: "app-showcase",
-};
-
-function legacySlotCard(slot: EnrichmentSlot, profile: EnrichmentProfile): EnrichmentCard {
-  const kind: EnrichmentCardKind =
-    slot.type === "title_card" ? "title" : slot.type === "keyword_callout" ? "lower_third" : slot.type === "image_overlay" ? "image" : "key_point";
-  return {
-    id: slot.id,
-    start: slot.start,
-    end: slot.end,
-    kind,
-    layout: slot.type === "image_overlay" ? "split" : profile.layout,
-    style: profile.style,
-    frame: profile.frame,
-    zone: slot.position ?? defaultCardZone(kind),
-    title: slot.text ?? (slot.type === "image_overlay" ? "Visual" : slot.id),
-    asset_id: slot.asset_id,
-    reason: slot.reason,
-  };
-}
-
-function legacySlotMusic(slot: EnrichmentSlot): EnrichmentMusic {
-  return {
-    id: slot.id,
-    type: "music_segment",
-    start: slot.start,
-    end: slot.end,
-    asset_id: slot.asset_id!,
-    volume: slot.volume ?? 0.18,
-    fade_seconds: slot.fade_seconds ?? 0.5,
-    ducking: slot.ducking ?? true,
-    reason: slot.reason,
-  };
-}
-
-function defaultCardZone(kind: EnrichmentCardKind): EnrichmentPosition {
-  if (kind === "title") return "full_frame";
-  if (kind === "lower_third" || kind === "quote") return "lower_third";
-  if (kind === "image" || kind === "screenshot_focus" || kind === "flowchart") return "right_panel";
-  return "right_panel";
 }
 
 function candidate(value: unknown, name: string, known?: Set<string>): AnalysisCandidate {
@@ -2423,33 +2140,6 @@ function candidate(value: unknown, name: string, known?: Set<string>): AnalysisC
   };
 }
 
-function enrichmentSlot(value: unknown, name: string): EnrichmentSlot {
-  const obj = record(value, name);
-  const type = slotType(obj.type, `${name}.type`);
-  const slot: EnrichmentSlot = {
-    id: string(obj.id, `${name}.id`),
-    type,
-    start: nonNegativeNumber(obj.start, `${name}.start`),
-    end: nonNegativeNumber(obj.end, `${name}.end`),
-    reason: string(obj.reason, `${name}.reason`),
-    position: obj.position === undefined ? undefined : position(obj.position, `${name}.position`),
-  };
-  if (slot.end <= slot.start) throw new Error(`${name}.end must be greater than start`);
-  if (type === "music_segment") {
-    slot.asset_id = string(obj.asset_id, `${name}.asset_id`);
-    slot.volume = bounded(obj.volume ?? 0.18, `${name}.volume`, 0, 1);
-    slot.fade_seconds = bounded(obj.fade_seconds ?? 0.5, `${name}.fade_seconds`, 0, slot.end - slot.start);
-    slot.ducking = obj.ducking === undefined ? true : boolean(obj.ducking, `${name}.ducking`);
-    return slot;
-  }
-  if (type === "image_overlay") {
-    slot.asset_id = string(obj.asset_id, `${name}.asset_id`);
-    slot.text = obj.text === undefined ? undefined : string(obj.text, `${name}.text`);
-    return slot;
-  }
-  slot.text = string(obj.text, `${name}.text`);
-  return slot;
-}
 
 function timedText(value: unknown, name: string, known?: Set<string>): TimedTextRange {
   const obj = record(value, name);
@@ -2477,11 +2167,6 @@ function timing(value: unknown): TimingGranularity {
 function action(value: unknown, name: string): EditDecision["action"] {
   if (value === "cut" || value === "keep" || value === "skip") return value;
   throw new Error(`${name} must be cut, keep, or skip`);
-}
-
-function slotType(value: unknown, name: string): EnrichmentSlotType {
-  if (value === "title_card" || value === "keyword_callout" || value === "key_point_card" || value === "image_overlay" || value === "music_segment") return value;
-  throw new Error(`${name} must be title_card, keyword_callout, key_point_card, image_overlay, or music_segment`);
 }
 
 function sourceMode(value: unknown, name: string): EnrichmentSourceMode {
@@ -2550,10 +2235,10 @@ function cardKind(value: unknown, name: string): EnrichmentCardKind {
 }
 
 function enrichmentElementType(value: unknown, name: string): EnrichmentElementType {
-  if (value === "registry_block" || value === "registry_component" || value === "animation_rule" || value === "caption_identity" || value === "sfx" || value === "generated_asset" || value === "visual_asset") {
+  if (value === "registry_block" || value === "registry_component" || value === "animation_rule" || value === "caption_identity" || value === "visual_asset") {
     return value;
   }
-  throw new Error(`${name} must be registry_block, registry_component, animation_rule, caption_identity, sfx, generated_asset, or visual_asset`);
+  throw new Error(`${name} must be registry_block, registry_component, animation_rule, caption_identity, or visual_asset`);
 }
 
 function position(value: unknown, name: string): EnrichmentPosition {
@@ -2597,9 +2282,8 @@ function providerExecutionMode(value: unknown, name: string): ProviderExecutionM
 }
 
 function projectContractVersion(value: unknown, name: string): ProjectContractVersion {
-  if (value === undefined) return "legacy";
   if (value === "1.0") return value;
-  throw new Error(`${name} must be "1.0" when present`);
+  throw new Error(`${name} must be "1.0"`);
 }
 
 function productionAssetRequirementKind(value: unknown, name: string): ProductionAssetRequirementKind {

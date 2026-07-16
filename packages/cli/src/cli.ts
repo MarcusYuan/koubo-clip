@@ -9,6 +9,7 @@ import { parseProjectMetadata, projectArtifacts, type CapabilitiesArtifact, type
 import { projectStatus } from "./project-status";
 import { bindRenderContract, exportRenderContract, inspectBoundContract, renderBoundContract, verifyRenderContractBundle } from "./render-contract-commands";
 import { verifyInstalledDelivery, verifyInstalledSkill } from "./delivery-runtime";
+import { artifactContractIndex, getArtifactContract } from "./artifact-contracts";
 import {
   commandExists,
   compileEdlProject,
@@ -46,6 +47,7 @@ const help = `koubo-clip
 Usage:
   koubo-clip --version
   koubo-clip capabilities --json
+  koubo-clip artifact contract <artifact-id> --json
   koubo-clip doctor [--provider-mode standalone|platform]
   koubo-clip delivery verify --json
   koubo-clip skills path [--json]
@@ -128,6 +130,12 @@ export async function main(argv = process.argv.slice(2), io: Io = {}): Promise<n
     return 0;
   }
 
+  if (command === "artifact") {
+    const result = runArtifactCommand(argv.slice(1));
+    (result.ok ? out : err)(JSON.stringify(result));
+    return result.ok ? 0 : 1;
+  }
+
   if (command === "doctor") {
     const { flags } = parseArgs(argv.slice(1));
     const mode = providerMode(flags["provider-mode"], "standalone") ?? "standalone";
@@ -208,6 +216,22 @@ function runRenderContractCommand(argv: string[]) {
   return { ok: false as const, command: "render-contract", error: { code: "UNKNOWN_RENDER_CONTRACT_COMMAND", message: `Unknown render-contract command: ${subcommand ?? ""}` } };
 }
 
+function runArtifactCommand(argv: string[]) {
+  const { positionals, flags } = parseArgs(argv);
+  const [subcommand, artifactId, ...extra] = positionals;
+  if (subcommand !== "contract") {
+    return { ok: false as const, command: "artifact", error: { code: "UNKNOWN_ARTIFACT_COMMAND", message: `Unknown artifact command: ${subcommand ?? ""}` } };
+  }
+  if (!artifactId || extra.length || Object.keys(flags).some((flag) => flag !== "json")) {
+    return { ok: false as const, command: "artifact.contract", error: { code: "ARTIFACT_CONTRACT_ARGUMENT_INVALID", message: "Use: koubo-clip artifact contract <artifact-id> --json" } };
+  }
+  const contract = getArtifactContract(artifactId);
+  if (!contract) {
+    return { ok: false as const, command: "artifact.contract", error: { code: "ARTIFACT_CONTRACT_UNSUPPORTED", message: `No public artifact contract for: ${artifactId}` } };
+  }
+  return { ok: true as const, command: "artifact.contract", data: contract };
+}
+
 function runSkillsCommand(argv: string[]) {
   const { positionals, flags } = parseArgs(argv);
   const [subcommand] = positionals;
@@ -274,7 +298,7 @@ function loadLocalEnv() {
 }
 
 function shouldLoadLocalEnv(argv: string[]): boolean {
-  if (argv[0] === "--version" || argv[0] === "-v" || argv[0] === "capabilities") return false;
+  if (argv[0] === "--version" || argv[0] === "-v" || argv[0] === "capabilities" || argv[0] === "artifact") return false;
   if (argv[0] === "project" && argv[1] === "status") return false;
   const explicitMode = explicitProviderMode(argv);
   if (explicitMode) return explicitMode === "standalone";
@@ -293,10 +317,10 @@ function softwareCapabilities(): CapabilitiesArtifact {
       "source-materialization.json": "1.0",
       "edl.json": "2.0",
       "render-contract.json": "1.0",
-      "production-proposal.json": "1.1",
+      "production-proposal.json": "2.0",
       "edit-plan.json": "1.0",
       "asset-usage-plan.json": "1.0",
-      "enrichment-plan.json": "1.2",
+      "enrichment-plan.json": "2.0",
       "render-result.json": "1.0",
       "inspection.json": "1.0",
     },
@@ -316,6 +340,8 @@ function softwareCapabilities(): CapabilitiesArtifact {
       render_contract_export: true,
       render_contract_consume_strict: true,
       source_binding: true,
+      artifact_contract_discovery: true,
+      artifact_validation_aggregate: true,
     },
     provider_modes: {
       standalone: { providers: "cli-managed", artifact_contract: "shared" },
@@ -351,10 +377,13 @@ function softwareCapabilities(): CapabilitiesArtifact {
       "CONTRACT_RENDER_FAILED",
       "RENDER_OUTPUT_INVALID",
       "INSPECTION_ACCEPTANCE_FAILED",
+      "ARTIFACT_CONTRACT_UNSUPPORTED",
+      "ARTIFACT_VALIDATION_FAILED",
     ],
-    capability_ids: ["detached_source.v1", "external_frame_evidence.v1", "portable_edl.v1", "render_contract.export.v1", "render_contract.consume_strict.v1", "source_binding.v1"],
-    delivery: { manifest_schema_version: "2.0", aggregate_delivery_digest: true, cli_version: cliVersion(), runtime_dependencies: ["gsap@3.15.0", "hyperframes@0.7.36"] },
+    capability_ids: ["detached_source.v1", "external_frame_evidence.v1", "portable_edl.v1", "render_contract.export.v1", "render_contract.consume_strict.v1", "source_binding.v1", "artifact_contract.discovery.v1", "artifact_validation.aggregate.v1"],
+    delivery: { manifest_schema_version: "3.0", aggregate_delivery_digest: true, cli_version: cliVersion(), runtime_dependencies: ["gsap@3.15.0", "hyperframes@0.7.36"] },
     render_contract: { schema_version: "1.0", exact_runtime_compatibility: true, immutable_directory_bundle: true },
+    artifact_contracts: artifactContractIndex(),
   };
 }
 
@@ -423,7 +452,7 @@ async function safeProjectCommand(argv: string[]) {
     return {
       ok: false as const,
       command: "project",
-      error: { code: "PROJECT_COMMAND_FAILED", message: error instanceof Error ? error.message : String(error) },
+      error: { code: error && typeof error === "object" && "code" in error ? String(error.code) : "PROJECT_COMMAND_FAILED", message: error instanceof Error ? error.message : String(error) },
     };
   }
 }

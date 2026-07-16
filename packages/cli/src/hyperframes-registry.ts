@@ -11,7 +11,7 @@ export type VendoredRegistryFileType =
   | "hyperframes:timeline"
   | "asset"
   | "registry:asset";
-export type VendoredElementType = "registry_block" | "registry_component" | "animation_rule" | "caption_identity" | "sfx" | "generated_asset";
+export type VendoredElementType = "registry_block" | "registry_component" | "animation_rule" | "caption_identity" | "sfx";
 
 export type VendoredRegistryFile = {
   path: string;
