@@ -16,7 +16,7 @@
 ## Skills 负责的内容
 
 - 澄清用户的目标平台、语气、语言、严格程度和 enrichment 偏好。
-- 在依赖命令或 schema 前读取 `koubo-clip --version` 和 `koubo-clip capabilities --json`；恢复已有 project 时先读取只读 `project status --json`，不扫描目录猜状态。
+- 在依赖命令或 schema 前读取 `koubo-clip --version` 和 `koubo-clip capabilities --json`；写 Agent/Host authored artifact 前再读取该版本的 CLI artifact contract。恢复已有 project 时先读取只读 `project status --json`，不扫描目录猜状态。
 - 在任何 project 操作前选择 provider execution mode，并遵守 project metadata 中已有的 mode。
 - 用户提供 raw talking-head footage 时，在询问最终目标前运行 material exploration。
 - 运行 staged CLI workflow 或 host-equivalent tools。
@@ -24,7 +24,7 @@
 - ASR/explore 后，基于 transcript、material report 和 source metadata 选择最多 20 个有明确观察目的的 source-local 时间点，写 `source-frame-request.json` 并运行 `project source-frames`。不要为了凑数量选择重复画面；CLI 不负责语义选点。
 - 如果 host 有 vision capability，结合 source frames 和 ASR 事实描述原素材画面；不要把观察推断成用户已经确认的制作方案。Standalone 无 vision 时可以 transcript-only 继续，但必须标记未进行源画面语义检查；platform 缺 vision 时由 host workflow 报 blocker，不能把它误报为 CLI 抽帧失败。
 - 把用户的业务诉求转成 2-4 个完整 proposal options。每个 option 同时包含业务方向、剪辑执行方案和素材需求槽位；不要把“卖货/种草/朋友圈/高级感/专业讲解”直接解释成单一渲染计划。
-- 基于 material-report、review-package、用户目标和 element/music 能力生成 `production-proposal.json` v1.1，运行 `project proposal --json`，向用户展示 recommended option 和备选 option，并保留 proposal/selection fingerprints。
+- 先运行 `koubo-clip artifact contract production-proposal --json` 获取 `production-proposal.json` 2.0 的完整 schema/template/example，再基于 material-report、review-package、用户目标和 element/music 能力填充 2-4 个完整 options；运行 `project proposal --json`，向用户展示 recommended option 和备选 option，并保留 proposal/selection fingerprints。
 - 只要求用户确认一次：`OK` 选择 recommended option，或用户提供一个 option id。不要先确认方向再确认执行方案。
 - 决定哪些不确定的 repeats、false starts 和 filler segments 要删除。
 - 当 edit decision 会实质改变含义时，向用户确认。
@@ -34,7 +34,7 @@
 - 在 standalone mode 下，通过 Music Acquisition 选择、获取和审查可选 music；通过 Visual Acquisition 搜索、获取和审查可选 icons、animated icons、Lottie、UI/template snapshots、stickers、B-roll 或 images。
 - 在 platform mode 下，写出 music/visual/image/component request specs，由平台工具 fulfill，并要求结果进入 TaskWorkspace/project-local artifacts 后再让 CLI 校验和摄入。
 - 对 visual search/list 返回的候选做语义审查，明确写入 `selected_candidate_id` 和 `selection_reason`；候选顺序和 `recommended` 只是提示，不是 acquire 授权。
-- 在具备生图工具的 host 中，skill 应只在用户确认后使用 host 生图能力生成已批准的 `generated_asset`，保存到 project-local asset 或平台 stable ref，写入 `asset-manifest.json`，再让 CLI 合成。
+- 在具备生图工具的 host 中，skill 应只在用户确认后使用 host 生图能力生成已批准的视觉素材，保存到 project-local asset 或平台 stable ref，写入 `asset-manifest.json`，并在 enrichment 中作为 `visual_asset` 引用；来源由 manifest provenance 表达。
 - 在请求 generated media、music acquisition 或 render 前，先产出用户可读的 production proposal；用户确认后再产出执行级 enrichment plan。
 - 报告 output paths、removed sections、retained risks，以及 failed 或 skipped steps。
 - 通过 `references/` 按需承载 HyperFrames 方法论、视觉选择、caption、motion/SFX、music 和 storyboard QA 规则；不要把上游 HyperFrames 原始 skill 目录当成多个用户 skill 暴露。
@@ -49,6 +49,7 @@
 - Final MP4 rendering。
 - Canonical artifact layout。
 - 当 CLI command 可以暴露时，硬编码 CLI-owned thresholds、schemas、dimensions 或 output paths。
+- 复制 required/optional 字段、enum、禁止字段、版本差异，或用压缩 `{}` 示例代替 CLI artifact contract。
 - 在上游 skill instructions 中写 host-specific tool names 或 platform-only IDs。
 - 在 CLI-facing instructions 中放 image-generation 或 B-roll provider logic。
 - 在 platform mode 下指导 CLI 直接调用 Cloudflare Whisper、MiniMax、Freesound、Pixabay、Iconify、Lordicon、URL download、MCP 或需要 provider credentials 的能力。
@@ -70,15 +71,17 @@
 - 对真实用户视频，优先使用 staged workflow。
 - 第一阶段先确定 provider execution mode；如果 project metadata 已存在，以 metadata 为准。
 - 运行工作流前先读取 `capabilities --json`；已有 project 一律先用 `project status --json` 获得 artifact/stage 状态、blockers、remediation、next commands、canonical deliverable 和最后 checkpoint。
+- 写任何 Agent/Host authored JSON 前，读取 capabilities 索引指向的 artifact contract；使用其完整 template/example 建立结构，再按 Skill reference 和项目证据填写业务内容。相同 CLI/schema digest 下可以复用已读取合同。
 - 只有在 quick drafts 或用户明确要求速度时，才使用 one-shot `generate`。
 - 把 transcript 和 candidate files 当作 review surfaces，不是隐藏 internals。
 - `project explore` 后总结 `material-report.md`；在询问业务方向或写 production proposal 前，优先完成 source-frame 语义检查。`source-frame-request.json` 直接使用 source-local time，不依赖 EDL；`source-frames.json` 是只读素材证据，不是 focus grounding 或 inspection artifact。
-- 当用户目标是开放式业务目标时，直接在同一 `production-proposal.json.options[]` 中写 2-4 个完整选项。每项的 `business_direction` 包含 `direction_id`、`title`、`suitable_for`、`editing_strategy`、`expected_duration`、`asset_style` 和 `risks/tradeoffs`，且 `direction_id` 与 option id 相同。
-- 每个 option 同时写 `edit_execution_plan`：`objective`、`target_audience`、`final_duration`、`narrative_structure`、`keep_segments`、`remove_segments`、`reorder_segments`、`text_overlays`、`visual_asset_slots`、`music_slots`、`sfx_slots`、`image_slots` 和 `user_confirmation_summary`。
+- 当用户目标是开放式业务目标时，直接在同一 `production-proposal.json.options[]` 中写 2-4 个完整选项。Option `id` 是唯一方向身份，不写 `business_direction.direction_id`；顶层 `recommended_option_id` 是唯一推荐权威，不写 `option.recommended`。
+- 每个 option 同时写 `edit_execution_plan`，表达 objective、target audience、final duration、narrative、keep/remove/reorder intent、text overlays 和 user confirmation summary；不在这里重复任何素材槽位。
 - 素材需求槽位从执行方案长出来，不由 capability 自己决定。槽位至少包含 `slot_id`、`kind`、`purpose`、`query` 或 `prompt`、`required`、`suggested_time`、`duration_hint`、`placement_hint` 和 `provider_hint`。
-- 图标、UI 动效、Lottie、dotLottie、SVG、PNG UI handoff、贴纸和模板进入 `visual_asset_slots`；BGM 进入 `music_slots`；点击声、转场声、提示声进入 `sfx_slots`；原创场景图、产品图、封面图和概念 B-roll 插画进入 `image_slots`。不要把图标/UI 动效当成 image generation。
-- `project review` 后，写 `production-proposal.json` v1.1 并运行 `project proposal --json`。展示的单次确认面必须同时覆盖业务方向、剪辑执行、字幕、UI 动效、图片/生图、音乐、SFX、素材槽位、风险和默认/可选方案。
+- `asset_requirements` 是图标/UI 动效、图片、生图、BGM 和 SFX 槽位的唯一权威。不要把图标/UI 动效当成 image generation。
+- `project review` 后，先读取 `production-proposal` 2.0 artifact contract，再写 `production-proposal.json` 并运行 `project proposal --json`。展示的单次确认面必须同时覆盖业务方向、剪辑执行、字幕、UI 动效、图片/生图、音乐、SFX、素材槽位、风险和默认/可选方案。
 - `production-proposal.json` 必须包含 2-4 个 option。每个 option 要说明适合的发布目标、为什么适合当前素材、剪辑策略、字幕策略、视觉策略、图片/生图意图、音乐策略、SFX 策略、风险和确认项，并包含 `business_direction`、`edit_execution_plan` 和 `asset_requirements`。
+- 不得通过连续运行 validator 来逐字段猜 proposal schema。校验失败时读取同一次响应的聚合 `issues[]`，整体修正一次；若仍失败，报告真实的业务/上下文 blocker，不循环删除未知内容。
 - 用户确认前，proposal 只能写素材意图：intent、query、provider preference、license/cost/source risk 和 reason。不要写最终 `asset_id`、local path、provider URL、download URL、绝对路径或 raw MCP payload。
 - 用户回复 `OK` 时使用 `recommended_option_id`；用户回复 option id 时使用对应 option。用户自然语言实质修改时先更新并重新校验 proposal，再进行最终选择；不能把未重新 fingerprint 的改动只塞进后续 artifacts。
 - render 前展示 review package：original subtitles、proposed cuts、timestamps、reasons 和 unresolved risks，并把这些信息纳入 production proposal。
@@ -91,7 +94,7 @@
 - 在进入最终 enrichment 之前，按顺序产出 `focus-candidates`、`focus-frames`、`focus-grounding` 和 `focus-review`；对 screen recordings，只接受有 frame evidence 的坐标。
 - 在生成 assets 或 final rendering 前展示已确认的 planned source mode、`profile`、elements、captions、images、SFX、music、output-timeline timestamps、reasons、grounding evidence 和 missing assets。
 - 运行 `project enrich-plan` 后展示 `qa_checks[]`。每个计划加入点都要能说明 expected、asset/provenance、是否需要抽帧、warnings 和是否需要人工复核。
-- v1.2 enrichment plan 清楚到足以让用户 review 前，不要生成 images、B-roll、music 或 animation clips。
+- 2.0 enrichment plan 清楚到足以让用户 review 前，不要生成 images、B-roll、music 或 animation clips。
 - 对 icon、animated icon、UI component、sticker、template、B-roll 或图片需求，默认通过 host MCP、API 或平台工具做互联网语义检索。不要把“本地 UI 素材库”当作前置假设；当前 project 的 `assets/*` 只是本次确认后的渲染输入。
 - 优先选择官方或上游维护的能力：shadcn MCP / shadcn-compatible registry、21st.dev MCP、Iconify API、Lordicon official Web/API/npm、LottieFiles dotLottie。第三方 MCP 可以作为候选，但必须在 proposal 中标明 third-party/source risk。
 - 视觉素材候选应先出现在 production proposal 或后续 review surface 中，说明 query、provider/source、用途、license/cost 风险和为什么适合 viewer job。Search/list 只负责召回；agent 必须结合 viewer job、ASR、源画面、source mode、business direction、授权和 runtime 风险比较候选，再在 `visual-request.json` 写入 `selected_candidate_id` 和非空 `selection_reason`。`reason` 说明为什么需要该槽位，`selection_reason` 说明为什么选择该候选；不要把 provider 的 `recommended` 或数组顺序当作选择。Standalone mode 运行 `project visual-catalog`、`project visual-search`、`project visual-acquire` 和 `project visual-review` 获取本地 asset；platform mode 先调用平台 visual/component tools 写入候选 metadata 和安全的 project-local preview，只物化 agent 选中候选的完整 `local_path`，再运行 CLI acquire/review 校验和导入。最后把获取到的 `asset_id` 写进 `enrichment-plan.json`。
@@ -106,18 +109,18 @@
 - Platform mode 下，host 已经生成 `prepared-assets.json` 或 `assets/koubo-clip/*` 仍然只是素材准备完成，不等于成片会使用。确认后的 canonical `enrichment-plan.json` 必须说明每个 BGM、SFX、icon/SVG/PNG/Lottie/UI/image/B-roll 的 project-relative `asset_ref`/`asset_id`、output-timeline timing、volume/position/size/animation 等使用参数和 `purpose`。
 - 新 workflow 的 skill 输出结构是 proposal `options[]`，每个 option 自带 `business_direction`、`edit_execution_plan` 和 `asset_requirements`。`asset_requirements` 是给 Hermes capability 的请求层，不是 render usage plan。
 - `prepared-assets.json` 和 `asset-manifest.json` 是素材库存/校验证据，不是渲染指令。只有 current canonical `enrichment-plan.json` 决定素材是否进入最终成片。
-- 简化 platform handoff 只能新写独立 `asset-usage-plan.json`，由 `project enrich-plan` 一次性归一化并消费或归档 active input。Legacy `edit-plan.json.asset_usage_plan` / `project.json.asset_usage_plan` 只是迁移输入；render 不直接消费或合并它们，后续只读取 current canonical `enrichment-plan.json`。
+- 简化 platform handoff 只能写当前独立 `asset-usage-plan.json`，由 `project enrich-plan` 一次性归一化为 canonical plan。`edit-plan.json.asset_usage_plan` 和 `project.json.asset_usage_plan` 无效；render 只读取 current canonical `enrichment-plan.json`。
 - `asset-usage-plan.json` 的 `asset_ref` 必须是 workspace/project-relative path；禁止本机绝对路径、URL、`file://`、token、raw MCP payload 或 provider 临时链接。时间必须是剪辑后的 output timeline。
 - `edit-plan.json.decisions[].action:"cut"` 表示删除候选片段，不表示保留候选片段。保留内容由未删除的 EDL ranges 和可选重排决定。
 - 如果没有 current `enrichment-plan.json`，CLI 保持纯剪辑行为并报告 `enrichment_applied:false`；skill 不能把这称为已使用素材。
-- Canonical enrichment 与任一 compatibility usage source 同时存在，或多个 compatibility sources 同时存在时，必须把 `ASSET_USAGE_PLAN_CONFLICT` 当 blocker；不要隐式 merge，也不要覆盖已有 canonical plan。
+- Canonical enrichment 与新的 `asset-usage-plan.json` 同时存在时，必须把 `ASSET_USAGE_PLAN_CONFLICT` 当 blocker；不要隐式 merge，也不要覆盖已有 canonical plan。
 - 如果 usage input 声明素材，缺文件、格式不支持或字段非法都应视为 blocker。不要要求 CLI 降级成纯剪辑版，也不要把 `missing_asset_ref`、`unsupported_audio_asset_format`、`unsupported_visual_asset_format` 或 `asset_usage_plan_invalid` 当作成功。
 - 只为 viewer job 添加 visual content：定位段落、引导注意力、解释 sequence、总结 spoken point，或为可发布短视频增加 pacing relief。Decorative elements 是失败计划。
 - AI 可以自主选择 HyperFrames elements，但选择必须服务用户用途：内部教程优先透明引导和 SFX；产品演示优先 UI focus/path/callout；课程讲解优先 chapter/flowchart/data；知识解释优先 key point/quote/data/concept visual；短视频包装才优先 hook、转场、强字幕、图片和配乐。
-- 只有当 plan 引用真实本地 `asset_id` 时才使用 `visual_asset`、legacy `generated_asset` 或兼容 `kind:"image"`。常见图标/动态图标/UI/template/B-roll/image 优先用 `visual_asset`；原创 AI 生图仍可用 legacy `generated_asset` 或 manifest `source:"agent_generated"`。只有当 background music 是已批准 publishing goal 且已经通过 `music-review` 的一部分时才使用 `music[]`。否则两者都留空。
+- 只有当 plan 引用真实本地 `asset_id` 时才使用 `visual_asset`。常见图标、动态图标、UI/template、B-roll、普通图片和原创 AI 生图都用 `visual_asset`，原创来源由 manifest `source:"agent_generated"` 表达。只有当 background music 是已批准 publishing goal 且已经通过 `music-review` 时才加入当前 2.0 audio plan。
 - 对 screen recordings，如果 cue 指向 UI，要从 `project focus-frames` 生成的实际 source-local evidence 推导 normalized `target_rect` 或 `anchor_point`，并在 `params.coordinate_source_frame` 写明来源帧，同时把这一帧写入 `focus-grounding`。Render 后的 inspection frames 只用于 final output QA；没有 focus evidence 时不要写坐标。
-- 显式 v1.2 elements 要满足 CLI adapter 要求：lower-third/social/notification/code 等 semantic blocks 填 `params.title`、`params.subtitle`、`params.detail`、`params.code` 或 `params.username`；screen focus 填 `target_rect`；anchored chip/callout 填 `anchor_point`。
-- 不要手写 `storyboard.json`、registry files 或 card HTML 作为事实来源。CLI 从 `enrichment-plan.json` 物化 storyboard、安装 vendored registry elements，并生成兼容 card fragments。
+- 显式 2.0 elements 要满足 CLI adapter 要求：lower-third/social/notification/code 等 semantic blocks 填 `params.title`、`params.subtitle`、`params.detail`、`params.code` 或 `params.username`；screen focus 填 `target_rect`；anchored chip/callout 填 `anchor_point`。
+- 不要手写 `storyboard.json`、registry files 或 card HTML 作为事实来源。CLI 从当前 2.0 `enrichment-plan.json` 物化 storyboard 并安装 vendored registry elements；card 输入无效。
 - 不要手写检查清单。Current 且被本次 render result 绑定的 `storyboard.json.qa_checks[]` 是合成清单和验收清单的共同来源；render 前看 `project enrich-plan.qa_checks[]`，render 后看 `project inspect.inspection_checks[]`。
 - 不要手写任意 GSAP 或 JavaScript。HyperFrames runtime staging、registry installer、animation templates、SFX manifest 和 CDN allowlist 由 CLI 拥有。
 - 不要把业务短语直接映射到元素 ID。先过 semantic focus planner，再让 grounded evidence 决定最终坐标和元素选择。
@@ -132,5 +135,5 @@
 
 - Skill 可以写 agent-owned proposal、edit-plan、request、selection 和 enrichment intent，但只能调用 CLI compiler/export 生成 EDL、captions、resolved storyboard 和 render contract。
 - Detached flow 先读 capabilities/status，再写 authoring artifacts；external evidence 必须通过 CLI `--import` 摄入。
-- Skill 不解释或复制 contract schema，不计算 contract digest，不修改 bundle，不在 strict render machine 上运行。
+- Skill 可以解释 CLI 公开 authoring schema 的业务语义，但不复制结构事实；不计算 contract digest，不修改 bundle，不在 strict render machine 上运行。
 - Strict execution 出错时报告 mismatch/blocker；不得重新分析视频、补默认 edit plan、改 transcript、重选素材或“修复” authoring project。

@@ -4,6 +4,8 @@
 
 本文档把 `docs/artifact-lifecycle.md` 的目标合同转换为可执行、可验证的交付计划。目标合同先于代码；本轮仓库级实现已于 2026-07-15 完成。这里的“完成”表示源码、测试和本地打包验收通过，不等同于 npm 发布。
 
+本文保留当时的实施记录，不再定义当前兼容政策。旧项目恢复、legacy normalization 和多版本读取已被 `rules/artifact-contracts.md` 的单一当前 schema 政策取代；后续实现应删除对应 runtime 分支，而不是继续扩展本计划中的过渡行为。
+
 最终验收证据：`git diff --check`、TypeScript typecheck、178 个 CLI/媒体/lifecycle 测试、npm pack dry-run、internal compiled package，以及编译后二进制的 version/capabilities/create/status smoke 均通过。真实媒体测试覆盖 MP4 render/inspect、output hash/probe、canonical output、inspection binding、source/focus frame transaction rollback 和 runtime symlink fail-closed。仓库没有 lint script，因此没有虚构 lint 结果。
 
 ## 完整目标
@@ -19,7 +21,7 @@
 - render 以 `render-result.json` 指定 canonical output，inspect 不猜 `final.mp4`；
 - inspect 写 `inspection.json`，`report.md` 只是派生视图；
 - 宿主通过稳定 `capabilities` 和只读 `project status` 恢复流程，不扫描目录；
-- legacy project 有明确、非破坏的迁移和重建路径。
+- 非当前 project/artifact schema fail closed，不执行运行时迁移；开发 fixtures 一次性改写为当前格式。
 
 ## 完成标准
 
@@ -55,7 +57,7 @@
 | --- | --- |
 | `packages/cli/src/artifact-lifecycle.ts` | stable serialization、semantic/bytes hash、atomic manifest IO 和通用 dependency state evaluation |
 | `packages/cli/src/project-lineage.ts` | project artifact record、semantic projection、stage success/failure commit 和动态成员替换 |
-| `packages/cli/src/project-status.ts` | 只读 registry、artifact/stage 状态、legacy recovery、canonical deliverable 和 checkpoint |
+| `packages/cli/src/project-status.ts` | 只读 registry、artifact/stage 状态、非当前合同拒绝、canonical deliverable 和 checkpoint |
 | `packages/cli/src/project-paths.ts` | project-local input/output 的 lexical + realpath containment，拒绝 symlink 逃逸 |
 | `packages/cli/src/artifacts.ts` | 新 artifact/result/status 类型、公共文件名、proposal/edit binding，以及所有受管 JSON 的真实 parser |
 | `packages/cli/src/cli.ts` | `--version`、`capabilities`、`project status` 路由；只读命令不加载 provider secrets |
@@ -76,7 +78,7 @@
 
 工作：
 
-- 新建 `packages/cli/src/artifact-lifecycle.test.ts`，覆盖 semantic/bytes fingerprint、manifest、attempt、状态分类、依赖传播、Markdown 无关性和 legacy recovery；
+- 新建 `packages/cli/src/artifact-lifecycle.test.ts`，覆盖 semantic/bytes fingerprint、manifest、attempt、状态分类、依赖传播、Markdown 无关性和非当前合同拒绝；
 - 在 `project.test.ts` 先加入 stale EDL、旧 final、旧 storyboard、usage authority conflict 和 render failure 不提交 result 的回归；
 - 固定 EDL 行为为“输入完整则自动重建”，不允许测试接受“重建或 blocker”两种结果；
 - 复用现有运行时生成的 160×90 H.264/AAC fixture，不新增二进制媒体文件。
@@ -89,7 +91,7 @@
 
 - 增加 `artifact-manifest.json`、`asset-usage-plan.json`、`render-result.json`、`inspection.json` 类型和 parser；
 - 把当前仍靠类型断言读取的 music acquisition/review、storyboard、inspection 等受管 JSON 补成真实 parser；registry 不接受“只验证存在”的 JSON；
-- 给 `project.json` 增加明确 `contract_version`，并定义无该字段旧项目的 legacy 默认；
+- 给 `project.json` 增加明确 `contract_version`；缺失或不匹配时返回 `CONTRACT_SCHEMA_UNSUPPORTED`；
 - 增加 artifact roles、states、stage attempts、dynamic member keys 和 status result 类型；
 - 实现 canonical JSON serialization、semantic projection、bytes hash、组合 input fingerprint；
 - 实现 atomic JSON/text write 和 manifest commit；
@@ -108,7 +110,7 @@
 - status 使用独立只读 metadata reader，不能调用会补写 `project.json` 的 mode resolver；
 - `project create` 在 source copy、probe 和 hash 成功后提交 project/sources/source member records。
 
-退出条件：CLI 路由测试通过；相同内容的 standalone/platform project 除 mode/path/time 外拥有同构 status；legacy project 返回最早可执行恢复命令且不把旧 derived/result 标 current。
+退出条件：CLI 路由测试通过；相同内容的 standalone/platform project 除 mode/path/time 外拥有同构 status；非当前 project contract 返回 `CONTRACT_SCHEMA_UNSUPPORTED`，不读取旧 derived/result。
 
 ### Phase 3：Proposal/Edit 权威绑定与 canonical enrichment
 
@@ -120,11 +122,11 @@
 - EDL compile 校验 selection binding，修改未选 option 不让 EDL stale；
 - 把 `AssetUsagePlanArtifact` 及现有 path/format/SVG 安全校验复用于独立 `asset-usage-plan.json`；
 - 建立统一 confirmed-project test fixture，并迁移 render/focus/多源/usage tests，避免测试继续绕过 proposal binding；
-- `project enrich-plan` 检测 canonical、独立 handoff 和 legacy project/edit 字段冲突；只允许唯一来源一次性写 `enrichment-plan.json` 和必要 asset entries；
+- `project enrich-plan` 检测 canonical 与独立 handoff 冲突；旧的 project/edit 内嵌 usage 字段由各自 schema 直接拒绝；只允许唯一来源一次性写 `enrichment-plan.json` 和必要 asset entries；
 - normalization 只能引用已经校验并登记的 asset member；platform handoff import 必须先 atomic 登记 bytes/member record，再提交 canonical plan；
 - 删除 render/inspect 的 `assetUsagePlans`、`mergeAssetUsagePlans` 和 `mergeEnrichmentPlans` runtime authority merge。
 
-退出条件：单一 handoff 可归一化；多个 legacy source、canonical + handoff 均返回稳定 `ASSET_USAGE_PLAN_CONFLICT` 且不改 canonical plan；render input 只出现 canonical enrichment。
+退出条件：单一 handoff 可归一化；canonical + handoff 返回稳定 `ASSET_USAGE_PLAN_CONFLICT` 且不改 canonical plan；内嵌旧字段返回 schema error；render input 只出现 canonical enrichment。
 
 ### Phase 4：EDL 与各阶段 lineage
 
@@ -194,12 +196,12 @@ Catalog 和 human-view 只登记为 non-blocking derived/view 状态；它们可
 | asset bytes 改变 | 仅引用该 asset 的 storyboard/render/inspection stale |
 | 未引用 asset/candidate 改变 | render 不 stale |
 | 修改 representative Markdown | 机器状态不变 |
-| 单一 legacy usage source | enrich-plan 成功归一化 |
+| 单一当前 `asset-usage-plan.json` handoff | enrich-plan 成功归一化 |
 | 多 usage sources 或 canonical + handoff | fail closed，不改 canonical |
 | render 失败 | 不提交新 current render result；stage attempt failed |
 | 残留 final MP4 | inspect 仍使用 render result 指定的 clean |
 | output bytes 被改 | render output invalid，inspection stale |
-| legacy project | `legacy_untracked` + 可执行恢复路径 |
+| 非当前 project contract | `CONTRACT_SCHEMA_UNSUPPORTED`，不执行恢复 |
 | standalone/platform | 共用 artifact/stage keys 和 lineage 算法 |
 
 ## 验证顺序
@@ -220,8 +222,8 @@ bun test packages/cli/src/project.test.ts -t "renders and inspects an edit plan"
 ## 风险与回退边界
 
 - 当前 worktree 有未提交的 visual selection 和 business planning 改动；只做符号级合并，不整体回退或覆盖文件。
-- Manifest/status 是新 public contract；实现期间先保持 version `1.0`，字段新增允许向后兼容，改变语义必须升级 contract version。
-- Legacy normalization 是一次性兼容，不在 render runtime 永久保留多入口。
+- Manifest/status 使用当前唯一 contract；改变语义时升级 version，并在同一变更中删除旧 runtime 支持。
+- 不保留 legacy normalization 或多入口 migration。
 - 不删除旧物理 artifacts；状态层先让它们失去权威，便于失败检查和用户恢复。
 - 若真实媒体阶段失败，保留 staging/partial 供诊断，但 final report 只能基于 current inspection。
 

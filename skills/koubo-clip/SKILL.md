@@ -38,13 +38,13 @@ Read only the references needed for the current stage:
 
 ## Workflow
 
-1. Run `koubo-clip --version` and `koubo-clip capabilities --json` before relying on a command or schema. Choose exactly one provider mode for the project:
+1. Run `koubo-clip --version` and `koubo-clip capabilities --json` before relying on a command or schema. Before writing any Agent/Host-authored artifact, run `koubo-clip artifact contract <artifact-id> --json`, use its current template/schema, and then read the relevant business reference. Never reconstruct a contract from this Skill, repository source, TypeScript types, or validator failures. Choose exactly one provider mode for the project:
    - Use `platform` when the task comes from Hermes, TaskWorkspace, LocalAgent, workspace refs, asset ids, controlled local artifacts, or the "koubo-clip/口播快剪" employee capability.
    - Use `standalone` for ordinary local CLI use where the user's machine owns provider configuration.
    - If a project already has `project.json`, obey its `provider_execution_mode`; do not mix modes in one project.
 2. When resuming an existing project, run `koubo-clip project status <project> --json` first. Follow its blockers, remediation, `next_commands`, source identity/materialization state, and last checkpoint; never infer state by scanning files. For a new project:
    - With local media, run `project create <video...> --project <dir> --provider-mode <mode>`; the CLI writes portable identity and a separate verified materialization.
-   - Without local media bytes, run `project create --source-manifest <sources-v2.json> --project <dir> --provider-mode <mode>`. Treat `local_media_ref` as opaque metadata. Never resolve it, echo it, pass it to a filesystem tool, or copy media into the project.
+   - Without local media bytes, first fetch the source-manifest artifact contract, fill it, then run `project create --source-manifest <sources-v2.json> --project <dir> --provider-mode <mode>`. Treat `local_media_ref` as opaque metadata. Never resolve it, echo it, pass it to a filesystem tool, or copy media into the project.
 3. If the user or host already has a transcript, put it at `<project>/transcript.json`; otherwise:
    - In `standalone` mode, run `koubo-clip project explore <project> --provider-mode standalone --asr auto`.
    - In `platform` mode, ask the host/platform ASR capability to write `transcript.json` first, then run `koubo-clip project explore <project> --provider-mode platform --asr external`.
@@ -54,11 +54,11 @@ Read only the references needed for the current stage:
    - The CLI only validates and extracts JPEGs. If the host has vision capability, review `source-frames.json` and its project-relative images together with ASR facts.
    - If standalone vision is unavailable, continue transcript-only and explicitly state that source-image semantic review was not performed. In platform mode, missing host vision is a host-workflow blocker, not a CLI extraction failure.
 5. Run `koubo-clip project review <project> --provider-mode <mode>` and infer the user's business goal from source evidence. Do not jump directly from "做成卖货视频" or similar broad requests to rendering.
-6. Write `production-proposal.json` version `1.1` with 2-4 complete options. Each option combines:
-   - `business_direction`: direction id/title, suitable use, editing strategy, expected duration, asset style, risks, and tradeoffs.
-   - `edit_execution_plan`: objective, target audience, narrative structure, keep/remove/reorder intent, text overlays, visual/music/SFX/image slots, and confirmation summary.
-   - `asset_requirements`: the capability slots that would be fulfilled after that option is confirmed.
-   - The existing cleanup, subtitle, visual, image, music, SFX, reason, risk, and confirmation fields required by the proposal schema.
+6. Run `koubo-clip artifact contract production-proposal --json`, then fill its complete template as `production-proposal.json` version `2.0` with 2-4 complete options. Each option combines:
+   - `business_direction`: suitable use, editing strategy, expected duration, asset style, risks, and tradeoffs. The option `id` is its only identity; do not add `direction_id`.
+   - `edit_execution_plan`: objective, target audience, narrative structure, keep/remove/reorder intent, text overlays, and confirmation summary. Do not add asset slots here.
+   - `asset_requirements`: the only capability-slot authority for visuals, music, SFX, and images after that option is confirmed.
+   - The cleanup, subtitle, visual, image, music, SFX, reason, risk, and confirmation fields required by the current CLI contract.
    - Do not ask the user to select a direction and then ask again to confirm the execution plan. The options are the single confirmation surface.
    - Before confirmation, write asset intent only: intent, query, provider preference, license/cost/source risk, and reason. Do not write final `asset_id`, local path, provider URL, download URL, absolute path, or raw MCP payload.
 7. Run `koubo-clip project proposal <project> --provider-mode <mode> --json`. Show the complete options and preserve `proposal_fingerprint` plus the `option_selection_fingerprints` map. The user confirms exactly once: `OK` selects `recommended_option_id`, or they provide one option id. Material changes require updating and revalidating the proposal before the final selection.
@@ -74,14 +74,16 @@ Read only the references needed for the current stage:
 11. For approved music, write `music-request.json`.
    - In `standalone` mode, run `project music-catalog`, `project music-acquire`, and `project music-review`.
    - In `platform` mode, call the host/platform music capability first; it must land a project-local music file or compatible acquisition artifact. Then run CLI music commands only as import/validate/review steps with `--provider-mode platform`.
-12. Write canonical `enrichment-plan.json` with output-timeline timestamps, selected `elements[]`, captions, music, SFX, local asset refs, grounding evidence, and reasons.
-   - A simplified platform/legacy handoff may write standalone `asset-usage-plan.json`, then run `project enrich-plan` once to normalize it into canonical enrichment.
-   - Do not write new embedded usage plans in `project.json` or `edit-plan.json`. Canonical plus compatibility input, or multiple compatibility inputs, is `ASSET_USAGE_PLAN_CONFLICT`; never merge them.
+12. Run `koubo-clip artifact contract enrichment-plan --json`, then write canonical `enrichment-plan.json` version `2.0` as `profile + elements + audio` using output-timeline timestamps, local asset refs, grounding evidence, and reasons.
+   - Use only `registry_block`, `registry_component`, `animation_rule`, `caption_identity`, and `visual_asset` elements. Generated images are `visual_asset` records distinguished by asset provenance.
+   - Put BGM in `audio.music[]` and SFX in `audio.sfx[]`; do not write cards, slots, top-level captions/music, `generated_asset`, or an `sfx` element.
+   - A simplified platform handoff may write standalone `asset-usage-plan.json`, after fetching its current contract, then run `project enrich-plan` once to normalize it into canonical enrichment.
+   - Embedded usage plans in `project.json` or `edit-plan.json` are invalid. Canonical plus handoff input is `ASSET_USAGE_PLAN_CONFLICT`; never merge them.
 13. Run `koubo-clip project enrich-plan <project> --provider-mode <mode>` and show `qa_checks[]`; fix missing assets, provenance, runtime dependency, timing, coordinate evidence, or authority conflicts before render.
 14. Choose one execution handoff:
    - Local authoring execution: run `project render`, then `project inspect` as before.
    - Distributed execution: run `render-contract export <project> --output <new-bundle-dir>`. The output directory must not exist. Do not write, edit, patch, merge, or reserialize `render-contract.json`; the CLI alone compiles and signs the frozen closure.
-15. For distributed execution, transfer the immutable bundle through the platform. The remote machine must use the same compatible Koubo Clip delivery and invoke `render-contract verify`, `bind`, `render`, then `inspect`. The remote executor must not receive or consult transcript, analysis, edit-plan, enrichment-plan, or this Skill.
+15. For distributed execution, transfer the immutable bundle through the platform. The remote machine must use the same verified Koubo Clip delivery identity and invoke `render-contract verify`, `bind`, `render`, then `inspect`. The remote executor must not receive or consult transcript, analysis, edit-plan, enrichment-plan, or this Skill.
 16. Run `project status --json` again and report the current authoring fingerprint, contract digest or canonical local deliverable, render/inspection fingerprints, removed sections, enrichment choices, grounded evidence, checks, warnings, and skipped or failed stages.
    - For local execution, select the output only through `render-result.json.canonical_output_key`; never guess from a filename.
 
@@ -92,7 +94,7 @@ Read only the references needed for the current stage:
 - Never run this Skill during strict contract consumption. Do not re-analyze source media, regenerate plans, add default edits, rewrite transcript, reselect assets, or repair missing authoring state on the render machine.
 - Detached planning may complete while source-byte stages remain blocked. `SOURCE_BINDING_REQUIRED` means only the byte-dependent operation is unavailable; it does not invalidate transcript review, proposal, edit decisions, portable EDL, evidence import, or contract export.
 - Broad business goals require 2-4 complete proposal options. For "卖货", "朋友圈咨询", "高级感", "种草", "专业讲解", or "去废话保留卖点", put direction, execution plan, and asset requirements together, then ask for one option confirmation.
-- Asset slots come from the confirmed execution plan. Capabilities fulfill slots; they do not decide the creative asset strategy by themselves.
+- Asset slots come only from the confirmed option's `asset_requirements`. Capabilities fulfill slots; they do not decide the creative asset strategy by themselves.
 - Never treat text-only transcripts as precise cut timing.
 - Treat unvalidated Chinese word-level timing as segment timing; do not use it for frame-precise cuts.
 - `production-proposal.json` is a confirmation surface, not the execution source of truth.
@@ -102,7 +104,7 @@ Read only the references needed for the current stage:
 - Prepared assets are not used automatically. If the plan chooses BGM, SFX, icons, SVG/PNG, Lottie, UI handoff, images, or B-roll, canonical `enrichment-plan.json` must contain asset refs, output-timeline timing, usage parameters, and purpose. A standalone `asset-usage-plan.json` is only a one-time normalization input.
 - `prepared-assets.json` and `asset-manifest.json` are inventory/validation evidence, not render instructions. Without current canonical enrichment, final render is pure cleanup and must be reported that way.
 - In `edit-plan.json`, `action:"cut"` means remove those candidate ranges. Kept source ranges are everything not cut, optionally ordered by `source_order`; do not write cut decisions as if they were keep lists.
-- `enrichment-plan.json` uses output-timeline seconds after cleanup, not raw source timestamps.
+- `enrichment-plan.json` uses the unique current `version:"2.0"` contract and output-timeline seconds after cleanup, not raw source timestamps. Reject cards, slots, top-level captions/music, `generated_asset`, and element-level SFX rather than translating them.
 - Select visuals by viewer job and evidence, not by fixed business keywords.
 - Visual search/list is recall, not selection. A candidate's array position or `recommended` flag never grants acquire permission; every retained visual request requires an explicit `selected_candidate_id` and `selection_reason` before acquisition in either provider mode.
 - Keep visual meanings separate: request `reason` explains why a visual slot is useful, while `selection_reason` explains why the chosen candidate best fits it.
@@ -118,7 +120,7 @@ Read only the references needed for the current stage:
 - Do not generate TTS, replacement narration, or voice-performance prompts through koubo-clip music commands.
 - HyperFrames rendering, `storyboard.json`, allowlisted CDN dependencies, vendored resource installation, SFX manifest, and adapter validation are CLI-owned. Do not hand-write arbitrary HTML/JS/GSAP or external script URLs as stable inputs.
 - `storyboard.json.qa_checks[]` is the shared render and QA checklist. Do not create a separate inspection plan.
-- Read `source_mode`, `warnings`, `qa_checks`, `inspection_checks`, `inspection_frames`, `element_usage`, `audio_usage`, `block_usage`, and CDN dependency summaries from CLI JSON outputs.
+- Read `source_mode`, `warnings`, `qa_checks`, `inspection_checks` and their namespaced frames, `element_usage`, `audio_usage`, `block_usage`, and CDN dependency summaries from CLI JSON outputs.
 - `artifact-manifest.json` is CLI-owned. Skills, users, and hosts never hand-write it; they use `project status --json` to observe `missing`, `pending_validation`, `current`, `stale`, and `invalid`.
 - JSON is the machine contract. Markdown is a rebuildable human view; changing or deleting Markdown must not change business state.
 - Do not claim render or inspection happened merely because an MP4, storyboard, report, or Markdown file exists. Require current `render-result.json`, current `inspection.json`, matching hashes/lineage, and no blocker.

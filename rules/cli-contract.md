@@ -6,7 +6,7 @@
 
 ## CLI 负责
 
-- `koubo-clip --version` 和稳定、secret-free 的 `capabilities --json` 软件合同。
+- `koubo-clip --version`、稳定 secret-free 的 `capabilities --json` 软件合同，以及版本化 artifact contract registry/discovery。
 - `koubo-clip doctor` 环境检查。
 - CLI 独占写入的公开 `artifact-manifest.json`、只读 `project status --json`、artifact lineage 与 stage attempts。
 - Project creation 和 canonical output directories。
@@ -20,7 +20,7 @@
 - Silence、pause、filler、false-start 和 repeat-candidate detection。
 - 给 agent review 使用的 machine-readable candidate output。
 - Review package generation，包含 original transcript、proposed cuts、timestamps 和 strategy reasons。
-- Production proposal validation 和 markdown 物化，作为用户确认前的方案面。
+- Production proposal 完整作者合同、聚合 validation 和 markdown 物化，作为用户确认前的方案面。
 - Edit-plan 和 EDL schema validation。
 - Semantic Focus Planner 的 artifact 物化与校验：focus-candidates、focus-frames、focus-grounding 和 focus-review。
 - Music Acquisition：music-catalog、music-request validation、standalone local library import、standalone network/AI music acquisition、platform landed-asset import/provenance validation、review artifacts 和 asset-manifest 写入。
@@ -29,7 +29,7 @@
 - Vendored HyperFrames element catalog、registry resolver 和 safe installer。
 - 随 npm package 或内部二进制包作为 sidecar 分发的 HyperFrames resources：registry、HTML fragments、caption themes、字体、SFX、runtime adapters 和示例资源。
 - 从 transcript timings 生成 subtitles。
-- Deterministic render assembly：cuts、fades、embedded captions、registry elements、SFX、music mix，以及 v1.1 兼容 card templates。
+- Deterministic render assembly：cuts、fades、embedded captions、registry elements、SFX 和 music mix。
 - 支持 visual enrichment 的 HyperFrames single-composition recut rendering。
 - Commit-last render、`render-result.json`、structured `inspection.json` 和派生 report generation。
 - 通过 JSON support commands 向 skills 和 agents 暴露 CLI-owned facts。
@@ -76,6 +76,7 @@ koubo-clip project create <video> --provider-mode platform
 koubo-clip --version
 koubo-clip capabilities --json
 koubo-clip doctor
+koubo-clip artifact contract <artifact> --json
 koubo-clip project create <video>
 koubo-clip project status <project> --json
 koubo-clip project explore <project> --asr auto
@@ -99,7 +100,7 @@ koubo-clip project inspect <project>
 koubo-clip generate <video>
 ```
 
-Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`capabilities` 描述命令、schema、feature flags、provider-mode 语义和 render/inspect 所需 artifact keys，不探测当前机器；`project status` 只读返回 artifact/stage 状态、blockers、remediation、next commands、canonical deliverable 和最后 checkpoint。`project source-frames` 校验 `source-frame-request.json`，按 request 顺序抽取 source-local JPEG 并返回 manifest path、数量、总 byte size 和稳定 warnings；`project proposal` 校验 `production-proposal.json` 并生成用户确认 markdown，但不生成执行 artifacts；`project element-catalog` 返回完整 vendored HyperFrames 元素目录；`project focus-candidates` 校验 normalized semantic intents、candidate element types 和所需证据；`project focus-frames` 把 cleaned output-timeline candidate timing 经 EDL 映射为 source-local frame evidence；`project focus-grounding` 返回 coordinates 与 evidence 的绑定校验结果；`project focus-review` 返回 `proposed_elements[]`；`project enrich-plan` 返回 `source_mode`、`element_usage[]`、`qa_checks[]` 和 `warnings[]`；`project inspect` 只消费 current render result 的 canonical output，在已知时返回 `source_mode`、`element_usage[]`、`inspection_checks[]`，并为 visual cards/elements 返回基于 final output timeline 的兼容 `inspection_frames[]`。
+Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`capabilities` 描述命令、artifact contract index/schema digest、feature flags、provider-mode 语义和 render/inspect 所需 artifact keys，不探测当前机器；`artifact contract` 按 artifact 返回唯一当前 schema 的 ownership、role、完整 schema、适用的 template/example、validator/producer、prerequisites 和 digest，不接受 version 选择；`project status` 只读返回 artifact/stage 状态、blockers、remediation、next commands、canonical deliverable 和最后 checkpoint。`project source-frames` 校验 `source-frame-request.json`，按 request 顺序抽取 source-local JPEG 并返回 manifest path、数量、总 byte size 和稳定 warnings；`project proposal` 聚合校验 `production-proposal.json` 并生成用户确认 markdown，但不生成执行 artifacts；`project element-catalog` 返回完整 vendored HyperFrames 元素目录；`project focus-candidates` 校验 normalized semantic intents、candidate element types 和所需证据；`project focus-frames` 把 cleaned output-timeline candidate timing 经 EDL 映射为 source-local frame evidence；`project focus-grounding` 返回 coordinates 与 evidence 的绑定校验结果；`project focus-review` 返回 `proposed_elements[]`；`project enrich-plan` 返回 `source_mode`、`element_usage[]`、`qa_checks[]` 和 `warnings[]`；`project inspect` 只消费 current render result 的 canonical output，并返回 `source_mode`、`element_usage[]` 和 `inspection_checks[]`。
 
 ## Source Frames 合同
 
@@ -121,6 +122,9 @@ Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`c
 
 ## 合同原则
 
+- 每个公开 artifact 必须在 registry 中声明 schema version、ownership、role、writer、validator/producer、prerequisites 和 schema digest。Agent/Host authored artifact 公开完整 schema/template/example；CLI-owned artifact 明确 `external_writes_allowed:false`，不提供 authoring template。
+- Runtime validator、公开 schema、template、example、capabilities 和 Skill 结构性声明必须共享同一合同事实来源或自动等价测试。每种 artifact 只支持 registry 声明的唯一当前 schema。
+- Agent/Host authored artifact 校验保持 fail-closed，并在一次 JSON 响应中尽可能返回完整、有界的 `issues[]`；每项至少包含 JSON path、稳定 keyword/code 和 message。不保留只暴露首个结构错误的旧响应别名。
 - CLI 可以产出 candidates；但不能假装不确定的 semantic edits 是确定的。
 - 用户的原始业务关键词不是 contract key；CLI 和 skills 必须先归一化成固定 semantic intent，再进入 element selection 和 grounding。
 - `production-proposal.json` 是确认层，不是 render source of truth。它可以引用 `review-package` candidate IDs 和 source facts，但不能包含无证据坐标、未确认 asset path、provider URL、最终 output timeline，且不能替代 `edit-plan`、`focus-*`、`music-*`、`asset-manifest` 或 `enrichment-plan`。
@@ -128,17 +132,17 @@ Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`c
 - Text-only transcripts 不能用于 precise cuts。
 - Chinese word-level ASR 必须视为不可信，直到 validation 证明该文件 timing 精确。
 - 可 render 的 EDL 必须先校验再 render。
-- Enrichment elements/cards/music 必须在 final render 前按 post-cut output timeline 校验。
-- `enrichment-plan.json` v1.2 包含 `profile` 和 `elements[]`；`profile.source_mode` 控制 `talking_head_avatar`、`screen_recording` 或 `mixed` 默认值。`elements[].element_type` 可以是 `visual_asset`，但必须引用已通过 visual acquisition/review 或 manifest provenance 校验的本地 asset。v1.1 `captions/cards/music` 与 legacy v1.0 `slots[]` 仅作为兼容输入。
-- `enrichment-plan.json` 是唯一 canonical visual/audio usage plan。新简化交接只能写独立 `asset-usage-plan.json`；旧 `project.json.asset_usage_plan` / `edit-plan.json.asset_usage_plan` 只作为一次性迁移输入。`project enrich-plan` 校验后物化 canonical plan 并消费或归档 active compatibility input；render 只读取 current canonical plan。Canonical 与任一 compatibility source 同时存在、或多个 compatibility sources 同时存在时，以 `ASSET_USAGE_PLAN_CONFLICT` fail closed，不隐式 merge。
-- Elements/cards 可以包含 normalized `target_rect` 和 `anchor_point`；CLI 校验坐标并保留到 `storyboard.json`。对 screen recordings，只要使用这些字段，就必须同时提供 `coordinate_source_frame` 和可追溯的 frame evidence；没有 grounding 就失败。
+- Enrichment elements 和 audio plan 必须在 final render 前按 post-cut output timeline 校验。
+- `enrichment-plan.json` 只接受 2.0 `profile + elements + audio`；`profile.source_mode` 必填并控制 `talking_head_avatar`、`screen_recording` 或 `mixed` 行为。`elements[]` 只接受 `registry_block`、`registry_component`、`animation_rule`、`caption_identity`、`visual_asset`；外部视觉素材引用已通过 visual acquisition/review 或 manifest provenance 校验的本地 asset。BGM/SFX 分别进入 `audio.music[]` / `audio.sfx[]`。Cards、slots、顶层 captions/music、`generated_asset`、element-level SFX 和缺失 version 均不接受。
+- `enrichment-plan.json` 是唯一 canonical visual/audio usage plan。简化交接只能写当前独立 `asset-usage-plan.json`，由 `project enrich-plan` 一次性物化 canonical plan；`project.json.asset_usage_plan` 和 `edit-plan.json.asset_usage_plan` 无效。Render 只读取 current canonical plan，不实现旧入口合并或运行时迁移。
+- Elements 可以包含 normalized `target_rect` 和 `anchor_point`；CLI 校验坐标并保留到 `storyboard.json`。对 screen recordings，只要使用这些字段，就必须同时提供 `coordinate_source_frame` 和可追溯的 frame evidence；没有 grounding 就失败。
 - `storyboard.json` 由 CLI 从已校验 artifacts 物化；skills 不能手写它作为事实来源。它只有 lineage current 且被本次 `render-result.json.inputs[]` 绑定时，才是该次 enriched render 的 executable 和 QA checklist。Inspect 必须先验证 current render result 与 canonical output，再使用该结果绑定的 storyboard checks 抽帧和报告；不要新增独立 `inspection-plan.json`。
 - 缺失 HyperFrames 是需要 registry/caption visual recut plans 的 blocker；不要静默替换 renderer 或生成假 final。
 - Pure music/SFX-only enrichment 可以不依赖 HyperFrames，直接使用 FFmpeg。
-- Music acquisition 可以联网；render assembly 不可以联网。MiniMax、Freesound、Pixabay 等 provider output 必须先下载或解码为 `assets/music/*`，再通过 `asset-manifest.json` 和 `enrichment-plan.music[]` 使用。
+- Music acquisition 可以联网；render assembly 不可以联网。MiniMax、Freesound、Pixabay 等 provider output 必须先下载或解码为 `assets/music/*`，再通过 `asset-manifest.json` 和 `enrichment-plan.audio.music[]` 使用。
 - Visual acquisition 的主路径是互联网语义检索。CLI 首版拥有 Iconify 搜索/下载和本地/URL/handoff 导入；agent/platform 负责更复杂的 MCP/host candidate sourcing。所有视觉资产必须在当前 project 中形成可检查的 local path 或未来 stable workspace ref，并记录 provider/source/license/provenance；不要把长期本地 UI 库当成前提。
-- Agents 不能向 CLI 传入任意 HTML/JS/GSAP。CLI 拥有 vendored registry、safe installer、caption resources、SFX manifest 和 v1.1 兼容 card fragments；这些是 CLI resources，不是对外 agent skills。
-- 显式 v1.2 elements 必须满足 adapter 要求：semantic registry blocks 提供必填 params；screen focus 提供 `target_rect`；anchored component/callout 提供 `anchor_point`；需要图片的元素提供本地 `asset_id`。
+- Agents 不能向 CLI 传入任意 HTML/JS/GSAP。CLI 拥有 vendored registry、safe installer、caption resources 和 SFX manifest；这些是 CLI resources，不是对外 agent skills。
+- 显式 2.0 elements 必须满足 adapter 要求：semantic registry blocks 提供必填 params；screen focus 提供 `target_rect`；anchored component/callout 提供 `anchor_point`；需要图片的元素提供本地 `asset_id`。
 - Generated HyperFrames workspaces 只能加载 CLI-owned catalog 声明的 runtime dependencies。允许直接从白名单 CDN 加载固定版本 scripts/styles，例如 `gsap@3.14.2`；Google Fonts family CSS 是首个明确记录的 versionless exception。
 - Lottie JSON 和 `.lottie` 只能通过 CLI allowlist runtime 渲染：`bodymovin/lottie-web@5.12.2` 和 `@lottiefiles/dotlottie-web@0.76.0`。动画必须可 seek，不能依赖 autoplay/play 驱动 render-critical motion。
 - CLI 必须校验 CDN domain、package 和 version，并在 `storyboard.json`、`project inspect` 和 `report.md` 中暴露 dependency summary。白名单 CDN domain 不等于任意 package 被允许。
@@ -169,6 +173,9 @@ CLI failures 应使用稳定 code。Provider mode 相关 blocker 至少包含 `c
 - `SOURCE_FRAME_IMAGE_TOO_LARGE`: 最后一档 JPEG 仍超过单图上限。
 - `SOURCE_FRAME_BATCH_TOO_LARGE`: 合规 JPEG 总量超过批次上限。
 - `PROJECT_SOURCE_FRAMES_FAILED`: staging/directory preparation、public artifact replacement 或 manifest commit 等未预期命令失败；message 固定为 `source frames command failed`，不得传播包含真实路径的底层错误。
+- `ARTIFACT_CONTRACT_UNSUPPORTED`: 请求的 artifact 没有公开合同。
+- `CONTRACT_SCHEMA_UNSUPPORTED`: Artifact version 与当前 registry 唯一 schema 不一致。
+- `ARTIFACT_VALIDATION_FAILED`: Agent/Host authored artifact 不符合公开 schema；响应必须包含 artifact、schema version/digest 和聚合 `issues[]`。
 
 ## Render contract
 

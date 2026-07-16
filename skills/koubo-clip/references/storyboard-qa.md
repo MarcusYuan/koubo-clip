@@ -32,7 +32,7 @@ Run `project enrich-plan` and show `qa_checks[]`:
 
 Fix blockers before render.
 
-Render consumes only current canonical `enrichment-plan.json`. If the project has a standalone or legacy asset-usage compatibility input, run `project enrich-plan` to normalize that unique input first; do not pass it directly to render or merge it at runtime.
+Render consumes only current canonical `enrichment-plan.json`. If the project has a standalone `asset-usage-plan.json` handoff input, run `project enrich-plan` to normalize it first; do not pass it directly to render or merge it at runtime. Embedded usage fields are invalid.
 
 ## After Render
 

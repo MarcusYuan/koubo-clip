@@ -2,7 +2,7 @@
 
 Use this file for the normal project flow. The CLI is the execution surface; this skill is the planning and review surface.
 
-Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabilities --json`. For an existing project, run `koubo-clip project status <project> --json` and follow its blockers, remediation, and `next_commands`; do not recover by scanning filenames.
+Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabilities --json`. For an existing project, run `koubo-clip project status <project> --json` and follow its blockers, remediation, and `next_commands`; do not recover by scanning filenames. Before writing any external artifact, fetch its unique current contract with `koubo-clip artifact contract <artifact-id> --json`. The CLI contract supplies structure; this reference supplies authoring judgment.
 
 ## Stages
 
@@ -25,17 +25,15 @@ Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabili
    - Never make precise cuts from transcript text alone.
 
 4. Build one user-facing proposal with 2-4 complete options.
+   - Run `koubo-clip artifact contract production-proposal --json` and fill its complete template. Do not reconstruct required fields or enums from this reference.
    - For broad goals such as "卖货视频", "朋友圈吸引咨询", "高级感", "种草", "专业讲解", or "去废话保留卖点", each `production-proposal.json.options[]` item must combine `business_direction`, `edit_execution_plan`, and `asset_requirements`.
-   - Each `business_direction` needs `direction_id`, `title`, `suitable_for`, `editing_strategy`, `expected_duration`, `asset_style`, and `risks/tradeoffs`; `direction_id` must equal the option id.
-   - Each `edit_execution_plan` covers objective, target audience, final duration, narrative structure, keep/remove/reorder intent, text overlays, visual asset slots, music slots, SFX slots, image slots, and confirmation summary.
-   - `visual_asset_slots` are for icons, UI handoff, Lottie, SVG, PNG, stickers, templates, and animated icons.
-   - `image_slots` are for original generated scene images, cover images, product images, or B-roll illustrations.
-   - `music_slots` are for BGM. `sfx_slots` are for clicks, transitions, notification, button, or payoff cues.
-   - Slots come from the option's execution plan; provider capabilities fulfill them only after confirmation.
+   - The option `id` is the only direction identity; do not add `business_direction.direction_id` or `option.recommended`.
+   - `edit_execution_plan` contains execution intent and confirmation summary, never asset slots.
+   - `asset_requirements` is the only authority for visual, image, music, and SFX slots; provider capabilities fulfill them only after confirmation.
    - Do not ask the user to choose a direction and then ask again to confirm its execution plan.
 
 5. Validate the proposal and ask for one confirmation.
-   - Write `production-proposal.json` version `1.1` and run `project proposal --json`.
+   - Write `production-proposal.json` version `2.0` and run `project proposal --json`.
    - Show the recommended option and alternatives, including each option's direction, execution plan, asset slots, risks, and confirmation items.
    - Preserve the returned `proposal_fingerprint` and `option_selection_fingerprints` map.
    - `OK` confirms `recommended_option_id`; an explicit option id confirms that option. If the user changes the plan materially, update and validate the proposal before asking for the final choice.
@@ -47,14 +45,15 @@ Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabili
    - `visual-request.json` and visual review artifacts for sourced visuals. Every retained request must have an explicit `selected_candidate_id` and `selection_reason` after candidate review; `recommended` and candidate order are hints only.
    - `music-request.json` and music review artifacts for music.
    - `asset-manifest.json` for local files only.
-   - `enrichment-plan.json` is the only canonical final visual/audio usage plan.
+   - Fetch the enrichment-plan contract, then write `enrichment-plan.json` version `2.0` as `profile + elements + audio`; it is the only canonical final visual/audio usage plan.
+   - Use `caption_identity` for caption styling, `visual_asset` for all acquired or generated visuals, `audio.music[]` for BGM, and `audio.sfx[]` for SFX. Cards, slots, top-level captions/music, `generated_asset`, and element-level SFX are invalid.
    - A simplified platform handoff may write standalone `asset-usage-plan.json`, then run `project enrich-plan` to normalize it once. Do not embed new usage plans in `project.json` or `edit-plan.json`, and never let render merge multiple sources.
    - In `platform` mode, `music-request.json` and `visual-request.json` are request specs for host/platform tools. The CLI must only see fulfilled, project-local assets, normalized candidates, or stable workspace refs. A visual `preview_path` is review-only; the host materializes only the selected candidate to `local_path` before acquire.
    - In `standalone` mode, run visual search first, compare the candidates, write the explicit selection, and only then acquire. Provider search does not choose on the agent's behalf.
    - Compare visual candidates using the viewer job, ASR facts, source-frame evidence, source mode, selected business direction, license/source constraints, and runtime risk. `reason` explains the slot; `selection_reason` explains the exact choice.
    - For a no-insert decision, remove the slot from final `visual-request.json.requests[]` and retain its rationale in business/focus review. If the request set is empty, skip visual acquire and review.
-   - A prepared asset list is not a render instruction. If using `assets/koubo-clip/bgm.wav`, `sfx-click.wav`, icons, SVG/PNG, Lottie, or UI handoff exports, put exactly where, how, and why they enter the output timeline into canonical enrichment (directly or through the one-time compatibility input).
-   - A canonical plan plus any compatibility source, or two compatibility sources, is `ASSET_USAGE_PLAN_CONFLICT`; fix the source conflict rather than merging.
+   - A prepared asset list is not a render instruction. If using BGM, SFX, icons, SVG/PNG, Lottie, or UI handoff exports, put exactly where, how, and why they enter the output timeline into canonical enrichment, directly or through the one-time handoff input.
+   - A canonical plan plus handoff input is `ASSET_USAGE_PLAN_CONFLICT`; fix the source conflict rather than merging.
    - EDL consumers validate lineage. When authoritative prerequisites are complete, a stale EDL is automatically rebuilt by the same deterministic compiler.
 
 7. Validate, render, and inspect.
@@ -70,29 +69,7 @@ The proposal can describe desired images, music, UI motion, SFX, and visual asse
 
 ## Direction And Slot Contract
 
-Required high-level shape for new proposals:
-
-```json
-{
-  "version": "1.1",
-  "recommended_option_id": "option-id",
-  "options": [
-    {
-      "id": "option-id",
-      "business_direction": {},
-      "edit_execution_plan": {},
-      "asset_requirements": {
-        "visual_asset_slots": [],
-        "music_slots": [],
-        "sfx_slots": [],
-        "image_slots": []
-      }
-    }
-  ]
-}
-```
-
-This sketch omits the proposal's existing source mode, goal/material summary, cleanup, subtitle, visual, image, music, SFX, and risk fields. `asset_requirements` is the post-confirmation capability request layer; it is not a render plan.
+Use the current CLI contract rather than a partial shape in this reference. `business_direction` explains the option, `edit_execution_plan` explains how it will be edited, and `asset_requirements` is the sole post-confirmation capability request layer. Do not duplicate its slots under the execution plan.
 
 ## Production Proposal Contract
 
@@ -114,7 +91,7 @@ Proposal options, each with its own execution plan and asset requirements:
 - `authentic-review`: realistic seeding version. Keep more natural speech, use anchor captions plus a few key-point lower thirds, no music by default, and only source UI highlights. Use when credibility matters more than packaging. Reason for no extra assets: decoration would reduce trust and can hide UI.
 - `tutorial-demo`: tutorial explainer version. Organize around steps, use transparent UI focus/callouts, step labels, and maybe one navigation/function icon. Use when the viewer must learn the workflow. Risk: screen coordinates need `focus-frames` and `focus-grounding`.
 
-After `project proposal --json`, the user confirms `sales-conversion` once. Copy its returned selection fingerprint into the confirmed edit plan, then ask Hermes/platform capabilities to fulfill that option's `visual_asset_slots`, `music_slots`, `sfx_slots`, or `image_slots`.
+After `project proposal --json`, the user confirms `sales-conversion` once. Copy its returned selection fingerprint into the confirmed edit plan, then ask Hermes/platform capabilities to fulfill the confirmed option's `asset_requirements`.
 
 Convert the confirmed option into execution artifacts: `edit-plan.json` from review candidate ids; `focus-candidates.json`, `focus-frames.json`, `focus-grounding.json`, and `focus-review.json` for UI moments; `visual-request.json` for approved icons/Lottie/UI/image/B-roll intents; `music-request.json` for approved BGM; `asset-manifest.json` only for landed assets; and canonical `enrichment-plan.json` using output-timeline timings.
 

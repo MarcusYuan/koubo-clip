@@ -7,6 +7,7 @@
 - `change-discipline.md` - 安全修改范围和审查行为。
 - `node-typescript.md` - runtime 和包管理器选择。
 - `cli-contract.md` - CLI 负责什么。
+- `artifact-contracts.md` - artifact ownership、作者合同发现、聚合校验和防漂移要求。
 - `skills-agent-workflow.md` - skills 和 agents 负责什么。
 - `media-artifacts.md` - 期望的项目输出布局。
 - `testing-validation.md` - 最小有效校验。

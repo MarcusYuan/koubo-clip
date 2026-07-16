@@ -48,6 +48,7 @@ npm publish --dry-run --registry=https://registry.npmjs.org/
 - npm tarball 包含 `bin/koubo-clip`、CLI source、`skills/koubo-clip`、README、LICENSE 和 third-party notices。
 - canonical npm tarball 必须先按 npm 最终 packlist 物化文件树，再对该文件树生成 delivery manifest。
 - 必须从 canonical tarball 安装到空目录后运行 `delivery verify`、`skills verify` 和真实 render-contract render/inspect smoke；源码目录校验不能替代安装态验收。
+- canonical tarball 必须包含 artifact contract registry、公开 schemas/templates/examples 和匹配的官方 Skill；安装态必须能在不读取源码/tests 的情况下发现并验证作者合同。
 
 ## 测试版发布触发
 
@@ -119,9 +120,11 @@ npm publish --access public --registry=https://registry.npmjs.org/
 ## Delivery identity
 
 - npm 和 internal package 都必须包含由各自最终分发文件树生成的 `delivery-manifest.json`，并通过 `koubo-clip delivery verify --json`；不同布局允许 component digest 不同，但必须由同一 schema 和生成器定义。
-- Manifest 固定 CLI payload、renderer resources、official Skill、runtime compatibility digest、schema versions、capability IDs 和 exact dependencies；schema v2 的 `delivery_digest` 是这些身份字段的 canonical aggregate，可供 Hermes 与 LocalAgent 比较完整交付身份。
+- Manifest 固定 CLI payload、renderer resources、official Skill、runtime compatibility digest、`artifact_contracts_digest`、schema versions、capability IDs 和 exact dependencies；唯一当前 schema 3.0 的 `delivery_digest` 是这些身份字段的 canonical aggregate，可供 Hermes 与 LocalAgent 比较完整交付身份。1.0/2.0 manifest 不再读取或迁移。
+- 下一次包含 artifact contract discovery 的正式交付必须让 delivery identity 绑定 artifact contract registry/schema digests；CLI、Skill、template/example 和 validator 不得来自不同合同版本。
 - npm publish 必须消费已经完成安装态验收的 exact canonical tarball，禁止在 publish job 从 checkout 隐式重新打包。
 - publish 后必须从 registry 下载相同版本并再次执行安装态 delivery/Skill/render-contract/render/inspect 验收；registry tarball 外层 SHA-256 必须等于 canonical tarball。
 - `gsap` 固定 `3.15.0`，`hyperframes` 固定 `0.7.36`；strict runtime 禁止联网下载 renderer。
 - `skills install` 必须在复制前验证 bundled Skill，在 staging 后和 atomic replace 后再次验证 installed Skill。
 - Release 外层另生成 artifact SHA-256；外层 digest 不替代 delivery manifest 内部身份。
+- 安装态 authoring smoke 至少读取唯一当前 `production-proposal.json` 2.0 合同，生成 2-4 个完整 options，首次 `project proposal --json` 通过或最多依据一次聚合 issues 整体修正后通过，并验证 option selection fingerprint 可继续绑定 edit plan/compile EDL；同一安装态还必须证明不存在 schema version 选择面，非当前 version 返回 `CONTRACT_SCHEMA_UNSUPPORTED`。

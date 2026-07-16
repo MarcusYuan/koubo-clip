@@ -51,9 +51,7 @@ koubo-clips/<slug>/
   visual-review.md
   visual-review.json
   edit-plan.json
-  asset-usage-plan.json  # optional active compatibility input
-  .migration/
-    asset-usage-plan-<fingerprint>.json
+  asset-usage-plan.json  # optional current simplified handoff input
   edl.json
   enrichment-plan.json
   storyboard.json
@@ -64,7 +62,6 @@ koubo-clips/<slug>/
       public/
         index.html
         compositions/
-        cards/
   assets/
     koubo-clip/
     icons/
@@ -88,9 +85,11 @@ koubo-clips/<slug>/
 
 文件存在不代表 artifact 有效。受管理 artifact 只有 `missing`、`pending_validation`、`current`、`stale`、`invalid` 五种状态；宿主只通过 `project status --json` 恢复流程，不扫描目录、比较 mtime 或猜文件名。JSON 是机器合同，Markdown 是可重建 human view，不能被执行命令当作事实输入。
 
+每个公开 JSON artifact 还必须在 CLI artifact contract registry 中声明 ownership。Skill/Agent/Host 写入的 artifact 通过版本化 schema/template/example 获得完整作者合同；CLI-owned derived/result artifact 只能由声明的 producer 写入，外部只可 verify/inspect。文件布局不构成作者合同，宿主不得通过扫描目录或读取源码恢复 schema。
+
 Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`stale`、`failed`、`not_applicable`。Stage complete 需要 current outputs 和成功 attempt；同一输入的失败重试通过 `last_attempt` 报告，不能抹掉仍有效的旧成功，也不能凭残留文件制造成功。
 
-没有 `artifact-manifest.json` 的旧项目是 `legacy_untracked`。合法外部权威输入可以显示为 `pending_validation`；无法证明 lineage 的旧 derived/result 必须是 `stale`，code 为 `LINEAGE_UNPROVEN`。恢复命令逐步建立记录，不要求删除旧文件或重建 source。
+缺少当前 `project.json` contract 或 `artifact-manifest.json` 的旧项目不受支持，`project status` 返回 `CONTRACT_SCHEMA_UNSUPPORTED` 并要求使用当前 CLI 重新创建。CLI 不扫描旧文件恢复 lineage，也不在运行时迁移历史项目。
 
 ## 产物含义
 
@@ -105,7 +104,7 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 - `source-frames.json` 是 CLI 生成的源画面证据 manifest，按 request 顺序记录从 0 开始的 index、request identity、source_id、source-local time、project-relative JPEG path、尺寸、byte size 和 SHA-256，并汇总 frame count 和总 byte size；实际图片保存在 `.source-frames/frame-0001.jpg` 等稳定顺序路径。
 - `review-package.md` 是 human-readable pre-render review surface。
 - `review-package.json` 包含 original subtitle ranges、proposed cuts、reasons、confidence、unresolved risks 和 source identity。
-- `production-proposal.json` v1.1 是用户确认前的唯一制作方案合同，由 skill/agent 写入。它包含 2-4 个 `options[]`；每项同时包含 `business_direction`、`edit_execution_plan` 和 `asset_requirements`，以及剪辑、字幕、视觉、图片/生图、音乐、SFX、风险和确认字段。用户只确认一次：`OK` 选择 `recommended_option_id`，或选择一个 option id。Proposal 只能写素材 intent、query、provider preference、license/cost/source risk 和 reason，不能写最终 `asset_id`、local path、provider URL、download URL、绝对路径或 raw MCP payload。
+- `production-proposal.json` 2.0 是用户确认前的唯一制作方案合同，由 skill/agent 写入。CLI 必须公开其完整 schema、结构闭合 template 和同版本合法 2-4 option example；Skill 先读取该合同再指导填写。每项同时包含 `business_direction`、`edit_execution_plan` 和 `asset_requirements`，以及剪辑、字幕、视觉、图片/生图、音乐、SFX、风险和确认字段。Option `id` 是唯一方向身份，`recommended_option_id` 是唯一推荐权威，`asset_requirements` 是唯一槽位权威。用户只确认一次。Proposal 只能写素材 intent、query、provider preference、license/cost/source risk 和 reason，不能写最终 `asset_id`、local path、provider URL、download URL、绝对路径或 raw MCP payload。
 - `production-proposal.md` 是 CLI 从 proposal 物化出的 human-readable confirmation surface。它不是 render source of truth，缺失或文案变化不改变 proposal 状态。
 - `focus-candidates.md` 是 semantic focus planning 的 human-readable candidate surface。
 - `focus-candidates.json` 记录 normalized semantic intent、candidate element type、viewer job、风险和所需证据。
@@ -116,23 +115,23 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 - `music-catalog.json` / `.md` 在 `standalone` mode 下暴露本地曲库、MiniMax、Freesound 和 Pixabay 的可用性；在 `platform` mode 下这些外部 provider 应标记为 host-managed 或 disabled。它不能输出 API key。
 - `music-request.json` 是 agent/user 写入的音乐获取请求，包含来源、用途、mood、target duration、provider、prompt/query 或 local path。AI music 的 prompt 必须是配乐 prompt：background/underscore、纯音乐、no vocals、目标时长和用途要可读；不要把 TTS/旁白提示词放进这里。在 `platform` mode 下它是给平台 music capability 的 request spec，CLI 不据此调用外部 provider。
 - `music-acquisition.json` 是 CLI 写入的实际获取结果，包含 provider、model、prompt/query、duration、hash、license、original_url、cost 和 output asset。
-- `music-review.json` / `.md` 是给用户和 agent 审查的音乐选择面，说明是否建议把获取到的音乐加入 `enrichment-plan.music[]`。
+- `music-review.json` / `.md` 是给用户和 agent 审查的音乐选择面，说明是否建议把获取到的音乐加入 `enrichment-plan.audio.music[]`。
 - `visual-catalog.json` / `.md` 在 `standalone` mode 下暴露 CLI-owned Iconify/Lordicon、Lottie/dotLottie import、shadcn/21st handoff、Rive future provider，以及 HyperFrames allowlisted runtime dependencies；在 `platform` mode 下这些 provider 应标记为 host-managed 或 disabled。它不能输出 API key 或本机 provider 状态。
-- `visual-request.json` 是 agent/user 写入的视觉素材获取请求，包含 viewer job、semantic query、asset type、preferred sources、用途、可选 timing/zone，以及显式的 `selected_candidate_id` 和 `selection_reason`。新工作流在两种 mode 下都写这两个选择字段；为兼容已有 standalone artifact，parser 可以接受缺少 `selection_reason`，但 platform acquire 必须要求它。`reason` 说明为什么需要该素材槽位；`selection_reason` 说明为什么选择该具体候选。`selected_candidate_id` 是 visual acquire 的唯一授权，候选顺序或 `recommended` 都不能替代它。在 `platform` mode 下它是给平台 visual/component capability 的 request spec，CLI 不据此调用 Iconify、Lordicon、URL download 或 MCP。
+- `visual-request.json` 是 agent/user 写入的视觉素材获取请求，包含 viewer job、semantic query、asset type、preferred sources、用途、可选 timing/zone，以及必填的 `selected_candidate_id` 和 `selection_reason`。两种 mode 都要求这两个选择字段。`reason` 说明为什么需要该素材槽位；`selection_reason` 说明为什么选择该具体候选。`selected_candidate_id` 是 visual acquire 的唯一授权，候选顺序或 `recommended` 都不能替代它。在 `platform` mode 下它是给平台 visual/component capability 的 request spec，CLI 不据此调用 Iconify、Lordicon、URL download 或 MCP。
 - `visual-candidates.json` / `.md` 保存候选素材，包含 provider、preview/source/download URL 或 local handoff path、license、cost/source risk、runtime dependencies 和推荐理由。Search/list 只负责召回；`recommended` 只作展示提示。候选里允许 provider URL；它们不是 render 输入。`preview_path` 只用于 agent/user 比较候选，不能替代选中候选的 `local_path`，也不能被 acquire 消费。`platform` mode 下候选应使用平台脱敏后的 provider/source label、opaque source ref、project-local `preview_path` 或 `local_path`，不保存 API key、Bearer token、provider URL 或 MCP 原始 payload。
 - `visual-acquisition.json` 是 CLI 写入的实际下载或导入结果，包含 provider、asset type、project-local path、hash、license、source_url、original_author、acquired_at、runtime dependencies 和 warnings。
 - `visual-review.json` / `.md` 是给用户和 agent 审查的视觉资产选择面，同时保留槽位用途 `usage_reason` 和候选选择理由 `selection_reason`，并说明来源、授权和 runtime 风险。
 - `edit-plan.json` 是唯一 cleanup 决策，包含 `contract_version:"1.0"`、`confirmed_option_id` 和对应 `proposal_selection_fingerprint`。`decisions[].action:"cut"` 表示删除候选片段，不是保留列表。新工作流不得在这里内嵌素材 usage plan。
 - `edl.json` 是 CLI-derived render-ready edit decision list。Entries 包含 `source_id`、source-local ranges、output order、quote 或 label、reason。任何消费者使用前都要校验 lineage；input 完整时 stale EDL 由统一 deterministic compiler 自动重建，不能按文件存在性复用。
-- `asset-usage-plan.json` 是简化 platform handoff / legacy compatibility command input，不是 render source。它包含 `music[]`、`sfx[]` 或 `visual_assets[]` 的具体用途，由 `project enrich-plan` 一次性归一化；归一化成功后 active input 被消费或归档，后续 render 只读取 current canonical `enrichment-plan.json`。
-- `enrichment-plan.json` 是唯一 canonical final visual/audio usage plan。当前主合同是 v1.2 output-timeline `profile` 和 `elements[]`。`elements[]` 可引用 `registry_block`、`registry_component`、`animation_rule`、`caption_identity`、`sfx`、`visual_asset` 或 legacy `generated_asset`。`visual_asset` 必须引用通过 visual acquisition/review 或 manifest provenance 校验的本地 asset。v1.1 `captions/cards/music` 与 legacy v1.0 `slots[]` 可以被接受并归一化；render 只消费 current canonical plan。
+- `asset-usage-plan.json` 是当前简化 platform handoff command input，不是 render source。它包含 `music[]`、`sfx[]` 或 `visual_assets[]` 的具体用途，由 `project enrich-plan` 一次性物化当前 canonical `enrichment-plan.json`；render 不直接消费它。
+- `enrichment-plan.json` 是唯一 canonical final visual/audio usage plan，只接受 2.0 output-timeline `profile + elements + audio`。`elements[]` 只可引用 `registry_block`、`registry_component`、`animation_rule`、`caption_identity` 或 `visual_asset`；BGM 与 SFX 分别进入 `audio.music[]` 和 `audio.sfx[]`。所有外部视觉素材必须引用通过 visual acquisition/review 或 manifest provenance 校验的本地 asset。Cards、slots、顶层 captions/music、`generated_asset`、element-level SFX 和缺失 version 均无效。
 - `prepared-assets.json` 只是 host/platform 落地的素材库存清单，不是 canonical render artifact。它和 `asset-manifest.json` 都不能替代 `enrichment-plan.json`。
-- `elements[]` 和兼容 `cards[]` 可以包含用于 focus boxes 的 normalized `target_rect`，或用于 callouts 的 `anchor_point`。这些坐标是 output-canvas ratios，必须保持在 `[0,1]` 内。
+- `elements[]` 可以包含用于 focus boxes 的 normalized `target_rect`，或用于 callouts 的 `anchor_point`。这些坐标是 output-canvas ratios，必须保持在 `[0,1]` 内。
 - `storyboard.json` 是 CLI-derived HyperFrames render plan，也是成片 QA checklist 的单一来源。它由 current enrichment inputs 生成并包含 `qa_checks[]`；只有 input lineage current 且被本次 `render-result.json.inputs[]` 绑定时，才能作为该次 enriched render/inspect 的执行与检查清单，不能作为独立业务决定手写或按存在性复用。
 - `asset-manifest.json` 记录本次 project 已落地并通过校验的 enrichment files 和 provenance；它不决定最终使用。V0 的 `path` 必须是 project-relative local path；未来 stable workspace refs 只有在 schema、resolver 和 render materialization 明确实现后才能进入 manifest。Provider URLs 不是最终 asset refs。Standalone mode 的 entry 可以保留 provider/license/prompt/query/source_url/original_url/hash 等 provenance。Platform mode 的 entry 应优先保留平台脱敏 provenance：provider label、opaque source ref、license/usage note、attribution、host audit id、acquired_at、hash、runtime_dependencies 和用途说明，不保存 provider 临时 URL、API key、本机绝对路径或 MCP 原始结果。视觉 `type` 可为 `icon`、`animated_icon`、`lottie`、`ui_component`、`template`、`sticker`、`broll` 或 `image`。
 - `subtitles.srt` 从 transcript timings 和 selected cuts 派生。
 - `renders/clean.mp4` 是 cleaned talking-head video。
-- `.hyperframes/recut/public/index.html` 是生成的 single HyperFrames composition。`public/compositions/` 包含从 vendored HyperFrames registry 安装的 block/component 文件；`public/cards/*.html` 是 v1.1 兼容 card fragments，不是任意 agent-authored HTML。
+- `.hyperframes/recut/public/index.html` 是生成的 single HyperFrames composition。`public/compositions/` 包含从 vendored HyperFrames registry 安装的 block/component 文件；不接受 agent-authored card HTML。
 - `.hyperframes/recut/public/index.html` 可以加载 CLI-owned catalog 声明的白名单 CDN runtime dependencies。每个 external dependency 必须有 domain、package、version 或明确 versionless exception，并进入 `storyboard.json` / inspect / report。
 - `renders/final.mp4` 是启用 enrichment 时的 enriched deliverable。
 - `render-result.json` 是 render 成功的 machine-readable 证明，记录精确 `inputs[]`、带 hash/probe 的 `outputs[]`、`canonical_output_key`、render input fingerprint 和 producer version。纯剪辑可把 clean MP4 作为 canonical output；enriched render 才把 final MP4 作为 canonical output。
@@ -144,6 +143,7 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 
 - `koubo-clip --version` 返回安装的 package/CLI version；`capabilities --json` 返回稳定 software contract，不加载 provider secrets 或探测机器。`project status --json` 必须只读，不能为了恢复状态补写 project metadata。
 - JSON artifacts 在 schemas 存在后必须能 parse 并匹配 schema。
+- Agent/Host authored JSON 的 required、optional、enum、unknown-field policy、template 和合法 example 必须能从正式 CLI artifact contract discovery 获得；校验错误一次返回聚合 `issues[]`，不要求 Agent 逐字段试错。
 - Project metadata 的 `provider_execution_mode` 是 immutable safety boundary。不同 mode 生成的 provider artifacts 不能在另一 mode 下静默复用；需要重新导入、重新校验或新建 project。
 - `transcript.json` 必须声明 timings 是 `word`、`segment` 还是 `text-only`。
 - Text-only transcripts 必须无法通过 precise-cut validation。
@@ -162,10 +162,10 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 - Screen-recording enrichment 必须保留 source UI readability；默认使用 transparent overlays。
 - Screen-recording focus planning 必须先通过 `focus-candidates`、`focus-frames` 和 `focus-grounding`，再进入 `enrich-plan`；坐标没有 frame evidence 就算无效。
 - Source frames、focus frames 和 inspection frames 必须保持 timeline/阶段分离：分别使用 source-local time、由 cleaned output timing 经 EDL 映射得到的 source evidence、以及 final output timeline。
-- `project enrich-plan` 和 `project inspect` 应暴露 `element_usage[]` 和 `audio_usage`；`project inspect` 应暴露 `inspection_frames[]`，让 agents 可以验证 visual readability，而不是猜。
+- `project enrich-plan` 和 `project inspect` 应暴露 `element_usage[]` 和 `audio_usage`；`project inspect` 应在 `inspection_checks[]` 中暴露 namespaced frames，让 agents 可以验证 visual readability，而不是猜。
 - `project enrich-plan` 应暴露 `qa_checks[]`，让 agents 在 render 前检查每个加入点的 asset/provenance、timing、coordinate evidence、music/SFX 风险和 expected viewer job。
 - 本次 current render result 实际绑定的 `storyboard.json.qa_checks[]` 是 render 后检查清单的事实来源。不要新增或手写独立 `inspection-plan.json`，也不要按旧 storyboard 是否存在选择检查内容。
-- `project inspect` 应暴露结构化 `inspection_checks[]` 和兼容的扁平 `inspection_frames[]`。Visual checks 默认抽中点帧，持续 6 秒以上的加入点抽开始、中点和结束附近 3 帧；SFX/music 不抽视频帧，但必须出现在 QA checks 中。
+- `project inspect` 应暴露结构化 `inspection_checks[]`，每项包含自己的 frame paths。Visual checks 默认抽中点帧，持续 6 秒以上的加入点抽开始、中点和结束附近 3 帧；SFX/music 不抽视频帧，但必须出现在 QA checks 中。
 - CLI 的检查状态只表示 `sampled`、`warning` 或 `blocker`；视觉审美、是否达到用户目标和是否需要重做由 skill/agent 根据 inspection frames 判断。
 - `project focus-candidates`、`project focus-frames`、`project focus-grounding` 和 `project focus-review` 应暴露对应的 candidate、frame、evidence 和 proposed element paths，让 agents 可以从 candidate 回溯到证据，再回到 final plan。
 - `project proposal` 只校验和物化 `production-proposal`，不能生成 `edit-plan`、`focus-*`、`music-*`、`asset-manifest`、`enrichment-plan` 或 render artifacts。
@@ -174,7 +174,7 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 - `project proposal --json` 必须返回 `proposal_fingerprint` 和完整 `option_selection_fingerprints` map。确认后 edit plan 必须绑定选中 option；被选 projection 改变会使下游 stale，未选 option 改变不能扩大失效范围。
 - 如果 proposal 选择 BGM、SFX、icons、Lottie、UI handoff、图片、B-roll 或生图，确认后的执行阶段必须有对应 request/review/manifest/enrichment/QA artifact。选择不加素材时必须说明原因，不能把空素材计划当作已完成。
 - 在 `platform` mode 下，如果 host 已经写入 `prepared-assets.json` 或 `assets/koubo-clip/*`，这些文件仍然不会自动进入成片；skill/agent 必须把确认后的选择写进 canonical `enrichment-plan.json`，或先用唯一 `asset-usage-plan.json` 交给 `project enrich-plan` 归一化。只有素材清单、没有 canonical plan 时，CLI 保持纯剪辑并报告 `enrichment_applied:false`。
-- Canonical plan 与任一 standalone/legacy usage source 同时存在，或多个 legacy sources 同时存在时，CLI 必须以 `ASSET_USAGE_PLAN_CONFLICT` fail closed，不隐式 merge、不改写 canonical plan。
+- Canonical plan 与新的 `asset-usage-plan.json` 同时存在时，CLI 必须以 `ASSET_USAGE_PLAN_CONFLICT` fail closed，不隐式 merge、不改写 canonical plan。
 - 如果 usage input 声明了素材，CLI 必须 fail-closed：缺文件返回 `missing_asset_ref`，音频格式不支持返回 `unsupported_audio_asset_format`，视觉格式不支持返回 `unsupported_visual_asset_format`，字段非法返回 `asset_usage_plan_invalid`。不得静默生成纯剪辑版并当成功。
 - `element_usage[]` 应暴露 adapter family、render strategy 和 screen safety，让 review 能区分 native composition、CLI overlay、caption component、anchored chip 和 SFX mix。
 - 对 screen recordings，任何 `target_rect` 或 `anchor_point` 都必须能从 `focus-grounding.json` 追溯到 `focus-frames.json` 里的 frame evidence；没有证据的坐标无效。

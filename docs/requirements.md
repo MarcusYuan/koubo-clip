@@ -27,6 +27,7 @@ koubo-clip 通过分阶段 CLI 加 agent 工作流，把一个或多个本地口
 8. 可选渲染带 source-mode-aware captions、HyperFrames elements、images、SFX 和 music 的 enriched final MP4。
 9. 报告完成前校验输出 artifacts。
 10. 通过公开、可恢复的 artifact lineage 和 project status 合同，区分 current、stale、invalid、derived、evidence 和 human-readable artifacts；宿主不需要扫描目录猜测状态。
+11. 通过 CLI-owned、版本化的 artifact 作者合同，让只安装正式 CLI 和官方 Skill 的 Agent 能在不读取仓库源码的情况下，一次生成或有界修正合法业务 artifact。
 
 Artifact 权威状态、fingerprint、失效和恢复的目标合同见 `docs/artifact-lifecycle.md`。在对应 CLI、Skill、rules 和测试落地前，该文档描述的是本轮修复目标，不表示当前实现已经完成。
 
@@ -170,21 +171,35 @@ render 前，工作流应产出人类和机器都可读的 review artifacts：
 
 `production-proposal.json` / `.md` 是用户确认前的总方案。它由 skill/agent 基于 `material-report`、`review-package`、用户用途和 element/music 能力写入，CLI 负责校验并物化 markdown。
 
-对“卖货、朋友圈吸引咨询、高级感、种草、专业讲解、去废话保留卖点”等开放式业务目标，skill 不应直接生成素材或渲染。它必须在同一 `production-proposal.json.options[]` 中给出 2-4 个可选业务方向；每个 option 同时包含 `business_direction`、`edit_execution_plan` 和 `asset_requirements`。用户只确认一次 recommended option 或具体 option id。素材 capability 只 fulfill 已确认 option 的槽位；最终是否入片只由 canonical `enrichment-plan.json` 决定。简化 `asset_usage_plan` 只是交接输入，必须先经 CLI 一次性归一化并消费或归档 active input，后续 render 只读取 current canonical plan。
+对“卖货、朋友圈吸引咨询、高级感、种草、专业讲解、去废话保留卖点”等开放式业务目标，skill 不应直接生成素材或渲染。它必须在同一 `production-proposal.json.options[]` 中给出 2-4 个可选业务方向；每个 option 同时包含 `business_direction`、`edit_execution_plan` 和 `asset_requirements`。用户只确认一次 recommended option 或具体 option id。素材 capability 只 fulfill 已确认 option 的槽位；最终是否入片只由 canonical `enrichment-plan.json` 决定。当前独立 `asset-usage-plan.json` 只是简化交接输入，必须先经 CLI 一次性归一化；后续 render 只读取 current canonical plan。
 
 确认单必须同时覆盖剪辑、字幕、UI 动效、图片/生图、音乐、SFX、风险和可选方案。它回答“这条视频会被做成什么样”，而不是替代执行 artifacts。
 
 确认单只允许承诺已经有证据的事实：可以引用 source timestamps 和 cleanup candidate IDs，但不能伪造最终 output timeline、无证据坐标、未生成 asset path、未获取音乐或 provider 结果。用户回复 `OK` 时使用 `recommended_option_id`；回复具体 option id 时使用对应方案。确认后，skill 再写 `edit-plan.json`、`focus-*`、`music-*`、`asset-manifest.json` 和 `enrichment-plan.json`。
 
+## Artifact 作者合同
+
+所有需要 Skill/Agent/Host 编写的公开 JSON artifact，都必须先由 CLI 发布完整、版本化、机器可读的结构合同。Skill 负责业务语义和填写方法，Agent 根据用户目标和项目证据填写，CLI 负责 fail-closed 校验、lineage 和状态推进。Gateway、Hermes 或其他宿主不得重新定义或复制 Koubo Clip schema。
+
+CLI 的 artifact contract discovery 必须一次返回目标 artifact 的 ownership、schema version/digest、完整 schema、validator/lifecycle 信息，以及适用的结构完整 template 和同版本合法 example。`capabilities --json` 公开合同索引；Skill 在写 artifact 前先读取对应合同，不复制 required 字段、enum、禁止字段或版本差异。
+
+每个 CLI release 对每种 artifact 只支持一个当前 schema。artifact 中保留 `version`，用于 fail-closed 校验、digest 和 delivery identity，但公开命令不接受 schema version 选择，也不做旧 parser、兼容 union、legacy normalization 或运行时迁移。缺失或不匹配的 artifact version 返回 `CONTRACT_SCHEMA_UNSUPPORTED`；开发 fixtures 和内部项目直接更新为当前格式，旧外部项目使用当前 CLI 重新创建。
+
+对 Agent/Host authored artifact，CLI 应一次返回尽可能完整且有界的结构化 `issues[]`，让 Agent 整体修正，而不是按第一个错误反复重写。Fail-closed 不变：未知字段、缺失必填字段、非法 enum、类型和跨字段错误仍然失败，CLI 不静默补全业务语义。
+
+CLI-owned derived/result artifacts 只公开只读 schema 和 producer/verify/inspect 能力，不提供 authoring template，也不得由 Skill、Agent 或宿主手写。完整 ownership、发现面、诊断与单一 schema 要求见 `docs/artifact-authoring-contracts.md`。
+
+`production-proposal.json` 2.0 是首个强制落地场景。正式发布包必须提供一份包含 2-4 个完整 option、能够被同版本 `project proposal --json` 直接接受的实例；不得继续用 `{}` 或“省略字段遵循 schema”作为 Agent 能获得的唯一结构说明。Option `id` 是唯一方向身份，`recommended_option_id` 是唯一推荐权威；`asset_requirements` 是 visual/image/music/SFX 槽位的唯一权威，`edit_execution_plan` 不接受重复 slots。
+
 ## 增强
 
 Enrichment 是一等可选阶段，不是隐藏装饰步骤。工作流应先通过 production proposal 确认成片方向；用户确认后，再把方案拆成 cleanup、focus、image/music 和 enrichment 执行 artifacts。
 
-当前 enrichment 目标是 source-mode-aware recut：cleaned video 保持为 base layer，CLI 在一个 HyperFrames composition 中渲染 embedded caption rail、timed registry elements、兼容 cards/images、SFX 和 music。它不是一组彼此独立的黑盒 overlays。
+当前 enrichment 目标是 source-mode-aware recut：cleaned video 保持为 base layer，CLI 在一个 HyperFrames composition 中渲染 embedded caption rail、timed registry elements、SFX 和 music。它不是一组彼此独立的黑盒 overlays。
 
 Semantic Focus Planner 是 enrichment 的前置合同。用户可以用任意业务词汇描述目标，但这些词汇不是稳定 schema；CLI 和 skills 必须把它们归一化为固定的 semantic intent、element type 和 evidence contract，再进入最终 enrichment plan。
 
-固定的 intent 是闭集，但分两层：`presentation_intent` 描述这条视频最终用途，当前接受 `internal_tutorial`、`product_demo`、`course_lesson`、`knowledge_explainer` 和 `short_form`；`semantic_intent` 描述某个 focus moment 要帮观众完成什么，当前接受 `orient_viewer`、`guide_attention`、`explain_sequence`、`summarize_payoff` 和 `pacing_relief`。元素能力同样是闭集：`registry_block`、`registry_component`、`animation_rule`、`caption_identity`、`sfx` 和 `generated_asset`。
+固定的 intent 是闭集，但分两层：`presentation_intent` 描述这条视频最终用途，当前接受 `internal_tutorial`、`product_demo`、`course_lesson`、`knowledge_explainer` 和 `short_form`；`semantic_intent` 描述某个 focus moment 要帮观众完成什么，当前接受 `orient_viewer`、`guide_attention`、`explain_sequence`、`summarize_payoff` 和 `pacing_relief`。元素能力同样是闭集：`registry_block`、`registry_component`、`animation_rule`、`caption_identity`、`sfx` 和 `visual_asset`。
 
 Visual Grounding 是 coordinate-bearing 元素的证据合同。只要一个 screen-recording 元素使用 `target_rect`、`anchor_point` 或任何需要放置在 UI 上的坐标，它就必须带有可追溯的 source-local focus frame evidence，不能只是抽象描述。Render 后的 inspection frames 只用于 final output QA，不反向充当方案确认前的 grounding 证据。
 
@@ -234,19 +249,19 @@ enrichment plan 应回答：
 V0 enrichment 从完整可创建元素体系开始：
 
 - `profile`: 默认 professional explainer style，包含 `source_mode:"talking_head_avatar"`、`caption_identity:"anchor"`、`layout:"stack"`、`style:"whiteboard"`、`frame:"clean"`、`aspect_ratio:"source"`。
-- v1.2 `elements[]`，元素类型为 `registry_block`、`registry_component`、`animation_rule`、`caption_identity`、`sfx` 或 `generated_asset`。
+- 2.0 `elements[]`，元素类型只允许 `registry_block`、`registry_component`、`animation_rule`、`caption_identity` 或 `visual_asset`；音乐和 SFX 分别进入 `audio.music[]` 与 `audio.sfx[]`。
 - `project element-catalog` 暴露完整 HyperFrames 可创建元素目录，包括 blocks、components、examples、caption themes/DNA、animation rules/blueprints、SFX、motion categories、talking-head references 和 frame presets。
 - `project element-catalog` 暴露的是 CLI resources 能力，不是让 agent 加载 HyperFrames 上游 skills。Agent 通过 catalog 选择元素，通过 koubo-clip references 理解决策规则。
 - `project element-catalog` 还必须暴露每个元素的 adapter profile：family、render strategy、source-mode 适用性、screen safety、默认 zone、必填 params、坐标要求、asset 要求和已知限制，并按 source mode 返回 recommendations。业务关键词只是输入提示，不是 selector key。
 - `project element-catalog` 必须额外返回 `purpose_recommendations`，按 `source_mode × presentation_intent` 给 agent 一个用途驱动的候选集。首版 intent 为 `internal_tutorial`、`product_demo`、`course_lesson`、`knowledge_explainer` 和 `short_form`。
 - Enrichment 不是“迁移来的元素全用”，也不是“默认不用”。Agent 应先理解用户希望视频素材变成什么，再从 purpose recommendations 中选择最小有效元素集合，并把它们放进 focus-candidates / focus-grounding / review contract。
-- 是否生图不由 `source_mode` 粗暴决定。Agent 应先写明每段的 `business_role`、`viewer_job` 和 `visual_gap`：可从源画面指给观众看的内容优先用 `source_ui_component`；源画面不可见的抽象概念、B-roll、品牌记忆点才用 `generated_asset`；没有 viewer job 的装饰应标记 `none`。
+- 是否生图不由 `source_mode` 粗暴决定。Agent 应先写明每段的 `business_role`、`viewer_job` 和 `visual_gap`：可从源画面指给观众看的内容优先用 `source_ui_component`；源画面不可见的抽象概念、B-roll、品牌记忆点才请求生成素材并以 `visual_asset` 落地；没有 viewer job 的装饰应标记 `none`。
 - 需要图标、动态图标、UI 组件、贴纸、模板或图片时，主路径是 internet-first visual acquisition：agent 通过 host MCP、API 或平台工具在互联网上语义检索现成素材，并在 proposal/review 中说明候选、来源、用途和风险。确认后，在 `standalone` mode 下 CLI 可以通过 `visual-search` / `visual-acquire` 把可下载或 handoff 的素材固化为 project-local assets；在 `platform` mode 下平台工具先完成 provider 调用和授权，再把候选 metadata 或本地导出写入 TaskWorkspace/project，CLI 只导入和校验。不要把“先建立长期本地 UI 素材库”作为前提。
 - 首批外部来源按能力分层：UI 组件优先 shadcn MCP 和 21st.dev HTTP MCP；通用图标优先 Iconify API；动态图标优先 Lordicon official API；Lottie/dotLottie runtime 优先 LottieFiles dotLottie；Rive 和完整 React design systems 后置。选择依据是是否流行、活跃、官方支持 MCP/registry/API，以及是否能给出可审查 metadata。
 - 本地 `assets/*` 只表示当前 project 的已确认渲染输入，不是跨 agent、跨项目复用的全局缓存。每次新任务应根据用户目标重新语义检索；如果互联网检索失败，应报告 blocker 或换 provider，而不是退回手写低质 UI。
-- 互联网搜索和 provider 调用发生在 acquisition / host-agent 阶段；render 阶段仍只消费当前 project 已落地或 host workspace 可稳定引用的 assets，保证这一次输出可检查、可追踪。`visual_asset` 是 v1.2 的一等 element type；legacy `generated_asset` 继续兼容，但新图标/Lottie/UI/template 素材应优先用 `visual_asset` 引用。
+- 互联网搜索和 provider 调用发生在 acquisition / host-agent 阶段；render 阶段仍只消费当前 project 已落地或 host workspace 可稳定引用的 assets，保证这一次输出可检查、可追踪。`visual_asset` 是 2.0 唯一的外部视觉素材 element type；图标、Lottie、UI/template、图片、生图和 B-roll 都使用 `visual_asset`，通过 asset provenance 区分来源。
 - element 上可选归一化 `target_rect` 和 `anchor_point` 字段，让 agents 能基于真实 screen inspection 放置 focus boxes 和 callouts。值是 `[0,1]` 内的 ratios；CLI 校验边界。只要这些字段出现于 screen recordings，就必须有 frame evidence 和 `coordinate_source_frame`。
-- v1.1 plans 默认开启 anchor captions，并继续支持 title、key-point、quote、flowchart、image、screenshot-focus 或 lower-third cards 作为兼容输入。
+- 2.0 plans 通过 `caption_identity` 和 registry elements 表达 anchor captions、title、key-point、quote、flowchart、image、screenshot-focus 或 lower-third，不接受 card 输入。
 - 可选 caption emphasis moments。
 - 可选用户提供或 agent-generated local images。
 - 可选通过 Music Acquisition 获得的 background music，并使用 speech-safe mixing。
@@ -268,7 +283,7 @@ visual-catalog
 
 `visual-search` / provider list 只负责召回候选，不代表允许 acquire。Agent/host 必须结合 viewer job、ASR、源画面、source mode、已确认业务方向、授权和 runtime 风险审查候选，并在 `visual-request.json` 中写入 `selected_candidate_id` 和 `selection_reason`；前者是 acquire 的唯一授权，后者说明为什么选择这个具体 candidate。Request 原有的 `reason` 仍只说明为什么该位置需要视觉素材。候选的 `recommended` 和数组顺序都只是展示提示，不能作为 fallback。Agent 决定不插入素材时，应从最终 `requests[]` 删除该槽位，并在 business/focus review 中记录原因；没有 request 时不运行 visual acquire。
 
-候选的 `preview_path` 只用于 agent、视觉模型或用户比较候选，不能被 acquire 或 render 当作素材；只有明确选中且具有可渲染 `local_path` 的完整素材才能进入 platform acquire。两种 provider mode 都要求新工作流显式选择：`standalone` 可以由 CLI 搜索或下载 provider 候选，但 acquire 仍须消费明确选择；`platform` 由 host 完成搜索、授权和选中素材的物化，CLI fail closed 地校验 selection、project-local 路径和候选 provenance。为兼容已有 standalone artifacts，parser 可以接受缺少 `selection_reason` 的旧 request，但 platform acquire 必须拒绝它。这个合同继续使用现有 request/candidate artifacts，不新增 `visual-selection.json`、数据库、provider 接口或平台专属 selection 对象。
+候选的 `preview_path` 只用于 agent、视觉模型或用户比较候选，不能被 acquire 或 render 当作素材；只有明确选中且具有可渲染 `local_path` 的完整素材才能进入 platform acquire。两种 provider mode 都要求每个 request 同时提供 `selected_candidate_id` 和非空 `selection_reason`：`standalone` 可以由 CLI 搜索或下载 provider 候选，但 acquire 仍须消费明确选择；`platform` 由 host 完成搜索、授权和选中素材的物化，CLI fail closed 地校验 selection、project-local 路径和候选 provenance。这个合同继续使用现有 request/candidate artifacts，不新增 `visual-selection.json`、数据库、provider 接口或平台专属 selection 对象。
 
 CLI 首版直接支持 Iconify API 搜索和 SVG 下载，也直接支持 Lordicon official API 搜索和 JSON/SVG 下载。Lottie import、shadcn 和 21st 作为 host/MCP handoff 候选来源，支持 `.json` Lottie、`.lottie`、SVG、静态图片或安全导出的 UI/template 文件固化到 `assets/icons`、`assets/lottie`、`assets/visuals` 或 `assets/images`。SVG 必须经过 sanitization；最终 asset path 仍只能是 project-relative local path。
 
@@ -283,7 +298,7 @@ review/focus/enrichment intent
   -> music-acquire
   -> music-review.json/md
   -> asset-manifest.json
-  -> enrichment-plan.music[]
+  -> enrichment-plan.audio.music[]
   -> render/inspect
 ```
 
@@ -333,7 +348,7 @@ enrichment-plan.json
 
 生成的 HyperFrames workspace 只能使用 CLI catalog 写入的 runtime dependencies。允许直接加载白名单 CDN 上的固定版本 scripts/styles，例如 `gsap@3.14.2`；Google Fonts family CSS 是首个明确记录的 versionless exception。`storyboard.json`、inspect JSON 和 `report.md` 必须暴露 block usage、element usage 和 CDN dependencies。Agents 可以选择 moments、`element_id`、`element_type` 和 coordinates，但不能提供任意 GSAP、JavaScript、external scripts 或 HTML。
 
-legacy `version:"1.0"` `slots[]` plans 继续接受，并在内部转换成 v1.1 cards/music 和 v1.2 element usage。旧的大黑框 overlay style 不再是主路径。
+`enrichment-plan.json` 只接受 `version:"2.0"` 和 `profile + elements + audio`。`cards`、`slots`、顶层 `captions` / `music`、`generated_asset`、element-level SFX 和缺失 version 一律返回 `CONTRACT_SCHEMA_UNSUPPORTED`，不在运行时转换。
 
 后续 enrichment 可以加入 matting/text-behind-person、Remotion、更广 OpenMontage-style packaging、generated scenes 和 reusable overlay components。
 
@@ -382,9 +397,7 @@ koubo-clips/<slug>/
   visual-review.md
   visual-review.json
   edit-plan.json
-  asset-usage-plan.json  # optional active compatibility input
-  .migration/
-    asset-usage-plan-<fingerprint>.json
+  asset-usage-plan.json  # optional current simplified handoff input
   edl.json
   enrichment-plan.json
   storyboard.json
@@ -394,7 +407,6 @@ koubo-clips/<slug>/
     recut/
       public/
         index.html
-        cards/
   assets/
     icons/
     images/
@@ -428,6 +440,8 @@ koubo-clips/<slug>/
 - 任意 artifact 或 MP4 的存在都不能单独证明阶段成功；current 状态必须有匹配的 schema、fingerprint 和 dependency lineage。
 - edit plan、EDL、enrichment、render 和 inspection 必须能追溯到当前上游输入；上游改变后旧下游结果会被明确标记 stale 并被 CLI 拒绝。
 - 宿主可以通过稳定 capability discovery 和只读 project status JSON 恢复流程、获得精确 render inputs、当前 deliverable、blockers、next commands 和最后成功 checkpoint。
+- 不了解仓库源码的 Agent 可以只依赖正式发布包中的 CLI artifact contract 和官方 Skill，生成合法 `production-proposal.json` 2.0；首次校验通过，或最多根据一次聚合 issues 整体修正后通过。
+- 所有 Agent/Host authored artifact 的 required、optional、enum、unknown-field policy 和合法 example 都能从正式 CLI 发现；Skill、validator、example 和发布包由 contract/schema digest 防止漂移。
 
 ## Detached source 与分布式执行合同
 
@@ -437,4 +451,4 @@ koubo-clips/<slug>/
 - `render-contract export` 生成不可覆盖的目录合同包。合同 digest 仅覆盖 canonical payload；bundle 只含实际引用的 content-addressed 非源素材。
 - Strict consumer 只读取合同、bundle assets 和显式 source binding。它不得读取 authoring transcript、analysis、edit-plan 或 enrichment-plan，不得重规划、补默认值或修复项目。
 - Hash/size 必须 exact；source probe duration tolerance 为 0.05 秒；输出 duration tolerance 为 `max(0.05, 2/fps)`。Mismatch 一律 fail closed。
-- CLI delivery 必须公开 CLI version、payload/resources/Skill digest、schema versions、capability IDs 和 exact GSAP/HyperFrames versions，并能在 export、verify、bind、render 前验证兼容性。正式 npm delivery 的 manifest 必须从 npm packlist 物化后的最终文件树生成；CI 验收、npm publish 和 GitHub Release 必须复用同一个 canonical tarball，不能从源码 checkout 再次打包。正式版本只有在空目录安装该 tarball 后独立通过 Skill、delivery、contract export、strict render 和 inspect 验收才可发布。
+- CLI delivery 必须公开 CLI version、payload/resources/Skill digest、`artifact_contracts_digest`、schema versions、capability IDs 和 exact GSAP/HyperFrames versions，并能在 export、verify、bind、render 前验证兼容性。`delivery-manifest.json` 唯一当前版本是 3.0，旧 manifest 不读取或迁移。正式 npm delivery 的 manifest 必须从 npm packlist 物化后的最终文件树生成；CI 验收、npm publish 和 GitHub Release 必须复用同一个 canonical tarball，不能从源码 checkout 再次打包。正式版本只有在空目录安装该 tarball 后独立通过 Skill、delivery、contract export、strict render 和 inspect 验收才可发布。
