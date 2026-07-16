@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { cliVersion, resolveDistributionRoot, resolveHyperframesRoot, resolveKouboClipSkillRoot } from "./bundle-paths";
+import { artifactContractsDigest } from "./artifact-contracts";
 import {
   computeCliPayloadDigest,
   computeOfficialSkillDigest,
@@ -26,6 +27,7 @@ export function computeInstalledDeliveryDigests(skillRoot = resolveKouboClipSkil
     cli_payload_digest: computeCliPayloadDigest({ root: distributionRoot, files: cliPayloadFiles(distributionRoot) }).digest,
     renderer_resources_digest: computeRendererResourcesDigest({ root: resolveHyperframesRoot() }).digest,
     official_skill_digest: computeOfficialSkillDigest({ root: skillRoot }).digest,
+    artifact_contracts_digest: artifactContractsDigest(),
   };
 }
 

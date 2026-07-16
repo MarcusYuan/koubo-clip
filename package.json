@@ -1,7 +1,7 @@
 {
   "name": "koubo-clip",
   "description": "Agent-driven local talking-head video cleanup and enrichment CLI.",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -16,6 +16,7 @@
     "delivery-manifest.json",
     "packages/cli/src",
     "!packages/cli/src/**/*.test.ts",
+    "!packages/cli/src/test-fixtures.ts",
     "packages/cli/vendor/hyperframes",
     "!packages/cli/vendor/hyperframes/**/*.test.*",
     "!packages/cli/vendor/hyperframes/resources/**/SKILL.md",

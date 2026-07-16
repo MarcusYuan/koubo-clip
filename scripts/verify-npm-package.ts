@@ -24,8 +24,10 @@ try {
   expect(runCli(cli, ["--version"], packageRoot).trim() === version, "installed CLI version does not match package.json");
 
   const delivery = runCliJson(cli, ["delivery", "verify", "--json"], packageRoot).data;
-  expect(delivery.schema_version === "2.0", "installed package must use delivery manifest schema 2.0");
+  const capabilities = runCliJson(cli, ["capabilities", "--json"], packageRoot);
+  expect(delivery.schema_version === "3.0", "installed package must use delivery manifest schema 3.0");
   expect(delivery.delivery_digest === manifest.delivery_digest, "delivery verify returned a different aggregate digest");
+  expect(delivery.artifact_contracts_digest === manifest.artifact_contracts_digest, "delivery verify returned a different artifact contracts digest");
   expect(delivery.cli_version === version, "delivery CLI version does not match package version");
   expect(delivery.distribution_kind === "npm", "installed package distribution_kind must be npm");
   if (process.env.EXPECTED_SOURCE_REVISION) {
@@ -54,7 +56,31 @@ try {
     segments: [{ source_id: "src-001", start: 0.1, end: 1.0, text: "installed package contract caption" }],
   })}\n`);
   expect(runCliJson(cli, ["project", "explore", project, "--asr", "external"], packageRoot).ok === true, "installed CLI explore failed");
-  writeFileSync(join(project, "edit-plan.json"), `${JSON.stringify({ decisions: [] })}\n`);
+  expect(runCliJson(cli, ["project", "review", project], packageRoot).ok === true, "installed CLI review failed");
+
+  const proposalContract = runCliJson(cli, ["artifact", "contract", "production-proposal", "--json"], packageRoot).data;
+  expect(proposalContract.schema_version === "2.0", "installed CLI did not expose production proposal 2.0");
+  expect(proposalContract.schema_digest === capabilities.artifact_contracts["production-proposal"].schema_digest, "proposal schema digest is not exposed by capabilities");
+  expect(proposalContract.contract_digest === capabilities.artifact_contracts["production-proposal"].contract_digest, "proposal contract digest is not exposed by capabilities");
+  expect(proposalContract.example && proposalContract.template, "installed proposal authoring contract is incomplete");
+  const proposal = structuredClone(proposalContract.example);
+  proposal.recommended_option_id = "cleanup-only";
+  for (const option of proposal.options) {
+    option.cleanup.cut_candidate_ids = [];
+    option.edit_execution_plan.remove_segments = [];
+  }
+  writeFileSync(join(project, "production-proposal.json"), `${JSON.stringify(proposal)}\n`);
+  const proposed = runCliJson(cli, ["project", "proposal", project], packageRoot);
+  expect(proposed.ok === true, "installed CLI rejected its own production proposal contract example");
+  const selectedOption = proposal.recommended_option_id;
+  const selectionFingerprint = proposed.data.option_selection_fingerprints[selectedOption];
+  expect(typeof selectionFingerprint === "string", "proposal validation did not produce a selection fingerprint");
+  writeFileSync(join(project, "edit-plan.json"), `${JSON.stringify({
+    contract_version: "1.0",
+    confirmed_option_id: selectedOption,
+    proposal_selection_fingerprint: selectionFingerprint,
+    decisions: [],
+  })}\n`);
   expect(runCliJson(cli, ["project", "compile-edl", project], packageRoot).ok === true, "installed CLI portable EDL compilation failed");
 
   const bundle = join(root, "bundle");
@@ -86,6 +112,7 @@ try {
     delivery_digest: manifest.delivery_digest,
     renderer_resources_digest: manifest.renderer_resources_digest,
     official_skill_digest: manifest.official_skill_digest,
+    artifact_contracts_digest: manifest.artifact_contracts_digest,
     runtime_compatibility_digest: manifest.runtime_compatibility_digest,
     contract_digest: exported.data.contract_digest,
     inspection_accepted: true,
