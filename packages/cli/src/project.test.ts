@@ -9,7 +9,7 @@ import { expect, test } from "bun:test";
 import { parseAssetManifest, parseEnrichmentPlan, parseProjectMetadata, type ProductionProposalArtifact } from "./artifacts";
 import { fileBytesFingerprint, semanticJsonFingerprint } from "./artifact-lifecycle";
 import * as projectApi from "./project";
-import { buildEnrichmentStoryboard, commandExists, createProject, elementCatalogProject, enrichPlanProject, exploreProject, inspectProject, musicAcquireProject, musicCatalogProject, musicReviewProject, normalizeCloudflareWhisperResult, normalizeWhisperJson, proposalProject, renderProject, reviewProject, sourceFramesProject, validateSourceFrameByteLimits, visualAcquireProject, visualCatalogProject, visualReviewProject, visualSearchProject } from "./project";
+import { buildEnrichmentStoryboard, commandExists, compileEdlProject, createProject, elementCatalogProject, enrichPlanProject, exploreProject, inspectProject, musicAcquireProject, musicCatalogProject, musicReviewProject, normalizeCloudflareWhisperResult, normalizeWhisperJson, proposalProject, renderProject, reviewProject, sourceFramesProject, validateSourceFrameByteLimits, visualAcquireProject, visualCatalogProject, visualReviewProject, visualSearchProject } from "./project";
 import { projectStatus } from "./project-status";
 import { productionProposalExample } from "./artifact-contracts";
 import { confirmProposalAndWriteEditPlan } from "./test-fixtures";
@@ -569,12 +569,14 @@ test("validates and renders a production proposal without creating execution art
   proposal.options[0]!.id = "balanced";
   proposal.options[0]!.label = "克制增强";
   proposal.options[0]!.cleanup.cut_candidate_ids = ["c-002-filler"];
+  proposal.options[0]!.edit_execution_plan.remove_segments = [{ candidate_id: "c-002-filler", reason: "remove filler" }];
   proposal.options[0]!.images = { needed: true, reason: "one abstract idea is not visible in source", missing_assets: ["concept-image"] };
   proposal.options[0]!.music = { source: "minimax", mood: "quiet tech bed", ducking: true, notes: ["acquire only after OK"] };
   proposal.options[0]!.sfx = { enabled: true, usage: "subtle click accents", restraint: "low volume" };
   proposal.options[1]!.id = "cleanup-only";
   proposal.options[1]!.label = "只清理";
   proposal.options[1]!.cleanup.cut_candidate_ids = ["c-002-filler"];
+  proposal.options[1]!.edit_execution_plan.remove_segments = [{ candidate_id: "c-002-filler", reason: "remove filler" }];
   writeFileSync(join(project, "production-proposal.json"), JSON.stringify(proposal));
 
   const proposed = proposalProject(project);
@@ -600,13 +602,85 @@ test("validates and renders a production proposal without creating execution art
   expect(Boolean(initialProposalLifecycle.artifacts["proposal-selection:balanced"])).toBe(true);
   expect(Boolean(initialProposalLifecycle.artifacts["proposal-selection:cleanup-only"])).toBe(true);
   proposal.options[0]!.cleanup.cut_candidate_ids = ["missing-candidate", "another-missing-candidate"];
+  proposal.options[0]!.edit_execution_plan.remove_segments = [
+    { candidate_id: "missing-candidate", reason: "invalid fixture" },
+    { candidate_id: "another-missing-candidate", reason: "invalid fixture" },
+  ];
   writeFileSync(join(project, "production-proposal.json"), JSON.stringify(proposal));
   const invalid = proposalProject(project);
   expect(invalid.ok).toBe(false);
   if (invalid.ok) throw new Error("expected invalid proposal");
   expect(invalid.error.code).toBe("ARTIFACT_VALIDATION_FAILED");
-  expect(invalid.error.issues?.length).toBe(2);
-  expect(invalid.error.issues?.[0]?.message).toContain("unknown cleanup candidate_id");
+  expect((invalid.error.issues?.length ?? 0) >= 2).toBe(true);
+  expect(invalid.error.issues?.some((issue) => issue.message.includes("unknown cleanup candidate_id"))).toBe(true);
+});
+
+test("compile-edl rejects edit plans that do not execute selected proposal cleanup cuts", async () => {
+  if (!commandExists("ffmpeg")) return;
+  const dir = mkdtempSync(join(tmpdir(), "koubo-clip-proposal-conformance-"));
+  const source = join(dir, "raw.mp4");
+  const project = join(dir, "project");
+  makeSampleVideo(source, 4);
+  createProject([source], { projectPath: project });
+  writeFileSync(join(project, "transcript.json"), JSON.stringify({
+    timing_granularity: "segment",
+    segments: [
+      { source_id: "src-001", start: 0, end: 1, text: "hello" },
+      { source_id: "src-001", start: 1.2, end: 2.2, text: "um" },
+      { source_id: "src-001", start: 2.4, end: 3.6, text: "bye" },
+    ],
+  }));
+  await exploreProject(project, { asr: "external" });
+  reviewProject(project);
+  const proposal = structuredClone(productionProposalExample) as ProductionProposalArtifact;
+  proposal.recommended_option_id = "cleanup";
+  proposal.options[0]!.id = "cleanup";
+  proposal.options[0]!.cleanup.cut_candidate_ids = ["c-002-filler"];
+  proposal.options[0]!.edit_execution_plan.remove_segments = [{ candidate_id: "c-002-filler", reason: "remove filler" }];
+  proposal.options[1]!.id = "alternative";
+  proposal.options[1]!.cleanup.cut_candidate_ids = [];
+  proposal.options[1]!.edit_execution_plan.remove_segments = [];
+  writeFileSync(join(project, "production-proposal.json"), JSON.stringify(proposal));
+  const proposed = proposalProject(project);
+  expect(proposed.ok).toBe(true);
+  if (!proposed.ok) throw new Error(proposed.error.message);
+
+  writeFileSync(join(project, "edit-plan.json"), JSON.stringify({
+    contract_version: "1.0",
+    confirmed_option_id: "cleanup",
+    proposal_selection_fingerprint: proposed.data.option_selection_fingerprints.cleanup,
+    decisions: [],
+  }));
+  const missing = compileEdlProject(project);
+  expect(missing.ok).toBe(false);
+  if (missing.ok) throw new Error("expected conformance failure");
+  expect(missing.error.code).toBe("PROPOSAL_EXECUTION_MISMATCH");
+  expect(missing.error.message).toContain("c-002-filler");
+
+  writeFileSync(join(project, "edit-plan.json"), JSON.stringify({
+    contract_version: "1.0",
+    confirmed_option_id: "cleanup",
+    proposal_selection_fingerprint: proposed.data.option_selection_fingerprints.cleanup,
+    decisions: [
+      { action: "cut", candidate_id: "c-002-filler" },
+      { action: "keep", candidate_id: "c-002-filler" },
+    ],
+  }));
+  const conflicting = compileEdlProject(project);
+  expect(conflicting.ok).toBe(false);
+  if (conflicting.ok) throw new Error("expected cut/keep conflict");
+  expect(conflicting.error.code).toBe("PROPOSAL_EXECUTION_MISMATCH");
+  expect(conflicting.error.message).toContain("both cut and keep");
+
+  writeFileSync(join(project, "edit-plan.json"), JSON.stringify({
+    contract_version: "1.0",
+    confirmed_option_id: "cleanup",
+    proposal_selection_fingerprint: proposed.data.option_selection_fingerprints.cleanup,
+    decisions: [{ action: "cut", candidate_id: "c-002-filler" }],
+  }));
+  const compiled = compileEdlProject(project);
+  expect(compiled.ok).toBe(true);
+  if (!compiled.ok) throw new Error(compiled.error.message);
 });
 
 test("visual acquisition accepts a confirmed local handoff candidate", async () => {
@@ -1263,13 +1337,9 @@ test("honors explicit source order", async () => {
   expect(edl.entries.map((entry: { source_id: string }) => entry.source_id)).toEqual(["src-002", "src-001"]);
 });
 
-test("rejects edit plans that reference unknown candidates", async () => {
+test("rejects unreviewed cleanup candidates before edit-plan execution", async () => {
   const project = await projectWithAnalysis("segment", undefined);
-  confirmProposalAndWriteEditPlan(project, [{ action: "cut", candidate_id: "missing" }]);
-  const rendered = renderProject(project);
-  expect(rendered.ok).toBe(false);
-  if (rendered.ok) throw new Error("expected unknown candidate failure");
-  expect(rendered.error.message).toContain("unknown candidate_id");
+  expect(() => confirmProposalAndWriteEditPlan(project, [{ action: "cut", candidate_id: "missing" }])).toThrow("unknown cleanup candidate_id");
 });
 
 test("rejects candidate ranges outside source duration", () => {
@@ -1338,6 +1408,7 @@ test("rejects overlapping selected cut candidates", () => {
 test("validates platform asset_usage_plan with prepared visual and audio assets", () => {
   if (!commandExists("ffmpeg")) return;
   const { project } = readyProject(2, "platform");
+  confirmSelectedProposalMedia(project, { visual: true, music: true, sfx: true });
   const assetDir = join(project, "assets", "koubo-clip");
   mkdirSync(assetDir, { recursive: true });
   makeMusic(join(assetDir, "bgm.wav"), 2);
@@ -1363,8 +1434,8 @@ test("validates platform asset_usage_plan with prepared visual and audio assets"
   );
 
   const enriched = enrichPlanProject(project, { providerMode: "platform" });
-  expect(enriched.ok).toBe(true);
   if (!enriched.ok) throw new Error(enriched.error.message);
+  expect(enriched.ok).toBe(true);
   expect(enriched.data.asset_summary.map((asset) => asset.path)).toEqual([
     "assets/koubo-clip/bgm.wav",
     "assets/koubo-clip/sfx-click.wav",
@@ -1379,6 +1450,7 @@ test("validates platform asset_usage_plan with prepared visual and audio assets"
 test("renders platform asset_usage_plan audio assets and reports audio_usage", () => {
   if (!commandExists("ffmpeg")) return;
   const { project } = readyProject(2, "platform");
+  confirmSelectedProposalMedia(project, { music: true, sfx: true });
   const assetDir = join(project, "assets", "koubo-clip");
   mkdirSync(assetDir, { recursive: true });
   makeMusic(join(assetDir, "bgm.wav"), 2);
@@ -1469,6 +1541,7 @@ test("keeps pure clipping behavior without asset_usage_plan", () => {
 test("acquires local music and reports provenance through inspect", async () => {
   if (!commandExists("ffmpeg")) return;
   const { project } = readyProject(2);
+  confirmSelectedProposalMedia(project, { music: true });
   makeMusic(join(project, "source", "bed.wav"), 2);
   const catalog = musicCatalogProject(project);
   expect(catalog.ok).toBe(true);
@@ -2137,6 +2210,39 @@ test("completes focus flow from candidates to proposed elements and enrich plan 
   expect(failedManifest.artifacts["focus-grounding"]?.fingerprint).toBe(successfulGroundingFingerprint);
 });
 
+test("enrich-plan rejects hand-written coordinate elements without current focus grounding", () => {
+  if (!commandExists("ffmpeg")) return;
+  const { project } = readyProject(2);
+  writeFileSync(
+    join(project, "enrichment-plan.json"),
+    JSON.stringify({
+      version: "2.0",
+      profile: { source_mode: "screen_recording", aspect_ratio: "source", caption_identity: "anchor", layout: "overlay", style: "minimal", frame: "clean" },
+      elements: [
+        { id: "captions-anchor", source: "agent", element_id: "anchor", element_type: "caption_identity", start: 0, end: 1.2, caption_identity: "anchor", reason: "captions" },
+        {
+          id: "fake-focus",
+          source: "agent",
+          element_id: "cinematic-zoom",
+          element_type: "registry_block",
+          start: 0.2,
+          end: 1.2,
+          target_rect: { x: 0.4, y: 0.3, width: 0.2, height: 0.1 },
+          anchor_point: { x: 0.5, y: 0.35 },
+          params: { title: "Fake target", coordinate_source_frame: ".focus/frames/fake.jpg" },
+          reason: "pretend grounding exists",
+        },
+      ],
+      audio: { music: [], sfx: [] },
+    }),
+  );
+
+  const enriched = enrichPlanProject(project);
+  expect(enriched.ok).toBe(false);
+  if (enriched.ok) throw new Error("expected focus grounding failure");
+  expect(enriched.error.code).toBe("FOCUS_GROUNDING_REQUIRED");
+});
+
 test("artifact lifecycle: focus consumers rebuild an EDL after the edit plan changes", () => {
   if (!commandExists("ffmpeg")) return;
   const focusCandidatesProject = requiredProjectCommand("focusCandidatesProject");
@@ -2165,9 +2271,7 @@ test("artifact lifecycle: focus consumers rebuild an EDL after the edit plan cha
   if (!firstRender.ok) throw new Error(firstRender.error.message);
   const edlPath = join(project, "edl.json");
   const staleEdl = readFileSync(edlPath, "utf8");
-  const editPlanPath = join(project, "edit-plan.json");
-  const editPlan = JSON.parse(readFileSync(editPlanPath, "utf8")) as Record<string, unknown>;
-  writeFileSync(editPlanPath, JSON.stringify({ ...editPlan, decisions: [{ action: "cut", candidate_id: "c-001-recut" }] }));
+  confirmProposalAndWriteEditPlan(project, [{ action: "cut", candidate_id: "c-001-recut" }]);
   writeFileSync(
     join(project, "focus-candidates.json"),
     JSON.stringify({ version: "1.0", source_mode: "screen_recording", presentation_intent: "internal_tutorial", candidates: [] }),
@@ -2262,6 +2366,7 @@ test("artifact lifecycle: inspect rerun removes retired inspection-frame records
 test("artifact lifecycle: standalone asset usage is consumed, immutable in lineage, idempotent, and renderable", () => {
   if (!commandExists("ffmpeg")) return;
   const { project } = readyProject(2, "platform");
+  confirmSelectedProposalMedia(project, { music: true });
   const assetDir = join(project, "assets", "koubo-clip");
   mkdirSync(assetDir, { recursive: true });
   makeMusic(join(assetDir, "bed.wav"), 2);
@@ -2455,6 +2560,33 @@ function readyProject(duration = 2, providerMode: "standalone" | "platform" = "s
   exploreProject(project, { asr: "external" });
   confirmProposalAndWriteEditPlan(project);
   return { project, source };
+}
+
+function confirmSelectedProposalMedia(project: string, needs: { visual?: boolean; music?: boolean; sfx?: boolean }): void {
+  const proposal = JSON.parse(readFileSync(join(project, "production-proposal.json"), "utf8")) as ProductionProposalArtifact;
+  const option = proposal.options.find((item) => item.id === proposal.recommended_option_id);
+  if (!option) throw new Error("fixture proposal is missing recommended option");
+  if (needs.visual) {
+    option.images = { needed: true, reason: "confirmed visual handoff", missing_assets: [] };
+    option.asset_requirements.visual_asset_slots = [{ slot_id: "visual-1", kind: "visual_asset", purpose: "confirmed visual handoff", required: true }];
+  }
+  if (needs.music) {
+    option.music = { source: "local", ducking: true, notes: ["confirmed music handoff"] };
+    option.asset_requirements.music_slots = [{ slot_id: "music-1", kind: "music", purpose: "confirmed music handoff", required: true }];
+  }
+  if (needs.sfx) {
+    option.sfx = { enabled: true, usage: "confirmed SFX handoff", restraint: "subtle" };
+    option.asset_requirements.sfx_slots = [{ slot_id: "sfx-1", kind: "sfx", purpose: "confirmed SFX handoff", required: true }];
+  }
+  writeFileSync(join(project, "production-proposal.json"), JSON.stringify(proposal));
+  const proposed = proposalProject(project);
+  if (!proposed.ok) throw new Error(proposed.error.message);
+  const editPlanPath = join(project, "edit-plan.json");
+  const editPlan = JSON.parse(readFileSync(editPlanPath, "utf8")) as Record<string, unknown>;
+  writeFileSync(editPlanPath, JSON.stringify({
+    ...editPlan,
+    proposal_selection_fingerprint: proposed.data.option_selection_fingerprints[proposal.recommended_option_id],
+  }));
 }
 
 function makeSampleVideo(path: string, duration = 3, size = "160x90") {

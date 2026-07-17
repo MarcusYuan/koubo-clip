@@ -391,7 +391,7 @@ export const enrichmentPlanSchema: JsonSchema = {
       style: { enum: ["whiteboard", "audit", "swiss", "terminal", "xhs", "editorial", "minimal"] }, frame: { enum: ["clean", "hairline", "polaroid"] },
     }),
     elements: { type: "array", items: closed(["id", "source", "element_id", "element_type", "start", "end", "reason"], {
-      id, source: { type: "string", minLength: 1 }, element_id: id,
+      id, source: { type: "string", minLength: 1 }, element_id: text,
       element_type: elementType,
       start: number, end: number, reason: { type: "string", minLength: 1 }, zone: { enum: ["full_frame", "upper_third", "lower_third", "left_panel", "right_panel", "center"] },
       target_rect: rect, anchor_point: point, params, asset_id: id, caption_identity: { const: "anchor" },
@@ -472,7 +472,7 @@ const focusCandidateSchema = closed(["id", "start", "end", "transcript_quote", "
   semantic_intent: { enum: ["orient_viewer", "guide_attention", "explain_sequence", "summarize_payoff", "pacing_relief"] },
   business_role: text, viewer_job: text, visual_gap: text,
   recommended_treatment: { enum: ["source_ui_component", "generated_asset", "text_or_caption", "sfx_or_music", "none"] },
-  element_id: id, element_type: elementType, requires_grounding: { type: "boolean" }, asset_id: id, sfx_id: id, reason: text, params,
+  element_id: text, element_type: elementType, requires_grounding: { type: "boolean" }, asset_id: id, sfx_id: id, reason: text, params,
 });
 const focusGroundingItemSchema = closed(["candidate_id", "frame_id", "confidence", "evidence_note"], {
   candidate_id: id, frame_id: id, confidence: { type: "number", minimum: 0, maximum: 1 }, evidence_note: text,
@@ -591,12 +591,39 @@ function addProposalSemanticIssues(value: unknown, issues: ArtifactValidationIss
     const cleanup = isRecord(option.cleanup) && Array.isArray(option.cleanup.cut_candidate_ids) ? option.cleanup.cut_candidate_ids : [];
     addDuplicateIssues(cleanup, `/options/${optionIndex}/cleanup/cut_candidate_ids`, "value", issues);
     const execution = isRecord(option.edit_execution_plan) ? option.edit_execution_plan : {};
+    addProposalRemovalIntentIssues(cleanup, execution.remove_segments, optionIndex, issues);
     addRangeIssues(execution.keep_segments, `/options/${optionIndex}/edit_execution_plan/keep_segments`, issues);
     addRangeIssues(execution.text_overlays, `/options/${optionIndex}/edit_execution_plan/text_overlays`, issues);
     const requirements = isRecord(option.asset_requirements) ? option.asset_requirements : {};
     for (const key of ["visual_asset_slots", "music_slots", "sfx_slots", "image_slots"] as const) {
       const slots = Array.isArray(requirements[key]) ? requirements[key].filter(isRecord) : [];
       addDuplicateIssues(slots.map((slot) => slot.slot_id), `/options/${optionIndex}/asset_requirements/${key}`, "slot_id", issues);
+    }
+  });
+}
+
+function addProposalRemovalIntentIssues(cleanupIds: unknown[], removeSegments: unknown, optionIndex: number, issues: ArtifactValidationIssue[]): void {
+  if (!Array.isArray(removeSegments)) return;
+  const cleanup = new Set(cleanupIds.filter((value): value is string => typeof value === "string"));
+  const removals = removeSegments.filter(isRecord);
+  const removalIds = new Set(removals.map((segment) => segment.candidate_id).filter((value): value is string => typeof value === "string"));
+  cleanupIds.forEach((candidateId, index) => {
+    if (typeof candidateId === "string" && !removalIds.has(candidateId)) {
+      issues.push({
+        path: `/options/${optionIndex}/cleanup/cut_candidate_ids/${index}`,
+        keyword: "reference",
+        message: "must match edit_execution_plan.remove_segments candidate_id",
+      });
+    }
+  });
+  removals.forEach((segment, index) => {
+    const candidateId = segment.candidate_id;
+    if (typeof candidateId === "string" && !cleanup.has(candidateId)) {
+      issues.push({
+        path: `/options/${optionIndex}/edit_execution_plan/remove_segments/${index}/candidate_id`,
+        keyword: "reference",
+        message: "must match cleanup.cut_candidate_ids",
+      });
     }
   });
 }

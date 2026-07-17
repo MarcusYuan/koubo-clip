@@ -1004,6 +1004,7 @@ export function parseProjectMetadata(value: unknown): ProjectMetadataArtifact {
 }
 
 export function parseSourcesManifest(value: unknown): SourcesManifest {
+  assertArtifactContract("source-manifest", value);
   const obj = strictRecord(value, "sources manifest", ["contract_version", "sources"]);
   const contractVersion = literalVersion(obj.contract_version, "sources contract_version", "2.0");
   const sources = array(obj.sources, "sources").map((item, index): SourceAsset => {
@@ -1072,6 +1073,7 @@ export function parseSourceMaterialization(value: unknown, manifest?: SourcesMan
 }
 
 export function parseTranscript(value: unknown, manifest?: SourcesManifest): TranscriptArtifact {
+  assertArtifactContract("transcript", value);
   const obj = record(value, "transcript");
   const known = sourceIds(manifest);
   return {
@@ -1106,6 +1108,7 @@ export function parseReviewPackage(value: unknown, manifest?: SourcesManifest): 
 }
 
 export function parseEditPlan(value: unknown, manifest?: SourcesManifest): EditPlanArtifact {
+  assertArtifactContract("edit-plan", value);
   const known = sourceIds(manifest);
   const obj = strictRecord(value, "edit plan", ["contract_version", "confirmed_option_id", "proposal_selection_fingerprint", "decisions", "source_order"]);
   const contract_version = projectContractVersion(obj.contract_version, "contract_version");
@@ -1140,6 +1143,7 @@ export function parseEditPlan(value: unknown, manifest?: SourcesManifest): EditP
 }
 
 export function parseAssetUsagePlan(value: unknown): AssetUsagePlanArtifact {
+  assertArtifactContract("asset-usage-plan", value);
   const obj = record(value, "asset usage plan");
   return {
     music: array(obj.music ?? [], "asset_usage_plan.music").map((item, index) => assetUsageMusic(item, `asset_usage_plan.music[${index}]`)),
@@ -1179,6 +1183,7 @@ export function parseEdl(value: unknown, manifest?: SourcesManifest): EdlArtifac
 }
 
 export function parseEnrichmentPlan(value: unknown): EnrichmentPlanArtifact {
+  assertArtifactContract("enrichment-plan", value);
   const obj = strictRecord(value, "enrichment plan", ["version", "profile", "elements", "audio"]);
   const version = literalVersion(obj.version, "enrichment plan version", "2.0");
   const profile = enrichmentProfile(obj.profile, "profile");
@@ -1423,6 +1428,7 @@ export function parseMusicReview(value: unknown): MusicReviewArtifact {
 }
 
 export function parseMusicRequest(value: unknown): MusicRequestArtifact {
+  assertArtifactContract("music-request", value);
   const obj = record(value, "music request");
   const version = string(obj.version, "version");
   if (version !== "1.0") throw new Error('music request version must be "1.0"');
@@ -1449,6 +1455,7 @@ export function parseMusicRequest(value: unknown): MusicRequestArtifact {
 }
 
 export function parseVisualRequest(value: unknown): VisualRequestArtifact {
+  assertArtifactContract("visual-request", value);
   const obj = record(value, "visual request");
   const version = string(obj.version, "version");
   if (version !== "1.0") throw new Error('visual request version must be "1.0"');
@@ -1516,6 +1523,7 @@ export function parseSourceFrameRequest(value: unknown): SourceFrameRequestArtif
 }
 
 export function parseFocusCandidates(value: unknown): FocusCandidatesArtifact {
+  assertArtifactContract("focus-candidates", value);
   const obj = record(value, "focus candidates");
   const version = string(obj.version, "version");
   if (version !== "1.0") throw new Error('focus candidates version must be "1.0"');
@@ -1539,6 +1547,7 @@ export function parseFocusFrames(value: unknown): FocusFramesArtifact {
 }
 
 export function parseFocusGrounding(value: unknown): FocusGroundingArtifact {
+  assertArtifactContract("focus-grounding", value);
   const obj = record(value, "focus grounding");
   const version = string(obj.version, "version");
   if (version !== "1.0") throw new Error('focus grounding version must be "1.0"');

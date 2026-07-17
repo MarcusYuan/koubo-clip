@@ -279,11 +279,11 @@ export function proposalSelectionProjection(proposal: ProductionProposalArtifact
   if (!option) throw new Error(`proposal option not found: ${optionId}`);
   return {
     proposal_contract_version: proposal.version,
-    option_id: option.id,
+    source_mode: proposal.source_mode,
+    presentation_intent: proposal.presentation_intent,
     goal_summary: proposal.goal_summary,
-    business_direction: option.business_direction,
-    edit_execution_plan: option.edit_execution_plan,
-    asset_requirements: option.asset_requirements,
+    material_summary: proposal.material_summary,
+    option,
   };
 }
 

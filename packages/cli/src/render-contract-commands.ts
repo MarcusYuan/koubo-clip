@@ -5,9 +5,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, wr
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { cliVersion, resolveHyperframesRoot } from "./bundle-paths";
 import {
-  parseAssetManifest,
   parseEdl,
-  parseEnrichmentPlan,
   parseSourcesManifest,
   parseTranscript,
   projectArtifacts,
@@ -47,6 +45,9 @@ import {
   probeStrictOutputTiming,
   probePortableSourceIdentity,
   resolveRenderContractStoryboard,
+  resolveRenderOutputSpec,
+  validateEnrichmentPlan,
+  validateProjectAuthoringConformance,
   type EnrichmentStoryboard,
 } from "./project";
 import { computeRendererResourcesDigest } from "./delivery-identity";
@@ -85,12 +86,14 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
     const edl = parseEdl(readJson(join(projectPath, projectArtifacts.edl)), rawSources);
     if (edl.contract_version !== "2.0") throw coded("CONTRACT_INVALID", "render contract export requires portable EDL contract_version 2.0");
     const transcript = parseTranscript(readJson(join(projectPath, projectArtifacts.transcriptJson)), rawSources);
-    const cues = compileCaptionCues(transcript.segments, edl);
 
     const enrichmentPath = join(projectPath, projectArtifacts.enrichmentPlan);
     const assetManifestPath = join(projectPath, projectArtifacts.assetManifest);
-    const plan = existsSync(enrichmentPath) ? parseEnrichmentPlan(readJson(enrichmentPath)) : undefined;
-    const authoringAssets = plan && existsSync(assetManifestPath) ? parseAssetManifest(readJson(assetManifestPath)) : { assets: [] };
+    const enrichment = existsSync(enrichmentPath) ? validateEnrichmentPlan(projectPath, edl) : undefined;
+    const plan = enrichment?.plan;
+    const selectedOption = validateProjectAuthoringConformance(projectPath, plan);
+    const cues = selectedOption?.subtitles.enabled === false ? [] : compileCaptionCues(transcript.segments, edl);
+    const authoringAssets = enrichment?.assets ?? { assets: [] };
     if (plan && !existsSync(assetManifestPath) && referencedAssetIds(plan).size > 0) throw coded("CONTRACT_INVALID", "enrichment plan references assets but asset-manifest.json is missing");
 
     staging = `${outputDir}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -108,7 +111,7 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
     const frameSchedule = compileOutputFrameSchedule(timelineEntries, fps);
     const firstEntry = timelineEntries[0]!;
     const firstSource = rawSources.sources.find((source) => source.source_id === firstEntry.source_id)!;
-    const output = resolveOutputSpec(plan?.profile.aspect_ratio ?? "source", firstSource.identity!.video.display_width, firstSource.identity!.video.display_height);
+    const output = resolveRenderOutputSpec(plan?.profile.aspect_ratio ?? "source", firstSource.identity!.video.display_width, firstSource.identity!.video.display_height);
     const duration = frameSchedule.expected_duration_seconds;
     const storyboard = plan ? resolveRenderContractStoryboard({
       projectPath,
@@ -140,7 +143,7 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
       })),
       timeline: { entries: timelineEntries },
       captions: { cues },
-      composition: json({ mode: plan ? "resolved_storyboard" : "clean_captions", ...(plan ? { enrichment_plan: plan, storyboard } : {}) }),
+      composition: json({ mode: plan ? "resolved_storyboard" : cues.length > 0 ? "clean_captions" : "clean", ...(plan ? { enrichment_plan: plan, storyboard } : {}) }),
       assets: contractAssets,
       audio: json(plan?.audio ?? { music: [], sfx: [] }),
       output: json({ container: "mp4", width: output.width, height: output.height, fps, video_codec: "h264", pixel_format: "yuv420p", audio_codec: "aac", audio_sample_rate: 48000, audio_channels: 2, canonical_filename: "koubo-final.mp4" }),
@@ -447,13 +450,6 @@ function compileCaptionCues(segments: Array<{ source_id: string; start: number; 
     cursor += entry.end - entry.start;
   }
   return cues;
-}
-
-function resolveOutputSpec(aspect: string, sourceWidth: number, sourceHeight: number): { width: number; height: number } {
-  if (aspect === "16:9") return { width: 1920, height: 1080 };
-  if (aspect === "9:16") return { width: 1080, height: 1920 };
-  if (aspect === "4:5") return { width: 1080, height: 1350 };
-  return { width: sourceWidth, height: sourceHeight };
 }
 
 function assertSourceIdentity(expected: RenderSourceIdentityV1 | ReturnType<typeof probePortableSourceIdentity>, actual: ReturnType<typeof probePortableSourceIdentity>): void {

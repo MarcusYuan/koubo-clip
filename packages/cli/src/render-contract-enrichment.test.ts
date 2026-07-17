@@ -4,8 +4,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bindRenderContract, exportRenderContract, inspectBoundContract, renderBoundContract, verifyRenderContractBundle } from "./render-contract-commands";
-import { createProject, enrichPlanProject, exploreProject } from "./project";
+import { createProject, enrichPlanProject, exploreProject, proposalProject } from "./project";
 import { confirmProposalAndWriteEditPlan } from "./test-fixtures";
+import type { ProductionProposalArtifact } from "./artifacts";
 
 const profile = {
   source_mode: "talking_head_avatar",
@@ -31,9 +32,7 @@ test("enrichment elements export through one JSON-safe render-contract boundary"
         reason: "emphasize the spoken point",
         params: { text: "Core point" },
       })),
-      { id: "anchor", source: "agent", element_id: "shimmer-sweep", element_type: "registry_component", start: 0.1, end: 0.6, reason: "anchor the effect", anchor_point: { x: 0.5, y: 0.5 } },
       { id: "lower-third", source: "agent", element_id: "lt-clean-bar", element_type: "registry_block", start: 0.1, end: 0.6, reason: "show the topic", params: { title: "Koubo Clip" } },
-      { id: "target", source: "agent", element_id: "animation-rule:coordinate-target-zoom", element_type: "animation_rule", start: 0.1, end: 0.6, reason: "focus the target", target_rect: { x: 0.1, y: 0.1, width: 0.4, height: 0.3 } },
       { id: "keyword", source: "agent", element_id: "animation-rule:asr-keyword-glow", element_type: "animation_rule", start: 0.1, end: 0.6, reason: "highlight the keyword", params: { text: "Core point" } },
       { id: "identity", source: "agent", element_id: "anchor", element_type: "caption_identity", start: 0.1, end: 0.6, reason: "keep captions readable", caption_identity: "anchor" },
     ],
@@ -52,19 +51,22 @@ test("enrichment elements export through one JSON-safe render-contract boundary"
   for (const element of plan.elements.slice(0, 3)) {
     for (const absent of ["asset_id", "anchor_point", "target_rect"]) expect(Object.hasOwn(element, absent)).toBe(false);
   }
-  expect(plan.elements[3]?.anchor_point).toEqual({ x: 0.5, y: 0.5 });
-  expect(plan.elements[5]?.target_rect).toEqual({ height: 0.3, width: 0.4, x: 0.1, y: 0.1 });
+  expect(plan.elements[3]?.params).toEqual({ title: "Koubo Clip" });
 });
 
 test("built-in and external SFX keep only their selected source and export deterministically", async () => {
   if (!hasFfmpeg()) return;
   const { root, project } = await projectFixture("sfx");
+  confirmSelectedProposalMedia(project, { sfx: true });
   const assetPath = join(project, "assets", "external.wav");
   mkdirSync(join(project, "assets"), { recursive: true });
   makeAudio(assetPath, 0.3, 880);
   writeFileSync(join(project, "asset-manifest.json"), JSON.stringify({ assets: [{ id: "external-sfx", path: "assets/external.wav", type: "sfx", source: "user" }] }));
   writePlan(project, {
-    elements: [{ id: "caption", source: "agent", element_id: "caption-editorial-emphasis", element_type: "registry_component", start: 0.1, end: 0.6, reason: "emphasize", params: { text: "Core point" } }],
+    elements: [
+      { id: "identity", source: "agent", element_id: "anchor", element_type: "caption_identity", start: 0.1, end: 0.6, reason: "keep captions readable", caption_identity: "anchor" },
+      { id: "caption", source: "agent", element_id: "caption-editorial-emphasis", element_type: "registry_component", start: 0.1, end: 0.6, reason: "emphasize", params: { text: "Core point" } },
+    ],
     audio: { music: [], sfx: [
       { id: "built-in", sfx_id: "click", start: 0.2, end: 0.3, volume: 0.2, fade_seconds: 0, reason: "sync click" },
       { id: "external", asset_id: "external-sfx", start: 0.4, end: 0.5, volume: 0.2, fade_seconds: 0, reason: "custom click" },
@@ -112,9 +114,33 @@ test("empty enrichment exports and invalid enrichment remains fail-closed", asyn
   }
 });
 
+test("render-contract export rejects unfulfilled selected enrichment requirements", async () => {
+  if (!hasFfmpeg()) return;
+  const { root, project } = await projectFixture("missing-enrichment");
+  confirmSelectedProposalMedia(project, { visual: true });
+  const exported = exportRenderContract(project, join(root, "bundle"));
+  expect(exported.ok).toBe(false);
+  if (exported.ok) throw new Error("expected missing enrichment plan rejection");
+  expect(exported.error.code).toBe("PROPOSAL_EXECUTION_MISMATCH");
+  expect(exported.error.message).toContain("requires visual/image assets");
+});
+
+test("render-contract export honors selected proposal subtitles disabled", async () => {
+  if (!hasFfmpeg()) return;
+  const { root, project } = await projectFixture("subtitles-off");
+  confirmSelectedProposalMedia(project, { subtitles: false });
+  const bundle = join(root, "bundle");
+  const exported = exportRenderContract(project, bundle);
+  if (!exported.ok) throw new Error(`${exported.error.code}: ${exported.error.message}`);
+  const contract = readContract(bundle);
+  expect(contract.payload.captions.cues).toEqual([]);
+  expect(contract.payload.composition.mode).toBe("clean");
+});
+
 test("combined enrichment render contract stages only referenced assets and renders strictly", async () => {
   if (!hasFfmpeg()) return;
   const { root, project, source } = await projectFixture("combined");
+  confirmSelectedProposalMedia(project, { visual: true, music: true, sfx: true });
   mkdirSync(join(project, "assets"), { recursive: true });
   makeImage(join(project, "assets", "hero.png"));
   makeAudio(join(project, "assets", "music.wav"), 1, 330);
@@ -182,6 +208,36 @@ async function projectFixture(name: string): Promise<{ root: string; project: st
 
 function writePlan(project: string, plan: { elements: unknown[]; audio: { music: unknown[]; sfx: unknown[] } }): void {
   writeFileSync(join(project, "enrichment-plan.json"), JSON.stringify({ version: "2.0", profile, ...plan }));
+}
+
+function confirmSelectedProposalMedia(project: string, needs: { visual?: boolean; music?: boolean; sfx?: boolean; subtitles?: boolean }): void {
+  const proposal = JSON.parse(readFileSync(join(project, "production-proposal.json"), "utf8")) as ProductionProposalArtifact;
+  const option = proposal.options.find((item) => item.id === proposal.recommended_option_id);
+  if (!option) throw new Error("fixture proposal is missing recommended option");
+  if (needs.subtitles !== undefined) {
+    option.subtitles = { ...option.subtitles, enabled: needs.subtitles };
+  }
+  if (needs.visual) {
+    option.images = { needed: true, reason: "confirmed visual handoff", missing_assets: [] };
+    option.asset_requirements.visual_asset_slots = [{ slot_id: "visual-1", kind: "visual_asset", purpose: "confirmed visual handoff", required: true }];
+  }
+  if (needs.music) {
+    option.music = { source: "local", ducking: true, notes: ["confirmed music handoff"] };
+    option.asset_requirements.music_slots = [{ slot_id: "music-1", kind: "music", purpose: "confirmed music handoff", required: true }];
+  }
+  if (needs.sfx) {
+    option.sfx = { enabled: true, usage: "confirmed SFX handoff", restraint: "subtle" };
+    option.asset_requirements.sfx_slots = [{ slot_id: "sfx-1", kind: "sfx", purpose: "confirmed SFX handoff", required: true }];
+  }
+  writeFileSync(join(project, "production-proposal.json"), JSON.stringify(proposal));
+  const proposed = proposalProject(project);
+  if (!proposed.ok) throw new Error(proposed.error.message);
+  const editPlanPath = join(project, "edit-plan.json");
+  const editPlan = JSON.parse(readFileSync(editPlanPath, "utf8")) as Record<string, unknown>;
+  writeFileSync(editPlanPath, JSON.stringify({
+    ...editPlan,
+    proposal_selection_fingerprint: proposed.data.option_selection_fingerprints[proposal.recommended_option_id],
+  }));
 }
 
 function readContract(bundle: string): any {

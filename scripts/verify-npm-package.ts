@@ -49,8 +49,11 @@ try {
   requireCommand("ffprobe");
   const source = join(root, "raw.mp4");
   makeVideo(source);
+  const identityProject = join(root, "identity-project");
+  expect(runCliJson(cli, ["project", "create", source, "--project", identityProject], packageRoot).ok === true, "installed CLI could not derive a portable source identity");
   const project = join(root, "project");
-  expect(runCliJson(cli, ["project", "create", source, "--project", project], packageRoot).ok === true, "installed CLI could not create a project");
+  expect(runCliJson(cli, ["project", "create", "--source-manifest", join(identityProject, "sources.json"), "--project", project, "--provider-mode", "platform"], packageRoot).ok === true, "installed CLI could not create a detached platform project");
+  expect(!existsSync(join(project, "source-materialization.json")), "detached authoring project unexpectedly materialized source bytes");
   writeFileSync(join(project, "transcript.json"), `${JSON.stringify({
     timing_granularity: "segment",
     segments: [{ source_id: "src-001", start: 0.1, end: 1.0, text: "installed package contract caption" }],
@@ -69,6 +72,10 @@ try {
     option.cleanup.cut_candidate_ids = [];
     option.edit_execution_plan.remove_segments = [];
   }
+  const confirmedOption = proposal.options.find((option: Json) => option.id === proposal.recommended_option_id);
+  expect(Boolean(confirmedOption), "proposal example is missing its recommended option");
+  confirmedOption.sfx = { enabled: true, usage: "One restrained confirmation click.", restraint: "low volume, no speech masking" };
+  confirmedOption.asset_requirements.sfx_slots = [{ slot_id: "sfx-confirmation", kind: "sfx", purpose: "Confirm the selected action.", required: true }];
   writeFileSync(join(project, "production-proposal.json"), `${JSON.stringify(proposal)}\n`);
   const proposed = runCliJson(cli, ["project", "proposal", project], packageRoot);
   expect(proposed.ok === true, "installed CLI rejected its own production proposal contract example");
@@ -85,16 +92,28 @@ try {
   writeFileSync(join(project, "enrichment-plan.json"), `${JSON.stringify({
     version: "2.0",
     profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor", layout: "overlay", style: "minimal", frame: "clean" },
-    elements: [{
-      id: "caption",
-      source: "agent",
-      element_id: "caption-editorial-emphasis",
-      element_type: "registry_component",
-      start: 0.1,
-      end: 0.7,
-      reason: "verify installed enrichment export",
-      params: { text: "Installed package" },
-    }],
+    elements: [
+      {
+        id: "caption-identity",
+        source: "agent",
+        element_id: "anchor",
+        element_type: "caption_identity",
+        start: 0.1,
+        end: 0.7,
+        reason: "preserve confirmed captions",
+        caption_identity: "anchor",
+      },
+      {
+        id: "caption",
+        source: "agent",
+        element_id: "caption-editorial-emphasis",
+        element_type: "registry_component",
+        start: 0.1,
+        end: 0.7,
+        reason: "verify installed enrichment export",
+        params: { text: "Installed package" },
+      },
+    ],
     audio: { music: [], sfx: [{ id: "click", sfx_id: "click", start: 0.4, end: 0.5, volume: 0.15, fade_seconds: 0, reason: "verify bundled SFX" }] },
   })}\n`);
   expect(runCliJson(cli, ["project", "enrich-plan", project], packageRoot).ok === true, "installed CLI enrichment validation failed");
@@ -108,7 +127,7 @@ try {
   expect(contract.payload.runtime.delivery_digest === manifest.delivery_digest, "render contract complete delivery digest does not match delivery");
   expect(contract.payload.runtime.renderer_resources_digest === manifest.renderer_resources_digest, "render contract renderer digest does not match delivery");
   expect(contract.payload.runtime.runtime_compatibility_digest === manifest.runtime_compatibility_digest, "render contract runtime digest does not match delivery");
-  const frozenElement = contract.payload.composition.enrichment_plan.elements[0];
+  const frozenElement = contract.payload.composition.enrichment_plan.elements[1];
   const frozenSfx = contract.payload.audio.sfx[0];
   expect(!Object.hasOwn(frozenElement, "asset_id") && !Object.hasOwn(frozenElement, "anchor_point"), "installed contract retained absent element fields");
   expect(frozenSfx.sfx_id === "click" && !Object.hasOwn(frozenSfx, "asset_id"), "installed contract retained the unused SFX source");

@@ -431,6 +431,8 @@ export type ProjectInspectData = {
   inspection_checks: ProjectInspectionCheck[];
   inspection_frames: string[];
   warnings: string[];
+  accepted: boolean;
+  blockers: InspectionArtifact["blockers"];
   report_path: string;
   inspection_path: string;
   render_result_fingerprint: Fingerprint;
@@ -3222,6 +3224,8 @@ export function renderProject(projectPath: string, options: ProviderModeOption =
     const edl = compiledEdl.edl;
     const edlPath = join(projectPath, projectArtifacts.edl);
     const enrichment = hasEnrichmentInputs(projectPath, editPlan) ? validateEnrichmentPlan(projectPath, edl, editPlan) : undefined;
+    const selectedOption = validateProjectAuthoringConformance(projectPath, enrichment?.plan);
+    const captionsEnabled = selectedOption?.subtitles.enabled ?? true;
     const preparedLineage = prepareRenderLineage(projectPath, compiledEdl, transcript, enrichment);
     renderStageInputs = preparedLineage.inputs;
     renderInputFingerprint = inputFingerprint(renderStageInputs);
@@ -3238,10 +3242,15 @@ export function renderProject(projectPath: string, options: ProviderModeOption =
     mkdirSync(stagingRoot, { recursive: true });
     const stagedSubtitlesPath = join(stagingRoot, "subtitles.srt");
     const stagedCleanPath = join(stagingRoot, "clean.mp4");
+    const stagedTimelinePath = enrichment ? stagedCleanPath : join(stagingRoot, "timeline.mp4");
     const stagedFinalPath = enrichment ? join(stagingRoot, "final.mp4") : undefined;
     const stagedStoryboardPath = enrichment ? join(stagingRoot, "storyboard.json") : undefined;
-    atomicWriteText(stagedSubtitlesPath, renderSrt(transcript, edl));
-    renderEdl(projectPath, edl, stagedCleanPath);
+    atomicWriteText(stagedSubtitlesPath, captionsEnabled ? renderSrt(transcript, edl) : "");
+    const frameSchedule = renderEdl(projectPath, edl, stagedTimelinePath, enrichment?.plan.profile.aspect_ratio ?? "source");
+    if (!enrichment) {
+      if (captionsEnabled) burnSubtitles(stagedTimelinePath, stagedSubtitlesPath, stagedCleanPath, stagingRoot);
+      else copyFileSync(stagedTimelinePath, stagedCleanPath);
+    }
     const stagedFinal = enrichment
       ? renderEnrichedVideo(projectPath, stagedCleanPath, stagedSubtitlesPath, enrichment.plan, enrichment.assets, {
           workDir: join(stagingRoot, "enrichment"),
@@ -3249,6 +3258,10 @@ export function renderProject(projectPath: string, options: ProviderModeOption =
           storyboardPath: stagedStoryboardPath!,
         })
       : undefined;
+
+    const durationToleranceSeconds = Math.max(0.05, 2 / frameSchedule.fps);
+    assertStrictOutputTiming(stagedCleanPath, frameSchedule, durationToleranceSeconds);
+    if (stagedFinal) assertStrictOutputTiming(stagedFinal, frameSchedule, durationToleranceSeconds);
 
     const cleanProbe = probeMedia(stagedCleanPath);
     if (!cleanProbe.probe_ok) throw new Error(`clean render probe failed: ${cleanProbe.probe_error}`);
@@ -3350,7 +3363,7 @@ export function renderProject(projectPath: string, options: ProviderModeOption =
       element_usage: enrichment ? summarizeHyperframesElements(enrichment.plan) : [],
       audio_usage: enrichment ? summarizeAudioUsage(enrichment.plan) : emptyAudioUsage(),
       warnings: enrichment?.warnings ?? [],
-      expected_duration_seconds: edlDuration(edl),
+      expected_duration_seconds: frameSchedule.expected_duration_seconds,
     });
   } catch (error) {
     if (renderInputFingerprint && existsSync(projectPath)) {
@@ -3896,7 +3909,10 @@ export function inspectProject(projectPath: string, options: ProviderModeOption 
     const unresolvedRisks = transcriptTimingRisks(transcript);
     const decisions = inspectDecisions(analysis, editPlan, unresolvedRisks);
     const duration = probe.duration_seconds;
-    const expected = edlDuration(edl);
+    const frameSchedule = compileOutputFrameSchedule(edl.entries, 30);
+    const expected = frameSchedule.expected_duration_seconds;
+    const durationTolerance = Math.max(0.05, 2 / frameSchedule.fps);
+    const outputTiming = probeStrictOutputTiming(verifiedOutputPath);
     const subtitlesOutput = renderResult.outputs.find((output) => output.key === "subtitles");
     const subtitlesPath = subtitlesOutput
       ? currentProjectArtifactPath(projectPath, subtitlesOutput.path, subtitlesOutput.key, "project.inspect")
@@ -3904,6 +3920,9 @@ export function inspectProject(projectPath: string, options: ProviderModeOption 
     const enrichmentPlan = renderResult.enrichment_applied
       ? parseEnrichmentPlan(readProjectJson(projectPath, projectArtifacts.enrichmentPlan, "enrichment plan"))
       : undefined;
+    const selectedOption = validateProjectAuthoringConformance(projectPath, enrichmentPlan);
+    const captionsExpected = selectedOption?.subtitles.enabled ?? true;
+    const captionsPresent = existsSync(subtitlesPath) && parseSrtCues(readFileSync(subtitlesPath, "utf8")).length > 0;
     const storyboardOutput = renderResult.outputs.find((output) => output.key === "storyboard");
     const storyboard = storyboardOutput
       ? readJson(currentProjectArtifactPath(projectPath, storyboardOutput.path, storyboardOutput.key, "project.inspect")) as EnrichmentStoryboard
@@ -3917,7 +3936,7 @@ export function inspectProject(projectPath: string, options: ProviderModeOption 
     const musicReview = undefined;
     const enrichmentSummary = enrichmentPlan ? summarizeEnrichment(enrichmentPlan, hyperframes.block_usage, elementUsage) : [];
     const enrichmentApplied = renderResult.enrichment_applied;
-    const warnings = inspectWarnings(duration, expected, subtitlesPath);
+    const warnings = inspectWarnings(duration, expected, subtitlesPath, captionsExpected, durationTolerance);
     if (enrichmentPlan) warnings.push(...enrichmentWarnings(enrichmentPlan));
     const qaChecks = enrichmentPlan ? (storyboard?.qa_checks ?? []) : [];
     const inspectionNamespace = renderResultFingerprint.slice("sha256:".length, "sha256:".length + 16);
@@ -3927,6 +3946,40 @@ export function inspectProject(projectPath: string, options: ProviderModeOption 
       ...check,
       frame_paths: check.frame_paths.map((path) => relative(projectPath, path).split(sep).join("/")),
     }));
+    const durationDelta = Math.abs(outputTiming.container_duration_seconds - expected);
+    const blockers: InspectionArtifact["blockers"] = [];
+    if (outputTiming.video_frame_count !== frameSchedule.total_frames) {
+      blockers.push({
+        code: "VIDEO_FRAME_COUNT_MISMATCH",
+        message: `video frame count expected=${frameSchedule.total_frames} actual=${outputTiming.video_frame_count}`,
+        artifact: canonicalOutput.key,
+        remediation: "Rerun project render with the current CLI frame schedule.",
+      });
+    }
+    if (durationDelta > durationTolerance) {
+      blockers.push({
+        code: "DURATION_MISMATCH",
+        message: `output duration expected=${expected.toFixed(6)}s actual=${outputTiming.container_duration_seconds.toFixed(6)}s delta=${durationDelta.toFixed(6)}s tolerance=${durationTolerance.toFixed(6)}s`,
+        artifact: canonicalOutput.key,
+        remediation: "Rerun project render with the current CLI frame schedule.",
+      });
+    }
+    if (captionsExpected && !captionsPresent) {
+      blockers.push({
+        code: "CAPTIONS_MISSING",
+        message: "the confirmed proposal requires captions, but the canonical subtitle artifact has no timed cues",
+        artifact: "subtitles",
+        remediation: "Repair the transcript/EDL caption mapping and rerun project render.",
+      });
+    }
+    for (const check of structuredChecks.filter((item) => item.status === "blocker")) {
+      blockers.push({
+        code: `QA_CHECK_BLOCKED:${check.id}`,
+        message: `${check.id} failed: ${check.warnings.join("; ") || check.expected}`,
+        artifact: "storyboard",
+        remediation: "Repair the confirmed enrichment asset or placement, rerender, and inspect again.",
+      });
+    }
     const inspectedAt = new Date().toISOString();
     const inspection = parseInspection({
       contract_version: "1.0",
@@ -3937,7 +3990,7 @@ export function inspectProject(projectPath: string, options: ProviderModeOption 
       canonical_output_duration_seconds: duration,
       canonical_output_probe: probe,
       expected_duration_seconds: expected,
-      captions_present: Boolean(subtitlesOutput && existsSync(subtitlesPath)),
+      captions_present: captionsPresent,
       enrichment_applied: enrichmentApplied,
       source_mode: enrichmentPlan?.profile.source_mode,
       removed_ranges: decisions.removed_ranges,
@@ -3954,7 +4007,7 @@ export function inspectProject(projectPath: string, options: ProviderModeOption 
       },
       checks: structuredChecks,
       warnings,
-      blockers: [],
+      blockers,
       producer_cli_version: cliVersion(),
       inspected_at: inspectedAt,
     });
@@ -3969,7 +4022,7 @@ export function inspectProject(projectPath: string, options: ProviderModeOption 
         outputPath,
         duration,
         expected,
-        existsSync(subtitlesPath),
+        captionsPresent,
         enrichmentPlan?.profile.source_mode,
         enrichmentSummary,
         hyperframes.block_usage,
@@ -4047,6 +4100,13 @@ export function inspectProject(projectPath: string, options: ProviderModeOption 
       started_at: startedAt,
       completed_at: inspectedAt,
     });
+    if (blockers.length > 0) {
+      return fail(
+        "project.inspect",
+        "INSPECTION_ACCEPTANCE_FAILED",
+        commandError("INSPECTION_ACCEPTANCE_FAILED", `inspection rejected ${blockers.length} blocker(s); structured result: ${inspectionPath}`),
+      );
+    }
     return ok("project.inspect", {
       project_path: projectPath,
       output_path: outputPath,
@@ -4067,6 +4127,8 @@ export function inspectProject(projectPath: string, options: ProviderModeOption 
       inspection_checks: inspectionChecks,
       inspection_frames: inspectionFrames,
       warnings,
+      accepted: inspection.blockers.length === 0,
+      blockers: inspection.blockers,
       report_path: reportPath,
       inspection_path: inspectionPath,
       render_result_fingerprint: renderResultFingerprint,
@@ -4142,7 +4204,8 @@ export function validateEnrichmentPlan(
 ): { plan: EnrichmentPlanArtifact; assets: AssetManifestArtifact; duration: number; warnings: string[]; normalized: boolean } {
   const { plan, assets, normalization } = readEffectiveEnrichment(projectPath, editPlan, options.normalizeUsage === true);
   const normalizedEdl = normalization ? compileCurrentEdl(projectPath) : undefined;
-  const duration = edlDuration(edl ?? normalizedEdl?.edl ?? readOrBuildEdl(projectPath));
+  const currentEdl = edl ?? normalizedEdl?.edl ?? readOrBuildEdl(projectPath);
+  const duration = compileOutputFrameSchedule(currentEdl.entries, 30).expected_duration_seconds;
   const assetIds = new Set(assets.assets.map((asset) => asset.id));
   for (const item of [...plan.audio.music, ...plan.audio.sfx, ...plan.elements]) {
     if (item.end > duration + 0.05) throw new Error(`slot ${item.id} exceeds output duration`);
@@ -4159,11 +4222,32 @@ export function validateEnrichmentPlan(
   for (const element of plan.elements) {
     validateElementAdapter(plan, element);
   }
+  const selectedOption = selectedProposalOptionForCurrentEditPlan(projectPath, editPlan, "project.enrich-plan");
+  if (selectedOption) assertEnrichmentConformsToSelectedProposalOption(projectPath, selectedOption, plan);
   for (const emphasis of compiledCaptionPlan(plan).emphasis) {
     if (emphasis.end > duration + 0.05) throw new Error(`caption emphasis ${emphasis.text} exceeds output duration`);
   }
   if (normalization) commitNormalizedAssetUsage(projectPath, normalization, plan, assets, normalizedEdl!.edl_record);
   return { plan, assets, duration, warnings: enrichmentWarnings(plan), normalized: Boolean(normalization) };
+}
+
+export function validateProjectAuthoringConformance(projectPath: string, plan?: EnrichmentPlanArtifact): ProductionProposalOption | undefined {
+  const selectedOption = selectedProposalOptionForCurrentEditPlan(projectPath, undefined, "project.conformance");
+  if (!selectedOption) return undefined;
+  if (plan) {
+    assertEnrichmentConformsToSelectedProposalOption(projectPath, selectedOption, plan);
+    return selectedOption;
+  }
+  if (selectedOption.images.needed || requiredSlots(selectedOption, "visual").length > 0) {
+    throw lifecycleCommandError("PROPOSAL_EXECUTION_MISMATCH", `proposal option ${selectedOption.id} requires visual/image assets, but no enrichment-plan.json is present`, "enrichment-plan", "Create enrichment-plan.json with reviewed visual assets before exporting a render contract.", "project.conformance");
+  }
+  if (selectedOption.music.source !== "none" || requiredSlots(selectedOption, "music").length > 0) {
+    throw lifecycleCommandError("PROPOSAL_EXECUTION_MISMATCH", `proposal option ${selectedOption.id} requires music, but no enrichment-plan.json is present`, "enrichment-plan", "Create enrichment-plan.json with reviewed music before exporting a render contract.", "project.conformance");
+  }
+  if (selectedOption.sfx.enabled || requiredSlots(selectedOption, "sfx").length > 0) {
+    throw lifecycleCommandError("PROPOSAL_EXECUTION_MISMATCH", `proposal option ${selectedOption.id} requires SFX, but no enrichment-plan.json is present`, "enrichment-plan", "Create enrichment-plan.json with reviewed SFX before exporting a render contract.", "project.conformance");
+  }
+  return selectedOption;
 }
 
 function commitCanonicalEnrichmentValidation(
@@ -4204,6 +4288,8 @@ function commitCanonicalEnrichmentValidation(
       );
     });
   const assetReferences = assetRecords.map(artifactReference);
+  const focusReviewRecord = currentFocusReviewRecordForCoordinateElements(projectPath, plan, manifest);
+  const focusReviewReferences = focusReviewRecord ? [artifactReference(focusReviewRecord)] : [];
   const assetManifestPath = join(projectPath, projectArtifacts.assetManifest);
   if (!existsSync(assetManifestPath)) atomicWriteJson(assetManifestPath, assets);
   const assetManifestRecord = currentOrReplacementRecord(
@@ -4236,14 +4322,14 @@ function commitCanonicalEnrichmentValidation(
       authored_by: "agent",
       command: "project.enrich-plan",
       mode: "validated",
-      inputs: [artifactReference(compiledEdl.edl_record), ...assetReferences],
+      inputs: [artifactReference(compiledEdl.edl_record), ...assetReferences, ...focusReviewReferences],
       value: plan,
       file_sha256: fileBytesFingerprint(planPath),
       recorded_at: recordedAt,
     }),
     recordsToCommit,
   );
-  const stageInputs = [artifactReference(compiledEdl.edl_record), artifactReference(planRecord), artifactReference(assetManifestRecord), ...assetReferences];
+  const stageInputs = [artifactReference(compiledEdl.edl_record), artifactReference(planRecord), artifactReference(assetManifestRecord), ...assetReferences, ...focusReviewReferences];
   commitProjectStage({
     project_path: projectPath,
     stage: "project.enrich-plan",
@@ -4262,6 +4348,99 @@ function referencedEnrichmentAssetIds(plan: EnrichmentPlanArtifact): Set<string>
     ...plan.audio.sfx.flatMap((item) => (item.asset_id ? [item.asset_id] : [])),
     ...plan.elements.flatMap((item) => (item.asset_id ? [item.asset_id] : [])),
   ]);
+}
+
+function selectedProposalOptionForCurrentEditPlan(
+  projectPath: string,
+  editPlan: ReturnType<typeof parseEditPlan> | undefined,
+  stage: string,
+): ProductionProposalOption | undefined {
+  const editPlanPath = join(projectPath, projectArtifacts.editPlan);
+  const proposalPath = join(projectPath, projectArtifacts.productionProposal);
+  if (!editPlan && !existsSync(editPlanPath)) return undefined;
+  if (!existsSync(proposalPath)) {
+    throw lifecycleCommandError("PROPOSAL_REQUIRED", "confirmed edit plan requires production-proposal.json", "production-proposal", "Run project proposal.", stage);
+  }
+  const currentEditPlan = editPlan ?? readEditPlan(projectPath, readManifest(projectPath));
+  const proposal = parseProductionProposal(readProjectJson(projectPath, projectArtifacts.productionProposal, "production proposal"));
+  const selected = proposal.options.find((option) => option.id === currentEditPlan.confirmed_option_id);
+  if (!selected) {
+    throw lifecycleCommandError("PROPOSAL_SELECTION_MISMATCH", `proposal option ${currentEditPlan.confirmed_option_id} does not exist`, "edit-plan", "Regenerate edit-plan.json from the selected proposal option.", stage);
+  }
+  if (currentEditPlan.proposal_selection_fingerprint !== proposalSelectionFingerprint(proposal, selected.id)) {
+    throw lifecycleCommandError("PROPOSAL_SELECTION_MISMATCH", `edit plan selection fingerprint does not match proposal option ${selected.id}`, "edit-plan", "Regenerate edit-plan.json from the selected proposal option.", stage);
+  }
+  return selected;
+}
+
+function assertEnrichmentConformsToSelectedProposalOption(
+  projectPath: string,
+  option: ProductionProposalOption,
+  plan: EnrichmentPlanArtifact,
+): void {
+  const captions = compiledCaptionPlan(plan);
+  if (!option.subtitles.enabled && (captions.enabled || captions.emphasis.length > 0)) {
+    throw lifecycleCommandError("PROPOSAL_EXECUTION_MISMATCH", `enrichment-plan enables captions, but proposal option ${option.id} disabled subtitles`, "enrichment-plan", "Remove caption elements or choose a subtitles-enabled proposal option.", "project.enrich-plan");
+  }
+  if (option.subtitles.enabled && requiresHyperframesRecut(plan) && !captions.enabled) {
+    throw lifecycleCommandError("PROPOSAL_EXECUTION_MISMATCH", `enrichment-plan uses HyperFrames elements, but proposal option ${option.id} subtitles require a caption_identity element`, "enrichment-plan", "Add a caption_identity element or choose a subtitles-disabled proposal option.", "project.enrich-plan");
+  }
+  const visualRequired = option.images.needed || requiredSlots(option, "visual").length > 0;
+  const hasVisualAsset = plan.elements.some((element) => isAssetElement(element) && element.asset_id);
+  if (visualRequired && !hasVisualAsset) {
+    throw lifecycleCommandError("PROPOSAL_EXECUTION_MISMATCH", `proposal option ${option.id} requires visual/image assets, but enrichment-plan uses none`, "enrichment-plan", "Add reviewed visual_asset elements or mark the proposal option as source-only.", "project.enrich-plan");
+  }
+  if (!visualRequired && hasVisualAsset) {
+    throw lifecycleCommandError("PROPOSAL_EXECUTION_MISMATCH", `enrichment-plan adds visual assets, but proposal option ${option.id} did not request images or visual asset slots`, "enrichment-plan", "Remove visual_asset elements or confirm visual assets in the proposal option.", "project.enrich-plan");
+  }
+  const musicRequired = option.music.source !== "none" || requiredSlots(option, "music").length > 0;
+  if (musicRequired && plan.audio.music.length === 0) {
+    throw lifecycleCommandError("PROPOSAL_EXECUTION_MISMATCH", `proposal option ${option.id} requires music, but enrichment-plan.audio.music is empty`, "enrichment-plan", "Add the reviewed music segment or choose a no-music proposal option.", "project.enrich-plan");
+  }
+  if (!musicRequired && plan.audio.music.length > 0) {
+    throw lifecycleCommandError("PROPOSAL_EXECUTION_MISMATCH", `enrichment-plan adds music, but proposal option ${option.id} did not request music`, "enrichment-plan", "Remove music or confirm music in the proposal option.", "project.enrich-plan");
+  }
+  const sfxRequired = option.sfx.enabled || requiredSlots(option, "sfx").length > 0;
+  if (sfxRequired && plan.audio.sfx.length === 0) {
+    throw lifecycleCommandError("PROPOSAL_EXECUTION_MISMATCH", `proposal option ${option.id} requires SFX, but enrichment-plan.audio.sfx is empty`, "enrichment-plan", "Add reviewed SFX or choose a no-SFX proposal option.", "project.enrich-plan");
+  }
+  if (!sfxRequired && plan.audio.sfx.length > 0) {
+    throw lifecycleCommandError("PROPOSAL_EXECUTION_MISMATCH", `enrichment-plan adds SFX, but proposal option ${option.id} did not request SFX`, "enrichment-plan", "Remove SFX or confirm SFX in the proposal option.", "project.enrich-plan");
+  }
+  assertCoordinateElementsAreGrounded(projectPath, plan);
+}
+
+function requiredSlots(option: ProductionProposalOption, kind: "visual" | "music" | "sfx"): string[] {
+  if (kind === "music") return option.asset_requirements.music_slots.filter((slot) => slot.required).map((slot) => slot.slot_id);
+  if (kind === "sfx") return option.asset_requirements.sfx_slots.filter((slot) => slot.required).map((slot) => slot.slot_id);
+  return [...option.asset_requirements.visual_asset_slots, ...option.asset_requirements.image_slots].filter((slot) => slot.required).map((slot) => slot.slot_id);
+}
+
+function assertCoordinateElementsAreGrounded(projectPath: string, plan: EnrichmentPlanArtifact): void {
+  currentFocusReviewRecordForCoordinateElements(projectPath, plan);
+}
+
+function currentFocusReviewRecordForCoordinateElements(projectPath: string, plan: EnrichmentPlanArtifact, manifest = readProjectArtifactManifest(projectPath)): ArtifactRecord | undefined {
+  const coordinateElements = plan.elements.filter((element) => !isAssetElement(element) && (element.target_rect || element.anchor_point));
+  if (coordinateElements.length === 0) return undefined;
+  if (!existsSync(join(projectPath, projectArtifacts.focusReview))) {
+    throw lifecycleCommandError("FOCUS_GROUNDING_REQUIRED", "coordinate enrichment elements require current focus-review grounding", "focus-review", "Run project focus-candidates, focus-frames, focus-grounding, and focus-review.", "project.enrich-plan");
+  }
+  if (!manifest) throw lifecycleCommandError("LINEAGE_UNPROVEN", "artifact-manifest.json is required", "artifact-manifest", "Create the project with the current CLI.", "project.enrich-plan");
+  const review = parseFocusReview(readProjectJson(projectPath, projectArtifacts.focusReview, "focus review"));
+  const record = assertArtifactRecordCurrent(projectPath, manifest, "focus-review", semanticJsonFingerprint(review), new Set(), new Set(), "project.enrich-plan");
+  const grounded = new Map(review.proposed_elements.map((element) => [element.id, element]));
+  for (const element of coordinateElements) {
+    const reviewed = grounded.get(element.id);
+    if (!reviewed || !sameJson(reviewed.target_rect, element.target_rect) || !sameJson(reviewed.anchor_point, element.anchor_point) || elementParamText(reviewed, "coordinate_source_frame") !== elementParamText(element, "coordinate_source_frame")) {
+      throw lifecycleCommandError("FOCUS_GROUNDING_REQUIRED", `${element.id} coordinates were not produced by the current focus-review`, "enrichment-plan", "Use focus-review proposed_elements without editing coordinates.", "project.enrich-plan");
+    }
+  }
+  return record;
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
 function hasEnrichmentInputs(projectPath: string, editPlan?: ReturnType<typeof parseEditPlan>): boolean {
@@ -4558,7 +4737,19 @@ function assetUsagePlanToEnrichment(
   const plan = parseEnrichmentPlan({
     version: "2.0",
     profile: { ...defaultEnrichmentProfile(sourceMode) },
-    elements: visualAssets,
+    elements: [
+      ...(visualAssets.length > 0 ? [{
+        id: "captions-anchor",
+        source: "asset_usage_plan",
+        element_id: "anchor",
+        element_type: "caption_identity",
+        start: 0,
+        end: Math.max(...visualAssets.map((item) => item.end)),
+        caption_identity: "anchor",
+        reason: "Preserve subtitles while applying visual asset overlays.",
+      }] : []),
+      ...visualAssets,
+    ],
     audio: { music, sfx },
   });
   return { plan, assets: parseAssetManifest({ assets }) };
@@ -5346,6 +5537,8 @@ function compileCurrentEdl(projectPath: string): {
       "project.compile-edl",
     );
     selectionReferences.push(artifactReference(currentSelectionRecord));
+    const selectedOption = proposal.options.find((option) => option.id === selectedOptionId)!;
+    assertEditPlanConformsToSelectedProposalOption(selectedOption, editPlan, "project.compile-edl");
   }
 
   const editPlanCandidate = recordJsonArtifact({
@@ -5644,6 +5837,24 @@ function buildQaChecks(projectPath: string, plan: EnrichmentPlanArtifact, assets
         start: music.start,
         end: music.end,
         expected: `music ${music.asset_id}: ${music.reason}`,
+        frame_times: [],
+        warnings,
+        asset,
+      }),
+    );
+  }
+
+  for (const sfx of plan.audio.sfx) {
+    const asset = sfx.asset_id ? assets.assets.find((item) => item.id === sfx.asset_id) : undefined;
+    const warnings = sfx.asset_id ? assetWarnings(projectPath, asset, sfx.asset_id, false) : [];
+    checks.push(
+      qaCheck({
+        id: `sfx-${sfx.id}`,
+        source_element_id: sfx.id,
+        kind: "sfx",
+        start: sfx.start,
+        end: sfx.end,
+        expected: `SFX ${sfx.asset_id ?? sfx.sfx_id}: ${sfx.reason}`,
         frame_times: [],
         warnings,
         asset,
@@ -5991,6 +6202,56 @@ function buildEdl(
   return parseEdl({ contract_version: "2.0", entries }, manifest);
 }
 
+function assertEditPlanConformsToSelectedProposalOption(
+  option: ProductionProposalOption,
+  editPlan: ReturnType<typeof parseEditPlan>,
+  stage: string,
+): void {
+  if (option.edit_execution_plan.reorder_segments.length > 0) {
+    throw lifecycleCommandError(
+      "PROPOSAL_EXECUTION_UNSUPPORTED",
+      `proposal option ${option.id} requests segment reorder, but edit-plan v1 only supports whole-source source_order`,
+      "edit-plan",
+      "Choose an option without segment reorder, or add a supported source_order-only edit plan.",
+      stage,
+    );
+  }
+  const cutIds = new Set(editPlan.decisions.filter((decision) => decision.action === "cut").map((decision) => decision.candidate_id).filter((candidateId): candidateId is string => Boolean(candidateId)));
+  const keepIds = new Set(editPlan.decisions.filter((decision) => decision.action === "keep").map((decision) => decision.candidate_id).filter((candidateId): candidateId is string => Boolean(candidateId)));
+  const conflictingIds = [...cutIds].filter((candidateId) => keepIds.has(candidateId));
+  if (conflictingIds.length > 0) {
+    throw lifecycleCommandError(
+      "PROPOSAL_EXECUTION_MISMATCH",
+      `edit-plan.json cannot both cut and keep candidate IDs: ${conflictingIds.join(", ")}`,
+      "edit-plan",
+      "Regenerate edit-plan.json with exactly the selected proposal cleanup cuts.",
+      stage,
+    );
+  }
+  const expectedCuts = new Set(option.cleanup.cut_candidate_ids);
+  const missingCuts = option.cleanup.cut_candidate_ids.filter((candidateId) => !cutIds.has(candidateId));
+  const unexpectedCuts = [...cutIds].filter((candidateId) => !expectedCuts.has(candidateId));
+  if (missingCuts.length > 0 || unexpectedCuts.length > 0) {
+    throw lifecycleCommandError(
+      "PROPOSAL_EXECUTION_MISMATCH",
+      `edit-plan.json cuts must exactly match proposal option ${option.id} cleanup.cut_candidate_ids; missing=[${missingCuts.join(", ")}] unexpected=[${unexpectedCuts.join(", ")}]`,
+      "edit-plan",
+      "Regenerate edit-plan.json with exactly the selected proposal cleanup cuts.",
+      stage,
+    );
+  }
+  const skippedSources = editPlan.decisions.filter((decision) => decision.action === "skip");
+  if (skippedSources.length > 0) {
+    throw lifecycleCommandError(
+      "PROPOSAL_EXECUTION_UNSUPPORTED",
+      "edit-plan skip decisions are not confirmed by production proposal v2",
+      "edit-plan",
+      "Choose a proposal option/schema that explicitly confirms source skips, or remove skip decisions.",
+      stage,
+    );
+  }
+}
+
 function edlEntry(sourceId: string, start: number, end: number, outputOrder: number, reason: string): EdlEntry {
   return { source_id: sourceId, start, end, output_order: outputOrder, reason };
 }
@@ -6008,8 +6269,6 @@ function renderEnrichedVideo(
   mkdirSync(workDir, { recursive: true });
   let current = cleanRenderPath;
   const finalPath = output.finalPath;
-  const subtitleWarningPath = join(workDir, "subtitles-not-burned.txt");
-  writeFileSync(subtitleWarningPath, "");
 
   const needsRecut = requiresHyperframesRecut(plan);
   if (needsRecut) {
@@ -6040,8 +6299,7 @@ function renderEnrichedVideo(
   if (needsRecut) {
     ffmpeg(["-y", "-i", current, "-c", "copy", "-movflags", "+faststart", finalPath], "ffmpeg enriched final copy failed");
   } else {
-    const subtitlesBurned = burnSubtitles(current, subtitlesPath, finalPath, workDir);
-    if (!subtitlesBurned) writeFileSync(subtitleWarningPath, "ffmpeg subtitles/drawtext filters unavailable; subtitles.srt was generated but not burned into final.mp4\n");
+    burnSubtitles(current, subtitlesPath, finalPath, workDir);
   }
   return finalPath;
 }
@@ -6250,8 +6508,10 @@ export function executeResolvedRenderPlan(input: {
     if (!input.assets || !input.storyboard) throw commandError("CONTRACT_INVALID", "resolved enrichment requires frozen assets and storyboard");
     storyboardPath = join(workDir, "storyboard.json");
     renderEnrichedVideo(runRoot, cleanPath, subtitlesPath, input.plan, input.assets, { workDir, finalPath: outputPath, storyboardPath }, input.storyboard);
-  } else if (input.captions.length === 0 || !burnSubtitles(cleanPath, subtitlesPath, outputPath, workDir)) {
+  } else if (input.captions.length === 0) {
     copyFileSync(cleanPath, outputPath);
+  } else {
+    burnSubtitles(cleanPath, subtitlesPath, outputPath, workDir);
   }
   assertStrictOutputTiming(outputPath, frameSchedule, input.durationToleranceSeconds);
   return { outputPath, cleanPath, subtitlesPath, ...(storyboardPath ? { storyboardPath } : {}) };
@@ -7200,15 +7460,14 @@ function mixSfx(basePath: string, sfxPath: string, element: EnrichmentSfx, outpu
 }
 
 function burnSubtitles(basePath: string, subtitlesPath: string, outputPath: string, workDir: string): boolean {
+  const cues = parseSrtCues(readFileSync(subtitlesPath, "utf8"));
+  if (cues.length === 0) {
+    ffmpeg(["-y", "-i", basePath, "-c", "copy", "-movflags", "+faststart", outputPath], "ffmpeg final copy failed");
+    return false;
+  }
   if (!ffmpegFilterExists("subtitles")) {
     if (!ffmpegFilterExists("drawtext")) {
-      ffmpeg(["-y", "-i", basePath, "-c", "copy", "-movflags", "+faststart", outputPath], "ffmpeg final copy failed");
-      return false;
-    }
-    const cues = parseSrtCues(readFileSync(subtitlesPath, "utf8"));
-    if (cues.length === 0) {
-      ffmpeg(["-y", "-i", basePath, "-c", "copy", "-movflags", "+faststart", outputPath], "ffmpeg final copy failed");
-      return false;
+      throw commandError("RENDER_PREFLIGHT_FAILED", "captions are required, but ffmpeg provides neither subtitles nor drawtext filter");
     }
     const { height } = probeVideoSize(basePath);
     const fontSize = Math.max(18, Math.round(height * 0.045));
@@ -7287,26 +7546,35 @@ function ffmpegFilterExists(name: string): boolean {
   return result.status === 0 && result.stdout.includes(` ${name} `);
 }
 
-function renderEdl(projectPath: string, edl: EdlArtifact, outputPath: string) {
-  if (!commandExists("ffmpeg")) throw new Error("ffmpeg not found for render");
+function renderEdl(projectPath: string, edl: EdlArtifact, outputPath: string, aspectRatio: string): OutputFrameSchedule {
   const sources = readManifest(projectPath);
-  const sourcePaths = materializedSourcePaths(projectPath, sources);
-  const workDir = resolve(projectPath, ".render");
-  mkdirSync(workDir, { recursive: true });
-  const partPaths = edl.entries.map((entry, index) => {
-    const partPath = join(workDir, `part-${String(index).padStart(3, "0")}.mp4`);
-    const result = spawnSync(
-      "ffmpeg",
-      ["-y", "-ss", String(entry.start), "-i", readableProjectSource(projectPath, entry.source_id, sourcePaths.get(entry.source_id) ?? ""), "-t", String(entry.end - entry.start), "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-movflags", "+faststart", partPath],
-      { encoding: "utf8" },
-    );
-    if (result.status !== 0) throw new Error(`ffmpeg segment render failed: ${result.stderr || result.stdout}`);
-    return partPath;
-  });
-  const concatPath = join(workDir, "concat.txt");
-  writeFileSync(concatPath, partPaths.map((partPath) => `file '${partPath.replaceAll("'", "'\\''")}'`).join("\n") + "\n");
-  const result = spawnSync("ffmpeg", ["-y", "-f", "concat", "-safe", "0", "-i", concatPath, "-c", "copy", outputPath], { encoding: "utf8" });
-  if (result.status !== 0) throw new Error(`ffmpeg concat failed: ${result.stderr || result.stdout}`);
+  const materialized = materializedSourcePaths(projectPath, sources);
+  const sourcePaths = Object.fromEntries(sources.sources.map((source) => [
+    source.source_id,
+    readableProjectSource(projectPath, source.source_id, materialized.get(source.source_id) ?? ""),
+  ]));
+  const sourceHasAudio = Object.fromEntries(sources.sources.map((source) => [source.source_id, Boolean(source.identity.audio)]));
+  const firstEntry = [...edl.entries].sort((a, b) => a.output_order - b.output_order)[0];
+  if (!firstEntry) throw commandError("RENDER_PREFLIGHT_FAILED", "EDL has no renderable timeline entries");
+  const firstSource = sources.sources.find((source) => source.source_id === firstEntry.source_id);
+  if (!firstSource) throw commandError("RENDER_PREFLIGHT_FAILED", `EDL references unknown source ${firstEntry.source_id}`);
+  const dimensions = resolveRenderOutputSpec(
+    aspectRatio,
+    firstSource.identity.video.display_width,
+    firstSource.identity.video.display_height,
+  );
+  const output = { ...dimensions, fps: 30 };
+  const schedule = compileOutputFrameSchedule(edl.entries, output.fps);
+  renderResolvedEdl(edl, sourcePaths, sourceHasAudio, outputPath, output, schedule);
+  assertStrictOutputTiming(outputPath, schedule, Math.max(0.05, 2 / output.fps));
+  return schedule;
+}
+
+export function resolveRenderOutputSpec(aspect: string, sourceWidth: number, sourceHeight: number): { width: number; height: number } {
+  if (aspect === "16:9") return { width: 1920, height: 1080 };
+  if (aspect === "9:16") return { width: 1080, height: 1920 };
+  if (aspect === "4:5") return { width: 1080, height: 1350 };
+  return { width: sourceWidth, height: sourceHeight };
 }
 
 function renderSrt(transcript: TranscriptArtifact, edl: EdlArtifact): string {
@@ -7468,9 +7736,11 @@ function extractInspectionChecks(projectPath: string, outputPath: string, checks
   });
 }
 
-function inspectWarnings(duration: number, expected: number, subtitlesPath: string): string[] {
+function inspectWarnings(duration: number, expected: number, subtitlesPath: string, captionsExpected: boolean, tolerance: number): string[] {
   const warnings: string[] = [];
-  if (Math.abs(duration - expected) > 0.75) warnings.push(`duration differs from EDL by ${(duration - expected).toFixed(2)}s`);
+  const delta = Math.abs(duration - expected);
+  if (delta > tolerance) warnings.push(`output duration expected=${expected.toFixed(6)}s actual=${duration.toFixed(6)}s delta=${delta.toFixed(6)}s tolerance=${tolerance.toFixed(6)}s`);
+  if (!captionsExpected) return warnings;
   if (!existsSync(subtitlesPath)) {
     warnings.push("subtitles.srt is missing");
   } else {

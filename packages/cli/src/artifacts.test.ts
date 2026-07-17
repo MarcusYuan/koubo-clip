@@ -119,7 +119,7 @@ test("visual acquisition artifacts validate metadata urls but keep final paths l
   });
   expect(request.requests[0]?.semantic_query).toBe("alarm clock");
   expect(request.requests[0]?.selection_reason).toBe("best semantic match with a clear silhouette");
-  expect(() => parseVisualRequest({ ...request, requests: [{ ...request.requests[0], selection_reason: "   " }] })).toThrow("must not be blank");
+  expect(() => parseVisualRequest({ ...request, requests: [{ ...request.requests[0], selection_reason: "   " }] })).toThrow("failed validation");
 
   const candidates = parseVisualCandidates({
     version: "1.0",
@@ -292,13 +292,13 @@ test("edit plan requires proposal selection binding only for the current contrac
   expect(current.confirmed_option_id).toBe("sales_conversion");
   expect(current.proposal_selection_fingerprint).toBe(fingerprint);
 
-  expect(() => artifacts.parseEditPlan({ decisions: [] })).toThrow("contract_version");
+  expect(() => artifacts.parseEditPlan({ decisions: [] })).toThrow("unsupported");
   expect(() => artifacts.parseEditPlan({ contract_version: "1.0", confirmed_option_id: "sales_conversion", decisions: [] })).toThrow(
     "proposal_selection_fingerprint",
   );
   expect(() =>
     artifacts.parseEditPlan({ contract_version: "1.0", confirmed_option_id: "sales_conversion", proposal_selection_fingerprint: "sha256-demo", decisions: [] }),
-  ).toThrow("sha256:<64 hex>");
+  ).toThrow("failed validation");
 });
 
 test("artifact manifest validates records, lineage references, and stage attempts", () => {

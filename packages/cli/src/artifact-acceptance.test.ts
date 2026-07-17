@@ -27,6 +27,7 @@ import { fileBytesFingerprint, semanticJsonFingerprint } from "./artifact-lifecy
 import {
   inputFingerprint,
   projectMetadataFingerprintProjection,
+  proposalSelectionFingerprint,
   renderResultFingerprintProjection,
 } from "./project-lineage";
 import {
@@ -42,6 +43,40 @@ import {
 import { projectStatus } from "./project-status";
 
 const RECORDED_AT = "2026-07-15T01:00:00.000Z";
+
+test("proposal selection fingerprint covers every confirmed selected-option field", () => {
+  const proposal = proposalDocument("Selected direction", "Alternative direction");
+  const baseline = proposalSelectionFingerprint(proposal, "selected");
+  const changes: Array<(proposal: ProductionProposalArtifact) => void> = [
+    (next) => { next.source_mode = "screen_recording"; },
+    (next) => { next.presentation_intent = "product_demo"; },
+    (next) => { next.goal_summary = "changed goal"; },
+    (next) => { next.material_summary = "changed material"; },
+    (next) => { next.options[0]!.label = "Changed label"; },
+    (next) => { next.options[0]!.reason = "Changed reason"; },
+    (next) => { next.options[0]!.cleanup.cut_candidate_ids = ["c-001"]; },
+    (next) => { next.options[0]!.subtitles.enabled = false; },
+    (next) => { next.options[0]!.visuals.direction = "kinetic_text"; },
+    (next) => { next.options[0]!.images.needed = true; },
+    (next) => { next.options[0]!.music.source = "local"; },
+    (next) => { next.options[0]!.sfx.enabled = true; },
+    (next) => { next.options[0]!.requires_confirmation = ["confirm music"]; },
+    (next) => { next.options[0]!.business_direction.title = "Changed direction"; },
+    (next) => { next.options[0]!.edit_execution_plan.user_confirmation_summary = "changed summary"; },
+    (next) => { next.options[0]!.asset_requirements.image_slots = [{ slot_id: "img-1", kind: "image", purpose: "show proof", required: true }]; },
+  ];
+
+  for (const mutate of changes) {
+    const changed = structuredClone(proposal);
+    mutate(changed);
+    expect(proposalSelectionFingerprint(changed, "selected") === baseline).toBe(false);
+  }
+
+  const unselectedChanged = structuredClone(proposal);
+  unselectedChanged.options[1]!.cleanup.cut_candidate_ids = ["c-unselected"];
+  unselectedChanged.options[1]!.business_direction.title = "Changed alternative";
+  expect(proposalSelectionFingerprint(unselectedChanged, "selected")).toBe(baseline);
+});
 
 test("proposal v2 invalidation is scoped to the confirmed option", async () => {
   if (!commandExists("ffmpeg")) return;
@@ -111,7 +146,10 @@ test("proposal v2 invalidation is scoped to the confirmed option", async () => {
 test("a real enriched render stays current through inspect and ignores unused asset bytes", async () => {
   if (!commandExists("ffmpeg")) return;
   const project = await confirmedProject();
-  writeJson(join(project, "production-proposal.json"), proposalDocument("Selected direction", "Alternative direction"));
+  const proposal = proposalDocument("Selected direction", "Alternative direction");
+  proposal.options[0]!.music = { source: "local", ducking: true, notes: ["confirmed music bed"] };
+  proposal.options[0]!.asset_requirements.music_slots = [{ slot_id: "music-1", kind: "music", purpose: "confirmed music bed", required: true }];
+  writeJson(join(project, "production-proposal.json"), proposal);
   const proposed = proposalProject(project);
   expect(proposed.ok).toBe(true);
   if (!proposed.ok) throw new Error(proposed.error.message);

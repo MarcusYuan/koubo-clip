@@ -9,7 +9,19 @@ import {
   productionProposalExample,
   sourceFrameRequestExample,
 } from "./artifact-contracts";
-import { parseProductionProposal, parseSourceFrameRequest } from "./artifacts";
+import {
+  parseAssetUsagePlan,
+  parseEditPlan,
+  parseEnrichmentPlan,
+  parseFocusCandidates,
+  parseFocusGrounding,
+  parseMusicRequest,
+  parseProductionProposal,
+  parseSourceFrameRequest,
+  parseSourcesManifest,
+  parseTranscript,
+  parseVisualRequest,
+} from "./artifacts";
 
 const writableArtifactIds = [
   "production-proposal",
@@ -26,6 +38,20 @@ const writableArtifactIds = [
   "evidence-import-manifest",
   "source-map",
 ] as const;
+
+const runtimeParsers: Record<string, (value: unknown) => unknown> = {
+  "production-proposal": parseProductionProposal,
+  "source-manifest": parseSourcesManifest,
+  transcript: parseTranscript,
+  "edit-plan": parseEditPlan,
+  "enrichment-plan": parseEnrichmentPlan,
+  "asset-usage-plan": parseAssetUsagePlan,
+  "source-frame-request": parseSourceFrameRequest,
+  "focus-candidates": parseFocusCandidates,
+  "focus-grounding": parseFocusGrounding,
+  "music-request": parseMusicRequest,
+  "visual-request": parseVisualRequest,
+};
 
 test("production proposal contract is complete, deterministic, and self-validating", () => {
   const contract = getArtifactContract("production-proposal");
@@ -62,6 +88,22 @@ test("production proposal validation aggregates stable closed-schema issues", ()
       "/options/0/recommended:additionalProperties",
       "/options/1/id:unique",
     ]);
+  }
+});
+
+test("production proposal keeps cleanup and execution removal intent identical", () => {
+  const invalid = structuredClone(productionProposalExample) as Record<string, any>;
+  invalid.options[0].edit_execution_plan.remove_segments.push({ candidate_id: "candidate-extra", reason: "Not in cleanup." });
+  invalid.options[1].edit_execution_plan.remove_segments = [];
+
+  try {
+    assertProductionProposalContract(invalid);
+    throw new Error("expected proposal removal intent validation failure");
+  } catch (error) {
+    if (!(error instanceof ArtifactValidationError)) throw error;
+    const issues = error.issues.map((issue) => `${issue.path}:${issue.keyword}`);
+    expect(issues).toContain("/options/0/edit_execution_plan/remove_segments/1/candidate_id:reference");
+    expect(issues).toContain("/options/1/cleanup/cut_candidate_ids/0:reference");
   }
 });
 
@@ -108,6 +150,26 @@ test("every writable contract has closed array items and a self-validating examp
     const contract = getArtifactContract(artifactId)!;
     expect(hasBareObjectArrayItem(contract.schema)).toBe(false);
     assertArtifactContract(artifactId, contract.example);
+  }
+});
+
+test("writable contract examples pass their runtime parsers", () => {
+  for (const [artifactId, parse] of Object.entries(runtimeParsers)) {
+    parse(structuredClone(getArtifactContract(artifactId)!.example));
+  }
+});
+
+test("writable runtime parsers reject closed-schema root and nested unknown fields", () => {
+  for (const [artifactId, parse] of Object.entries(runtimeParsers)) {
+    const value = structuredClone(getArtifactContract(artifactId)!.example) as Record<string, unknown>;
+    value.unexpected = true;
+    expect(() => parse(value)).toThrow("failed validation");
+  }
+
+  for (const [artifactId, mutate] of nestedUnknownCases) {
+    const value = structuredClone(getArtifactContract(artifactId)!.example);
+    mutate(value as Record<string, any>);
+    expect(() => runtimeParsers[artifactId]!(value)).toThrow("failed validation");
   }
 });
 
@@ -168,3 +230,15 @@ function hasBareObjectArrayItem(value: unknown): boolean {
   }
   return Object.values(record).some(hasBareObjectArrayItem);
 }
+
+const nestedUnknownCases: Array<[string, (value: Record<string, any>) => void]> = [
+  ["source-manifest", (value) => { value.sources[0].unexpected = true; }],
+  ["transcript", (value) => { value.segments[0].unexpected = true; }],
+  ["edit-plan", (value) => { value.decisions = [{ action: "cut", candidate_id: "candidate-1", unexpected: true }]; }],
+  ["enrichment-plan", (value) => { value.elements = [{ id: "caption-1", source: "manual", element_id: "anchor", element_type: "caption_identity", start: 0, end: 1, reason: "show caption identity", unexpected: true }]; }],
+  ["asset-usage-plan", (value) => { value.music = [{ asset_ref: "assets/music.wav", start: 0, end: 1, purpose: "bed", unexpected: true }]; }],
+  ["source-frame-request", (value) => { value.frames[0].unexpected = true; }],
+  ["focus-candidates", (value) => { value.candidates[0].unexpected = true; }],
+  ["focus-grounding", (value) => { value.groundings[0].unexpected = true; }],
+  ["visual-request", (value) => { value.requests[0].unexpected = true; }],
+];

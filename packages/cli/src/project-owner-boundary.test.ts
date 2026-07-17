@@ -253,7 +253,10 @@ function writeTranscript(project: string, text: string): void {
 
 function proposalDocument(): ProductionProposalArtifact {
   const proposal = structuredClone(productionProposalExample) as ProductionProposalArtifact;
-  proposal.options.forEach((option) => { option.cleanup.cut_candidate_ids = []; });
+  proposal.options.forEach((option) => {
+    option.cleanup.cut_candidate_ids = [];
+    option.edit_execution_plan.remove_segments = [];
+  });
   return proposal;
 }
 
