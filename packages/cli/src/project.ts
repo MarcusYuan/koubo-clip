@@ -6287,7 +6287,7 @@ function renderResolvedEdl(
   filters.push(`${entries.map((_, index) => `[v${index}][a${index}]`).join("")}concat=n=${entries.length}:v=1:a=1[v][a]`);
   const filterPath = join(workDir, "strict-render.ffmpeg");
   writeFileSync(filterPath, filters.join(";\n") + "\n");
-  args.push("-filter_complex_script", filterPath, "-map", "[v]", "-map", "[a]", "-frames:v", String(schedule.total_frames), "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-r", String(output.fps), "-vsync", "cfr", "-c:a", "aac", "-ar", String(schedule.audio_sample_rate), "-ac", "2", "-movflags", "+faststart", outputPath);
+  args.push("-filter_complex_threads", "1", "-filter_complex_script", filterPath, "-map", "[v]", "-map", "[a]", "-frames:v", String(schedule.total_frames), "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-r", String(output.fps), "-vsync", "cfr", "-c:a", "aac", "-ar", String(schedule.audio_sample_rate), "-ac", "2", "-movflags", "+faststart", outputPath);
   const result = spawnSync("ffmpeg", args, { encoding: "utf8" });
   if (result.status !== 0) throw commandError("CONTRACT_RENDER_FAILED", `strict timeline render failed: ${result.stderr || result.stdout}`);
 }

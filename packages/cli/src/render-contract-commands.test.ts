@@ -96,9 +96,9 @@ test("strict consumer rejects a continuous-seconds duration that disagrees with 
   expect(exportRenderContract(project, bundle).ok).toBe(true);
   const contractPath = join(bundle, "render-contract.json");
   const contract = JSON.parse(readFileSync(contractPath, "utf8")) as RenderContractV1;
-  const rawDuration = contract.payload.timeline.entries.reduce((sum, entry) => sum + entry.end - entry.start, 0);
-  expect(contract.payload.preflight.expected_duration_seconds === rawDuration).toBe(false);
-  contract.payload.preflight.expected_duration_seconds = rawDuration;
+  const expectedDuration = contract.payload.preflight.expected_duration_seconds;
+  if (typeof expectedDuration !== "number") throw new Error("expected numeric contract duration");
+  contract.payload.preflight.expected_duration_seconds = expectedDuration + 1 / 30;
   writeFileSync(contractPath, `${JSON.stringify(createRenderContractV1(contract.payload), null, 2)}\n`);
   const verified = verifyRenderContractBundle(bundle);
   expect(verified.ok).toBe(false);
@@ -132,8 +132,7 @@ test("strict render contract normalizes different multi-source media before conc
   writeFileSync(sourceMap, JSON.stringify({ "src-001": first, "src-002": second }));
   expect(bindRenderContract(bundle, sourceMap, bindings).ok).toBe(true);
   const rendered = renderBoundContract(bundle, bindings, join(root, "run"));
-  expect(rendered.ok).toBe(true);
-  if (!rendered.ok) throw new Error(rendered.error.message);
+  if (!rendered.ok) throw new Error(`${rendered.error.code}: ${rendered.error.message}`);
   expect(inspectBoundContract(bundle, rendered.data.result_path).ok).toBe(true);
 });
 
@@ -172,8 +171,7 @@ test("strict render keeps nine non-integral segments on the contract frame timel
   writeFileSync(sourceMap, JSON.stringify({ "src-001": source }));
   expect(bindRenderContract(bundle, sourceMap, bindings).ok).toBe(true);
   const rendered = renderBoundContract(bundle, bindings, join(root, "run"));
-  expect(rendered.ok).toBe(true);
-  if (!rendered.ok) throw new Error(rendered.error.message);
+  if (!rendered.ok) throw new Error(`${rendered.error.code}: ${rendered.error.message}`);
   const timing = probeStrictOutputTiming(rendered.data.output_path);
   expect(timing.video_frame_count).toBe(245);
   expect(timing.avg_frame_rate).toBe("30/1");

@@ -3,11 +3,11 @@
   "cli_version": "0.0.9",
   "source_revision": "unknown",
   "distribution_kind": "source",
-  "cli_payload_digest": "sha256:38c841615d58be3932c4749083f2e360c706ff6d6c9edbd7f3ea20921c80c77f",
+  "cli_payload_digest": "sha256:fc96354f02dd9555efc005fcee563b46c057ab2ebe4ced1c7de33c110edc8b35",
   "renderer_resources_digest": "sha256:51d07c4346916bba3cad591e0ad99c8adf04377bd4f8ee6c23e796a33da7e346",
   "official_skill_digest": "sha256:29e54304322f5d2d3afc5b2b3c966fc0153249b0d7cd4dcf01727091ffec02f9",
   "artifact_contracts_digest": "sha256:b5cd1e1a9a30a2e7d8562d403f930f1e795361a737d7832cf2248f9512cb8d2e",
-  "runtime_compatibility_digest": "sha256:a6356acbfccf93e54393960c9503ef809e291e5b9a227569999342b57ae93cc8",
+  "runtime_compatibility_digest": "sha256:64bc24c104b8b6c47251feca6666b7c5322f5f92218bd5b8c11b0c9a6c256ebf",
   "schema_versions": {
     "sources.json": "2.0",
     "source-materialization.json": "1.0",
@@ -31,5 +31,5 @@
     "gsap@3.15.0",
     "hyperframes@0.7.36"
   ],
-  "delivery_digest": "sha256:4e692584f46c914052475ca8bfdc715fa60ceb5e00574ca4c922bd5880166803"
+  "delivery_digest": "sha256:28aa8c6ff1e981ddbd7c757fc65bc89af24b234a75344dbe9ce2fecb1826ebcb"
 }
