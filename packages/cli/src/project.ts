@@ -114,6 +114,7 @@ import {
 } from "./artifact-lifecycle";
 import { resolveExistingProjectPath, resolveProjectOutputPath } from "./project-paths";
 import { cliVersion, resolveHyperframesBinary } from "./bundle-paths";
+import { compileOutputFrameSchedule, type OutputFrameSchedule } from "./render-contract";
 import {
   assertRenderableHyperframesBlockForCard,
   defaultHyperframesBlockForCard,
@@ -6228,6 +6229,8 @@ export function executeResolvedRenderPlan(input: {
   sourcePaths: Record<string, string>;
   captions: Array<{ start: number; end: number; text: string }>;
   output: { filename: string; width: number; height: number; fps: number };
+  sourceHasAudio: Record<string, boolean>;
+  durationToleranceSeconds: number;
   plan?: EnrichmentPlanArtifact;
   assets?: AssetManifestArtifact;
   storyboard?: EnrichmentStoryboard;
@@ -6237,18 +6240,21 @@ export function executeResolvedRenderPlan(input: {
   const workDir = join(runRoot, ".work");
   mkdirSync(workDir, { recursive: true });
   const cleanPath = join(workDir, "clean.mp4");
-  renderResolvedEdl(input.timeline, input.sourcePaths, cleanPath, input.output);
+  const frameSchedule = compileOutputFrameSchedule(input.timeline.entries, input.output.fps);
+  renderResolvedEdl(input.timeline, input.sourcePaths, input.sourceHasAudio, cleanPath, input.output, frameSchedule);
   const subtitlesPath = join(workDir, "subtitles.srt");
   atomicWriteText(subtitlesPath, renderCaptionCuesSrt(input.captions));
   const outputPath = join(runRoot, input.output.filename);
+  let storyboardPath: string | undefined;
   if (input.plan) {
     if (!input.assets || !input.storyboard) throw commandError("CONTRACT_INVALID", "resolved enrichment requires frozen assets and storyboard");
-    const storyboardPath = join(workDir, "storyboard.json");
+    storyboardPath = join(workDir, "storyboard.json");
     renderEnrichedVideo(runRoot, cleanPath, subtitlesPath, input.plan, input.assets, { workDir, finalPath: outputPath, storyboardPath }, input.storyboard);
-    return { outputPath, cleanPath, subtitlesPath, storyboardPath };
+  } else if (!burnSubtitles(cleanPath, subtitlesPath, outputPath, workDir)) {
+    copyFileSync(cleanPath, outputPath);
   }
-  if (!burnSubtitles(cleanPath, subtitlesPath, outputPath, workDir)) copyFileSync(cleanPath, outputPath);
-  return { outputPath, cleanPath, subtitlesPath };
+  assertStrictOutputTiming(outputPath, frameSchedule, input.durationToleranceSeconds);
+  return { outputPath, cleanPath, subtitlesPath, ...(storyboardPath ? { storyboardPath } : {}) };
 }
 
 function renderCaptionCuesSrt(cues: Array<{ start: number; end: number; text: string }>): string {
@@ -6258,24 +6264,40 @@ function renderCaptionCuesSrt(cues: Array<{ start: number; end: number; text: st
 function renderResolvedEdl(
   edl: EdlArtifact,
   sourcePaths: Record<string, string>,
+  sourceHasAudio: Record<string, boolean>,
   outputPath: string,
   output: { width: number; height: number; fps: number },
+  schedule: OutputFrameSchedule,
 ): void {
   if (!commandExists("ffmpeg")) throw commandError("RENDER_PREFLIGHT_FAILED", "ffmpeg not found for strict render");
   const workDir = dirname(outputPath);
-  const parts = [...edl.entries].sort((a, b) => a.output_order - b.output_order).map((entry, index) => {
+  const entries = [...edl.entries].sort((a, b) => a.output_order - b.output_order);
+  const args: string[] = ["-y"];
+  const filters: string[] = [];
+  for (const [index, entry] of entries.entries()) {
     const sourcePath = sourcePaths[entry.source_id];
     if (!sourcePath) throw commandError("SOURCE_BINDING_MISSING", `missing bound source ${entry.source_id}`);
-    const partPath = join(workDir, `part-${String(index).padStart(3, "0")}.mp4`);
-    const vf = `scale=${output.width}:${output.height}:force_original_aspect_ratio=decrease,pad=${output.width}:${output.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${output.fps},format=yuv420p`;
-    const result = spawnSync("ffmpeg", ["-y", "-ss", String(entry.start), "-i", sourcePath, "-t", String(entry.end - entry.start), "-vf", vf, "-af", "aresample=48000,aformat=channel_layouts=stereo", "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-r", String(output.fps), "-c:a", "aac", "-ar", "48000", "-ac", "2", partPath], { encoding: "utf8" });
-    if (result.status !== 0) throw commandError("CONTRACT_RENDER_FAILED", `strict source segment render failed: ${result.stderr || result.stdout}`);
-    return partPath;
-  });
-  const concatPath = join(workDir, "concat.txt");
-  writeFileSync(concatPath, parts.map((path) => `file '${path.replaceAll("'", "'\\''")}'`).join("\n") + "\n");
-  const result = spawnSync("ffmpeg", ["-y", "-f", "concat", "-safe", "0", "-i", concatPath, "-c", "copy", "-movflags", "+faststart", outputPath], { encoding: "utf8" });
-  if (result.status !== 0) throw commandError("CONTRACT_RENDER_FAILED", `strict concat failed: ${result.stderr || result.stdout}`);
+    args.push("-ss", String(entry.start), "-t", String(entry.end - entry.start), "-i", sourcePath);
+    const segment = schedule.segments[index]!;
+    filters.push(`[${index}:v:0]setpts=PTS-STARTPTS,scale=${output.width}:${output.height}:force_original_aspect_ratio=decrease,pad=${output.width}:${output.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${output.fps},tpad=stop_mode=clone:stop=-1,trim=end_frame=${segment.frame_count},setpts=N/${output.fps}/TB,format=yuv420p[v${index}]`);
+    filters.push(sourceHasAudio[entry.source_id]
+      ? `[${index}:a:0]asetpts=PTS-STARTPTS,aresample=${schedule.audio_sample_rate}:async=0:first_pts=0,aformat=sample_rates=${schedule.audio_sample_rate}:channel_layouts=stereo,apad,atrim=end_sample=${segment.audio_sample_count},asetpts=N/SR/TB[a${index}]`
+      : `anullsrc=r=${schedule.audio_sample_rate}:cl=stereo,atrim=end_sample=${segment.audio_sample_count},asetpts=N/SR/TB[a${index}]`);
+  }
+  filters.push(`${entries.map((_, index) => `[v${index}][a${index}]`).join("")}concat=n=${entries.length}:v=1:a=1[v][a]`);
+  const filterPath = join(workDir, "strict-render.ffmpeg");
+  writeFileSync(filterPath, filters.join(";\n") + "\n");
+  args.push("-filter_complex_script", filterPath, "-map", "[v]", "-map", "[a]", "-frames:v", String(schedule.total_frames), "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-r", String(output.fps), "-vsync", "cfr", "-c:a", "aac", "-ar", String(schedule.audio_sample_rate), "-ac", "2", "-movflags", "+faststart", outputPath);
+  const result = spawnSync("ffmpeg", args, { encoding: "utf8" });
+  if (result.status !== 0) throw commandError("CONTRACT_RENDER_FAILED", `strict timeline render failed: ${result.stderr || result.stdout}`);
+}
+
+function assertStrictOutputTiming(path: string, schedule: OutputFrameSchedule, tolerance: number): void {
+  const timing = probeStrictOutputTiming(path);
+  const delta = Math.abs(timing.container_duration_seconds - schedule.expected_duration_seconds);
+  if (timing.video_frame_count !== schedule.total_frames || Math.abs(parseFrameRate(timing.avg_frame_rate) - schedule.fps) > 0.001 || delta > tolerance) {
+    throw commandError("RENDER_OUTPUT_INVALID", `strict output timing mismatch: frames expected=${schedule.total_frames} actual=${timing.video_frame_count}; duration expected=${schedule.expected_duration_seconds.toFixed(6)}s actual=${timing.container_duration_seconds.toFixed(6)}s delta=${delta.toFixed(6)}s tolerance=${tolerance.toFixed(6)}s`);
+  }
 }
 
 function installStoryboardRegistryElements(plan: EnrichmentPlanArtifact, publicDir: string): void {
@@ -7485,6 +7507,46 @@ function probeMedia(path: string): Record<string, unknown> & { duration_seconds:
   return { duration_seconds: 0, probe_ok: false, probe_error: (result.stderr || result.stdout || "unknown ffprobe error").trim() };
 }
 
+export function probeStrictOutputTiming(path: string): {
+  video_frame_count: number;
+  video_duration_seconds: number;
+  audio_duration_seconds?: number;
+  container_duration_seconds: number;
+  video_start_time_seconds: number;
+  avg_frame_rate: string;
+} {
+  const result = spawnSync("ffprobe", [
+    "-v", "error", "-count_frames", "-show_entries",
+    "stream=codec_type,nb_read_frames,nb_frames,duration,start_time,avg_frame_rate:format=duration",
+    "-of", "json", path,
+  ], { encoding: "utf8" });
+  if (result.status !== 0) throw commandError("RENDER_OUTPUT_INVALID", "strict output ffprobe failed");
+  let root: Record<string, unknown>;
+  try {
+    root = JSON.parse(result.stdout) as Record<string, unknown>;
+  } catch {
+    throw commandError("RENDER_OUTPUT_INVALID", "strict output ffprobe returned invalid JSON");
+  }
+  const streams = Array.isArray(root.streams) ? root.streams.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object") : [];
+  const video = streams.find((stream) => stream.codec_type === "video");
+  const audio = streams.find((stream) => stream.codec_type === "audio");
+  const format = root.format && typeof root.format === "object" ? root.format as Record<string, unknown> : {};
+  const frameCount = finiteNumber(video?.nb_read_frames) ?? finiteNumber(video?.nb_frames);
+  const videoDuration = finiteNumber(video?.duration);
+  const containerDuration = finiteNumber(format.duration);
+  if (!video || frameCount === undefined || videoDuration === undefined || containerDuration === undefined) {
+    throw commandError("RENDER_OUTPUT_INVALID", "strict output ffprobe is missing video timing facts");
+  }
+  return {
+    video_frame_count: Math.trunc(frameCount),
+    video_duration_seconds: videoDuration,
+    ...(finiteNumber(audio?.duration) === undefined ? {} : { audio_duration_seconds: finiteNumber(audio?.duration)! }),
+    container_duration_seconds: containerDuration,
+    video_start_time_seconds: finiteNumber(video.start_time) ?? 0,
+    avg_frame_rate: stringOr(video.avg_frame_rate, "0/0"),
+  };
+}
+
 export function probePortableSourceIdentity(path: string): NonNullable<SourceAsset["identity"]> {
   const bytes = readFileSync(path);
   const sha256 = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -7519,12 +7581,12 @@ export function probePortableSourceIdentity(path: string): NonNullable<SourceAss
       avg_frame_rate: stringOr(video.avg_frame_rate, "0/0"),
       pixel_format: stringOr(video.pix_fmt, "unknown"),
     },
-    audio: audio ? {
+    ...(audio ? { audio: {
       codec_name: stringOr(audio.codec_name, "unknown"),
       sample_rate: Math.max(0, Math.trunc(finiteNumber(audio.sample_rate) ?? 0)),
       channels: Math.max(0, Math.trunc(finiteNumber(audio.channels) ?? 0)),
       channel_layout: stringOr(audio.channel_layout, "unknown"),
-    } : undefined,
+    } } : {}),
   };
 }
 
@@ -7548,6 +7610,12 @@ function finiteNumber(value: unknown): number | undefined {
 
 function stringOr(value: unknown, fallback: string): string {
   return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function parseFrameRate(value: string): number {
+  const [numerator, denominator = 1] = value.split("/").map(Number);
+  const rate = numerator! / denominator!;
+  return Number.isFinite(rate) ? rate : 0;
 }
 
 function portableSourcesForWrite(manifest: SourcesManifest): unknown {

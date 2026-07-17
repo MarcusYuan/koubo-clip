@@ -65,7 +65,7 @@ export type DeliveryComponentDigestInput = DeliveryDigestSource | readonly Deliv
 
 export type RuntimeCompatibilityInput = Pick<
   DeliveryManifestBase,
-  "renderer_resources_digest" | "schema_versions" | "capability_ids" | "runtime_dependencies"
+  "cli_payload_digest" | "renderer_resources_digest" | "schema_versions" | "capability_ids" | "runtime_dependencies"
 >;
 
 export type DeliveryManifestPayloadDigests = Pick<
@@ -167,11 +167,13 @@ export function computeOfficialSkillDigest(input: DeliveryComponentDigestInput):
  * runtime dependency IDs that those bytes claim to support.
  */
 export function computeRuntimeCompatibilityDigest(input: RuntimeCompatibilityInput): DeliveryDigest {
+  const cliPayloadDigest = parseDigest(input.cli_payload_digest, "cli_payload_digest", "DELIVERY_MANIFEST_INVALID");
   const rendererDigest = parseDigest(input.renderer_resources_digest, "renderer_resources_digest", "DELIVERY_MANIFEST_INVALID");
   const schemaVersions = parseStringRecord(input.schema_versions, "schema_versions", "DELIVERY_MANIFEST_INVALID");
   const capabilityIds = parseUniqueStrings(input.capability_ids, "capability_ids", "DELIVERY_MANIFEST_INVALID");
   const runtimeDependencies = parseUniqueStrings(input.runtime_dependencies, "runtime_dependencies", "DELIVERY_MANIFEST_INVALID");
   const canonical = JSON.stringify({
+    cli_payload_digest: cliPayloadDigest,
     renderer_resources_digest: rendererDigest,
     schema_versions: Object.fromEntries(Object.entries(schemaVersions).sort(([left], [right]) => compareUtf8(left, right))),
     capability_ids: [...capabilityIds].sort(compareUtf8),

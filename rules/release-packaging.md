@@ -120,7 +120,7 @@ npm publish --access public --registry=https://registry.npmjs.org/
 ## Delivery identity
 
 - npm 和 internal package 都必须包含由各自最终分发文件树生成的 `delivery-manifest.json`，并通过 `koubo-clip delivery verify --json`；不同布局允许 component digest 不同，但必须由同一 schema 和生成器定义。
-- Manifest 固定 CLI payload、renderer resources、official Skill、runtime compatibility digest、`artifact_contracts_digest`、schema versions、capability IDs 和 exact dependencies；唯一当前 schema 3.0 的 `delivery_digest` 是这些身份字段的 canonical aggregate，可供 Hermes 与 LocalAgent 比较完整交付身份。1.0/2.0 manifest 不再读取或迁移。
+- Manifest 固定 CLI payload、renderer resources、official Skill、runtime compatibility digest、`artifact_contracts_digest`、schema versions、capability IDs 和 exact dependencies；runtime compatibility digest 必须同时绑定 CLI payload 与 renderer resources，确保渲染代码变化会阻止跨版本 strict consume。唯一当前 schema 3.0 的 `delivery_digest` 是这些身份字段的 canonical aggregate，可供 Hermes 与 LocalAgent 比较完整交付身份。1.0/2.0 manifest 不再读取或迁移。
 - 下一次包含 artifact contract discovery 的正式交付必须让 delivery identity 绑定 artifact contract registry/schema digests；CLI、Skill、template/example 和 validator 不得来自不同合同版本。
 - npm publish 必须消费已经完成安装态验收的 exact canonical tarball，禁止在 publish job 从 checkout 隐式重新打包。
 - publish 后必须从 registry 下载相同版本并再次执行安装态 delivery/Skill/render-contract/render/inspect 验收；registry tarball 外层 SHA-256 必须等于 canonical tarball。

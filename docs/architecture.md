@@ -301,6 +301,8 @@ strict machine: bundle + explicit source map -> verified binding -> executeResol
 
 Skill 只存在于 authoring 段。CLI compiler 把 agent decisions 解析成冻结后的执行闭包；strict runtime 与 authoring runtime 只在 `executeResolvedRenderPlan` 汇合。Strict runtime 不读取 transcript、analysis、edit-plan 或 enrichment-plan，也没有 fallback。
 
+Strict timeline 的权威时长属于 output frame domain：CLI 按累计 output time 对 `fps` 取整得到每个片段的帧边界，总帧数是最后一个累计边界，`preflight.expected_duration_seconds = total_frames / fps`。渲染器在同一个 FFmpeg filter graph 中把各片段归一化到精确帧数和音频采样数后 concat；inspect 同时校验 exact video frame count 和容器时长容差。禁止逐段独立取整、逐段封装 MP4 后 copy-concat，或按片段数量扩大 tolerance。
+
 Source lineage 分为 `source-identity:*`、`source-materialization` 和 `source:*` bytes。规划依赖 identity；ASR、抽帧和本地 render 才依赖 bytes。External evidence import 先验证完整批次的 containment、regular-file、hash、size、JPEG probe 和 request/EDL mapping，再原子发布 canonical evidence。
 
 Evidence JPEG probe 在进程边界区分 executable/transport unavailable、non-zero exit、invalid output、codec mismatch 和 dimension mismatch；size、hash、request/candidate binding 分别校验。错误只暴露稳定 code 和脱敏事实。

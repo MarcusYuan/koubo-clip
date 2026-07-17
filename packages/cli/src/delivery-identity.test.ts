@@ -99,6 +99,7 @@ test("delivery manifest v3 binds every released component to one aggregate diges
   const manifest = manifestFixture();
   expect(parseDeliveryManifest(manifest)).toEqual(manifest);
   expect(computeDeliveryDigest(manifest)).toBe(manifest.delivery_digest);
+  expect(manifestFixture({ cli_payload_digest: digest("9") }).runtime_compatibility_digest === manifest.runtime_compatibility_digest).toBe(false);
   expectDeliveryError(
     () =>
       verifyDeliveryManifest(
@@ -198,6 +199,7 @@ function manifestFixture(overrides: Partial<DeliveryManifestV3> = {}): DeliveryM
     runtime_compatibility_digest:
       identityOverrides.runtime_compatibility_digest ??
       computeRuntimeCompatibilityDigest({
+        cli_payload_digest: identityOverrides.cli_payload_digest ?? base.cli_payload_digest,
         renderer_resources_digest: identityOverrides.renderer_resources_digest ?? base.renderer_resources_digest,
         schema_versions: identityOverrides.schema_versions ?? base.schema_versions,
         capability_ids: identityOverrides.capability_ids ?? base.capability_ids,

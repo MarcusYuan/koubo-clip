@@ -156,7 +156,7 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 - Source frames 是确认前的只读素材理解证据，不依赖 EDL，不触发 edit plan、focus、asset acquisition、enrichment 或 render。CLI 不执行视觉语义分析。
 - Source-frame lineage 只绑定 source bytes、当前 request 和 extractor contract/version；transcript 文案变化本身不应让同一 source time 的已验证 frame bytes stale。
 - EDL ranges 必须引用已有 source、位于该 source duration 内，并且在 output order 中不能错误重叠。
-- Rendered duration 应在小容差内匹配 EDL。
+- Strict render 按累计 output timeline 计算帧边界，片段帧数之和必须等于 `round(total_duration * fps)`；不得逐段独立取整或 copy-concat 分段 MP4。最终视频帧数必须 exact，容器 duration 在既定小容差内匹配 frame-domain expected duration；失败诊断必须包含 expected、actual、delta 和 tolerance。
 - 除非明确关闭，captions 是期望存在的。
 - Enrichment elements/cards/music 必须使用 output-timeline timing，而不是 source timing。
 - visual enrichment 启用时，captions 在 HyperFrames composition 中使用受支持的 `anchor` identity。

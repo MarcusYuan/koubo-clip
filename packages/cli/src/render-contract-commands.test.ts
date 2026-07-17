@@ -3,8 +3,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { createProject, exploreProject } from "./project";
+import { createProject, exploreProject, probePortableSourceIdentity, probeStrictOutputTiming } from "./project";
 import { bindRenderContract, exportRenderContract, inspectBoundContract, renderBoundContract, verifyRenderContractBundle } from "./render-contract-commands";
+import { compileOutputFrameSchedule, createRenderContractV1, type RenderContractV1 } from "./render-contract";
 import { confirmProposalAndWriteEditPlan } from "./test-fixtures";
 
 test("strict render contract binds source and renders without authoring artifacts", async () => {
@@ -81,6 +82,30 @@ test("strict render contract fails closed after source replacement", async () =>
     expect(["SOURCE_IDENTITY_HASH_MISMATCH", "SOURCE_IDENTITY_PROBE_MISMATCH"]).toContain(result.error.code);
   });
 
+test("strict consumer rejects a continuous-seconds duration that disagrees with the frame schedule", async () => {
+  if (spawnSync("ffmpeg", ["-version"]).status !== 0) return;
+  const root = mkdtempSync(join(tmpdir(), "koubo-contract-duration-contract-"));
+  const source = join(root, "raw.mp4");
+  const project = join(root, "project");
+  makeVideo(source, 1.2);
+  expect(createProject([source], { projectPath: project }).ok).toBe(true);
+  writeFileSync(join(project, "transcript.json"), JSON.stringify({ timing_granularity: "segment", segments: [{ source_id: "src-001", start: 0, end: 1, text: "duration" }] }));
+  expect((await exploreProject(project, { asr: "external" })).ok).toBe(true);
+  confirmProposalAndWriteEditPlan(project);
+  const bundle = join(root, "bundle");
+  expect(exportRenderContract(project, bundle).ok).toBe(true);
+  const contractPath = join(bundle, "render-contract.json");
+  const contract = JSON.parse(readFileSync(contractPath, "utf8")) as RenderContractV1;
+  const rawDuration = contract.payload.timeline.entries.reduce((sum, entry) => sum + entry.end - entry.start, 0);
+  expect(contract.payload.preflight.expected_duration_seconds === rawDuration).toBe(false);
+  contract.payload.preflight.expected_duration_seconds = rawDuration;
+  writeFileSync(contractPath, `${JSON.stringify(createRenderContractV1(contract.payload), null, 2)}\n`);
+  const verified = verifyRenderContractBundle(bundle);
+  expect(verified.ok).toBe(false);
+  if (verified.ok) throw new Error("expected duration contract rejection");
+  expect(verified.error.code).toBe("CONTRACT_INVALID");
+});
+
 test("strict render contract normalizes different multi-source media before concat", async () => {
   if (spawnSync("ffmpeg", ["-version"]).status !== 0) return;
   const root = mkdtempSync(join(tmpdir(), "koubo-contract-multi-"));
@@ -89,7 +114,6 @@ test("strict render contract normalizes different multi-source media before conc
   makeVideo(first, 1);
   const secondResult = spawnSync("ffmpeg", [
     "-y", "-f", "lavfi", "-i", "testsrc=size=120x120:rate=15",
-    "-f", "lavfi", "-i", "sine=frequency=660:duration=1",
     "-t", "1", "-pix_fmt", "yuv420p", second,
   ], { encoding: "utf8" });
   if (secondResult.status !== 0) throw new Error(secondResult.stderr || secondResult.stdout);
@@ -111,6 +135,63 @@ test("strict render contract normalizes different multi-source media before conc
   expect(rendered.ok).toBe(true);
   if (!rendered.ok) throw new Error(rendered.error.message);
   expect(inspectBoundContract(bundle, rendered.data.result_path).ok).toBe(true);
+});
+
+test("strict render keeps nine non-integral segments on the contract frame timeline", async () => {
+  if (spawnSync("ffmpeg", ["-version"]).status !== 0) return;
+  const root = mkdtempSync(join(tmpdir(), "koubo-contract-timing-"));
+  const source = join(root, "raw.mp4");
+  const project = join(root, "project");
+  makeVideo(source, 10);
+  expect(createProject([source], { projectPath: project }).ok).toBe(true);
+  writeFileSync(join(project, "transcript.json"), JSON.stringify({ timing_granularity: "segment", segments: [{ source_id: "src-001", start: 0, end: 9, text: "timing" }] }));
+  expect((await exploreProject(project, { asr: "external" })).ok).toBe(true);
+  confirmProposalAndWriteEditPlan(project);
+  const bundle = join(root, "bundle");
+  expect(exportRenderContract(project, bundle).ok).toBe(true);
+
+  const contractPath = join(bundle, "render-contract.json");
+  const original = JSON.parse(readFileSync(contractPath, "utf8")) as RenderContractV1;
+  const durations = [0.95, 0.72, 1.18, 0.85, 0.98, 0.74, 1.21, 0.81, 0.726667];
+  let sourceCursor = 0;
+  let outputCursor = 0;
+  const entries = durations.map((duration, output_order) => {
+    const entry = { source_id: "src-001", start: sourceCursor, end: sourceCursor + duration, output_start: outputCursor, output_end: outputCursor + duration, output_order, reason: "keep" };
+    sourceCursor += duration + 0.1;
+    outputCursor += duration;
+    return entry;
+  });
+  const schedule = compileOutputFrameSchedule(entries, 30);
+  original.payload.timeline = { entries };
+  original.payload.captions = { cues: [] };
+  original.payload.preflight.expected_duration_seconds = schedule.expected_duration_seconds;
+  writeFileSync(contractPath, `${JSON.stringify(createRenderContractV1(original.payload), null, 2)}\n`);
+
+  const sourceMap = join(root, "source-map.json");
+  const bindings = join(root, "bindings.json");
+  writeFileSync(sourceMap, JSON.stringify({ "src-001": source }));
+  expect(bindRenderContract(bundle, sourceMap, bindings).ok).toBe(true);
+  const rendered = renderBoundContract(bundle, bindings, join(root, "run"));
+  expect(rendered.ok).toBe(true);
+  if (!rendered.ok) throw new Error(rendered.error.message);
+  const timing = probeStrictOutputTiming(rendered.data.output_path);
+  expect(timing.video_frame_count).toBe(245);
+  expect(timing.avg_frame_rate).toBe("30/1");
+  expect(inspectBoundContract(bundle, rendered.data.result_path).ok).toBe(true);
+
+  makeVideo(rendered.data.output_path, 9.2);
+  const identity = probePortableSourceIdentity(rendered.data.output_path);
+  const result = JSON.parse(readFileSync(rendered.data.result_path, "utf8")) as { output: Record<string, unknown> };
+  result.output = { ...result.output, sha256: identity.sha256, size_bytes: identity.size_bytes, duration_seconds: identity.duration_seconds, probe: identity };
+  writeFileSync(rendered.data.result_path, `${JSON.stringify(result, null, 2)}\n`);
+  const rejected = inspectBoundContract(bundle, rendered.data.result_path);
+  expect(rejected.ok).toBe(false);
+  const inspection = JSON.parse(readFileSync(join(root, "run", "render-contract-inspection.json"), "utf8")) as { blockers: string[]; checks: Array<{ id: string; message: string }> };
+  expect(inspection.blockers).toContain("video-frame-count");
+  expect(inspection.blockers).toContain("duration");
+  const durationMessage = inspection.checks.find((check) => check.id === "duration")?.message ?? "";
+  expect(durationMessage).toContain("output duration mismatch");
+  for (const field of ["expected=", "actual=", "delta=", "tolerance="]) expect(durationMessage).toContain(field);
 });
 
 function makeVideo(path: string, duration: number): void {

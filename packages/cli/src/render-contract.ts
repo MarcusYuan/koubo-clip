@@ -108,6 +108,20 @@ export type RenderTimelineEntryV1 = {
   label?: string;
 };
 
+export type OutputFrameSchedule = {
+  fps: number;
+  audio_sample_rate: number;
+  total_frames: number;
+  expected_duration_seconds: number;
+  segments: Array<{
+    output_order: number;
+    start_frame: number;
+    end_frame: number;
+    frame_count: number;
+    audio_sample_count: number;
+  }>;
+};
+
 export type RenderCaptionCueV1 = {
   start: number;
   end: number;
@@ -215,6 +229,45 @@ export function renderBindingDigest(binding: Pick<RenderBindingV1, "contract_dig
 
 export function strictRenderResultDigest(result: StrictRenderResultV1 | unknown): Sha256Digest {
   return sha256Digest(canonicalJson(result));
+}
+
+export function compileOutputFrameSchedule(
+  entries: readonly Pick<RenderTimelineEntryV1, "output_order" | "start" | "end">[],
+  fps: number,
+  audioSampleRate = 48_000,
+): OutputFrameSchedule {
+  if (!Number.isSafeInteger(fps) || fps <= 0) fail(renderContractErrorCodes.INVALID_RENDER_CONTRACT, "output fps must be a positive integer", "output.fps");
+  if (!Number.isSafeInteger(audioSampleRate) || audioSampleRate <= 0) fail(renderContractErrorCodes.INVALID_RENDER_CONTRACT, "audio sample rate must be a positive integer", "output.audio_sample_rate");
+  let cumulativeSeconds = 0;
+  let previousFrame = 0;
+  let previousSample = 0;
+  const segments = entries.map((entry, index) => {
+    if (entry.output_order !== index) fail(renderContractErrorCodes.INVALID_RENDER_CONTRACT, `timeline entry ${index} has non-contiguous output_order`, `timeline.entries[${index}].output_order`);
+    const duration = entry.end - entry.start;
+    if (!Number.isFinite(duration) || duration <= 0) fail(renderContractErrorCodes.INVALID_RENDER_CONTRACT, `timeline entry ${index} has invalid duration`, `timeline.entries[${index}].end`);
+    cumulativeSeconds += duration;
+    const endFrame = Math.round(cumulativeSeconds * fps);
+    const endSample = Math.round(endFrame * audioSampleRate / fps);
+    const frameCount = endFrame - previousFrame;
+    if (frameCount <= 0) fail(renderContractErrorCodes.INVALID_RENDER_CONTRACT, `timeline entry ${index} is shorter than one output frame`, `timeline.entries[${index}]`);
+    const segment = {
+      output_order: entry.output_order,
+      start_frame: previousFrame,
+      end_frame: endFrame,
+      frame_count: frameCount,
+      audio_sample_count: endSample - previousSample,
+    };
+    previousFrame = endFrame;
+    previousSample = endSample;
+    return segment;
+  });
+  return {
+    fps,
+    audio_sample_rate: audioSampleRate,
+    total_frames: previousFrame,
+    expected_duration_seconds: previousFrame / fps,
+    segments,
+  };
 }
 
 export function createRenderContractV1(payload: RenderContractPayloadV1 | unknown): RenderContractV1 {

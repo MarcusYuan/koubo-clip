@@ -452,7 +452,7 @@ koubo-clips/<slug>/
 - `edl.json` v2 只含 `source_id` 与 source-local ranges。CLI 在 materialized render 或 strict binding 时才解析真实路径。
 - `render-contract export` 生成不可覆盖的目录合同包。合同 digest 仅覆盖 canonical payload；bundle 只含实际引用的 content-addressed 非源素材。
 - Strict consumer 只读取合同、bundle assets 和显式 source binding。它不得读取 authoring transcript、analysis、edit-plan 或 enrichment-plan，不得重规划、补默认值或修复项目。
-- Hash/size 必须 exact；source probe duration tolerance 为 0.05 秒；输出 duration tolerance 为 `max(0.05, 2/fps)`。Mismatch 一律 fail closed。
+- Hash/size 必须 exact；source probe duration tolerance 为 0.05 秒。Strict output 的 expected duration 必须由累计 EDL 边界量化后的 exact target frame count 除以 fps 得到，视频帧数必须 exact；容器 duration tolerance 仍为 `max(0.05, 2/fps)`，不得按片段数量扩大。Mismatch 一律 fail closed，并报告 expected、actual、delta 和 tolerance。
 - CLI delivery 必须公开 CLI version、payload/resources/Skill digest、`artifact_contracts_digest`、schema versions、capability IDs 和 exact GSAP/HyperFrames versions，并能在 export、verify、bind、render 前验证兼容性。`delivery-manifest.json` 唯一当前版本是 3.0，旧 manifest 不读取或迁移。正式 npm delivery 的 manifest 必须从 npm packlist 物化后的最终文件树生成；CI 验收、npm publish 和 GitHub Release 必须复用同一个 canonical tarball，不能从源码 checkout 再次打包。正式版本只有在空目录安装该 tarball 后独立通过 Skill、delivery、contract export、strict render 和 inspect 验收才可发布。
 - `.virtual/*` 只用于 CLI 内部 lineage，`project status` 不得把它作为外部可读取 artifact path。Proposal selection fingerprint 通过 `project proposal --json.option_selection_fingerprints` 或 `project status --json.fingerprints["proposal-selection:<option-id>"]` 获取。
 - Evidence import 必须区分 probe 不可用、probe 进程失败、probe 输出无效、codec、尺寸、size、hash 和 binding mismatch，同时保持错误脱敏和批次 commit-last。

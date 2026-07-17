@@ -6,6 +6,7 @@ import {
   RenderContractError,
   assertBundleRelativeAssetPath,
   canonicalJson,
+  compileOutputFrameSchedule,
   createRenderContractV1,
   parseRenderBindingV1,
   parseRenderContractV1,
@@ -103,6 +104,23 @@ test("canonical JSON rejects values that JSON.stringify would silently discard o
   const cyclic: Record<string, unknown> = {};
   cyclic.self = cyclic;
   expectCode(() => canonicalJson(cyclic), renderContractErrorCodes.INVALID_JSON_VALUE);
+});
+
+test("output frame schedule uses cumulative boundaries without per-segment drift", () => {
+  expect(compileOutputFrameSchedule([{ output_order: 0, start: 0, end: 1 }], 30).total_frames).toBe(30);
+  expect(compileOutputFrameSchedule([{ output_order: 0, start: 0, end: 0.95 }], 30).total_frames).toBe(29);
+
+  const shortDurations = [0.95, 0.72, 1.18, 0.85, 0.98, 0.74, 1.21, 0.81, 0.726667];
+  const short = compileOutputFrameSchedule(shortDurations.map((duration, output_order) => ({ output_order, start: 0, end: duration })), 30);
+  expect(short.total_frames).toBe(245);
+  expect(short.segments.reduce((sum, segment) => sum + segment.frame_count, 0)).toBe(short.total_frames);
+
+  const reportedDurations = [12.1, 11.7, 13.05, 9.4, 14.2, 10.35, 12.6, 11.8, 12.966667];
+  const reported = compileOutputFrameSchedule(reportedDurations.map((duration, output_order) => ({ output_order, start: 0, end: duration })), 30);
+  expect(reported.total_frames).toBe(3245);
+  expect(Number(reported.expected_duration_seconds.toFixed(6))).toBe(108.166667);
+
+  expectCode(() => compileOutputFrameSchedule([{ output_order: 0, start: 0, end: 0.01 }], 30), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
 });
 
 test("render contract parser is closed and verifies the digest over payload only", () => {

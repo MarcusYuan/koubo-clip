@@ -17,6 +17,7 @@ import {
 } from "./artifacts";
 import {
   canonicalJson,
+  compileOutputFrameSchedule,
   createRenderContractV1,
   parseRenderBindingV1,
   parseRenderContractV1,
@@ -38,10 +39,12 @@ import {
   type StrictRenderResultV1,
   type Sha256Digest,
   type RenderSourceIdentityV1,
+  type OutputFrameSchedule,
 } from "./render-contract";
 import {
   compileEdlProject,
   executeResolvedRenderPlan,
+  probeStrictOutputTiming,
   probePortableSourceIdentity,
   resolveRenderContractStoryboard,
   type EnrichmentStoryboard,
@@ -93,10 +96,20 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
     staging = `${outputDir}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     mkdirSync(join(staging, "assets"), { recursive: true });
     const { contractAssets, frozenAssets, bundlePaths } = stageReferencedAssets(projectPath, plan, authoringAssets, staging);
-    const firstEntry = [...edl.entries].sort((a, b) => a.output_order - b.output_order)[0]!;
+    const timelineEntries = (() => {
+      let outputCursor = 0;
+      return [...edl.entries].sort((a, b) => a.output_order - b.output_order).map(({ source_id, start, end, output_order, reason, quote, label }) => {
+        const outputStart = outputCursor;
+        outputCursor += end - start;
+        return { source_id, start, end, output_start: outputStart, output_end: outputCursor, output_order, reason, ...(quote ? { quote } : {}), ...(label ? { label } : {}) };
+      });
+    })();
+    const fps = 30;
+    const frameSchedule = compileOutputFrameSchedule(timelineEntries, fps);
+    const firstEntry = timelineEntries[0]!;
     const firstSource = rawSources.sources.find((source) => source.source_id === firstEntry.source_id)!;
     const output = resolveOutputSpec(plan?.profile.aspect_ratio ?? "source", firstSource.identity!.video.display_width, firstSource.identity!.video.display_height);
-    const duration = edlDuration(edl);
+    const duration = frameSchedule.expected_duration_seconds;
     const storyboard = plan ? resolveRenderContractStoryboard({
       projectPath,
       width: output.width,
@@ -125,19 +138,12 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
           require_audio: Boolean(source.identity!.audio),
         },
       })),
-      timeline: { entries: (() => {
-        let outputCursor = 0;
-        return edl.entries.map(({ source_id, start, end, output_order, reason, quote, label }) => {
-          const outputStart = outputCursor;
-          outputCursor += end - start;
-          return { source_id, start, end, output_start: outputStart, output_end: outputCursor, output_order, reason, ...(quote ? { quote } : {}), ...(label ? { label } : {}) };
-        });
-      })() },
+      timeline: { entries: timelineEntries },
       captions: { cues },
       composition: json({ mode: plan ? "resolved_storyboard" : "clean_captions", ...(plan ? { enrichment_plan: plan, storyboard } : {}) }),
       assets: contractAssets,
       audio: json(plan?.audio ?? { music: [], sfx: [] }),
-      output: json({ container: "mp4", width: output.width, height: output.height, fps: 30, video_codec: "h264", pixel_format: "yuv420p", audio_codec: "aac", audio_sample_rate: 48000, audio_channels: 2, canonical_filename: "koubo-final.mp4" }),
+      output: json({ container: "mp4", width: output.width, height: output.height, fps, video_codec: "h264", pixel_format: "yuv420p", audio_codec: "aac", audio_sample_rate: 48000, audio_channels: 2, canonical_filename: "koubo-final.mp4" }),
       preflight: json({ required_tools: ["ffmpeg", "ffprobe"], required_filters: ["scale", "pad", "fps", "format", "aresample", "aformat"], runtime_dependencies: [...RUNTIME_DEPENDENCIES], expected_duration_seconds: duration, source_probe_tolerance_seconds: 0.05 }),
       inspection: json({ duration_tolerance_seconds: Math.max(0.05, 2 / 30), require_video: true, require_audio: rawSources.sources.some((source) => Boolean(source.identity?.audio)), checks: storyboard?.qa_checks ?? [], hard_acceptance: true }),
       authoring_lineage: json({ members: authoringLineage(projectPath, [projectArtifacts.sources, projectArtifacts.edl, projectArtifacts.transcriptJson, ...(plan ? [projectArtifacts.enrichmentPlan] : []), ...(plan && existsSync(assetManifestPath) ? [projectArtifacts.assetManifest] : [])]) }),
@@ -259,12 +265,15 @@ export function renderBoundContract(bundleDir: string, bindingsPath: string, run
     const storyboard = composition.mode === "resolved_storyboard" ? composition.storyboard as EnrichmentStoryboard : undefined;
     const assets: AssetManifestArtifact = { assets: contract.payload.assets.map((asset) => ({ id: asset.asset_id, path: asset.bundle_path, type: asset.media_type as AssetManifestArtifact["assets"][number]["type"], source: "imported", provenance: "render-contract" })) };
     const output = contract.payload.output as Record<string, unknown>;
+    const inspectionPolicy = contract.payload.inspection as Record<string, unknown>;
     const executed = executeResolvedRenderPlan({
       runRoot: staging,
       timeline: { contract_version: "2.0", entries: contract.payload.timeline.entries },
       sourcePaths: Object.fromEntries(binding.sources.map((source) => [source.source_id, source.resolved_path])),
       captions: contract.payload.captions.cues,
       output: { filename: text(output.canonical_filename, "output.canonical_filename"), width: integer(output.width, "output.width"), height: integer(output.height, "output.height"), fps: integer(output.fps, "output.fps") },
+      sourceHasAudio: Object.fromEntries(contract.payload.sources.map((source) => [source.source_id, Boolean(source.identity.audio)])),
+      durationToleranceSeconds: number(inspectionPolicy.duration_tolerance_seconds, "inspection.duration_tolerance_seconds"),
       plan,
       assets: plan ? assets : undefined,
       storyboard,
@@ -298,6 +307,7 @@ export function inspectBoundContract(bundleDir: string, resultPath: string): Com
     if (result.contract_digest !== contract.contract_digest) throw coded("CONTRACT_DIGEST_MISMATCH", "strict result belongs to another contract");
     const outputPath = resolveContained(dirname(resultPath), result.output.output_path);
     const identity = probePortableSourceIdentity(outputPath);
+    const timing = probeStrictOutputTiming(outputPath);
     const checks: StrictInspectionCheckV1[] = [];
     checks.push(check("output-hash", identity.sha256 === result.output.sha256, "canonical output sha256 matches strict result"));
     checks.push(check("output-size", identity.size_bytes === result.output.size_bytes, "canonical output byte size matches strict result"));
@@ -305,7 +315,10 @@ export function inspectBoundContract(bundleDir: string, resultPath: string): Com
     const inspectionPolicy = contract.payload.inspection as Record<string, unknown>;
     const outputSpec = contract.payload.output as Record<string, unknown>;
     const tolerance = number(inspectionPolicy.duration_tolerance_seconds, "inspection.duration_tolerance_seconds");
-    checks.push(check("duration", Math.abs(identity.duration_seconds - expected) <= tolerance, `output duration is within ${tolerance}s`));
+    const frameSchedule = contractFrameSchedule(contract);
+    const durationDelta = Math.abs(timing.container_duration_seconds - expected);
+    checks.push(check("video-frame-count", timing.video_frame_count === frameSchedule.total_frames, `video frame count: expected=${frameSchedule.total_frames} actual=${timing.video_frame_count}`));
+    checks.push(check("duration", durationDelta <= tolerance, `${durationDelta <= tolerance ? "output duration matches contract" : "output duration mismatch"}: expected=${seconds(expected)}s actual=${seconds(timing.container_duration_seconds)}s delta=${seconds(durationDelta)}s tolerance=${seconds(tolerance)}s`));
     checks.push(check("video-stream", identity.video.width > 0 && identity.video.height > 0, "canonical output has a video stream"));
     checks.push(check("video-dimensions", identity.video.display_width === integer(outputSpec.width, "output.width") && identity.video.display_height === integer(outputSpec.height, "output.height"), "canonical output dimensions match the contract"));
     checks.push(check("video-codec", identity.video.codec_name === text(outputSpec.video_codec, "output.video_codec"), "canonical output video codec matches the contract"));
@@ -351,7 +364,20 @@ function readContract(bundleDir: string): RenderContractV1 {
   if (value && typeof value === "object" && "schema_version" in value && (value as { schema_version?: unknown }).schema_version !== "1.0") {
     throw coded("CONTRACT_SCHEMA_UNSUPPORTED", `unsupported render contract schema: ${String((value as { schema_version?: unknown }).schema_version)}`);
   }
-  return parseRenderContractV1(value);
+  const contract = parseRenderContractV1(value);
+  contractFrameSchedule(contract);
+  return contract;
+}
+
+function contractFrameSchedule(contract: RenderContractV1): OutputFrameSchedule {
+  const output = contract.payload.output as Record<string, unknown>;
+  const preflight = contract.payload.preflight as Record<string, unknown>;
+  const schedule = compileOutputFrameSchedule(contract.payload.timeline.entries, integer(output.fps, "output.fps"));
+  const expected = number(preflight.expected_duration_seconds, "preflight.expected_duration_seconds");
+  if (Math.abs(expected - schedule.expected_duration_seconds) > 1e-9) {
+    throw coded("CONTRACT_INVALID", `preflight.expected_duration_seconds must equal the frame-domain duration ${schedule.expected_duration_seconds}`);
+  }
+  return schedule;
 }
 
 function liveRuntimeIdentity(): JsonObject {
@@ -516,8 +542,8 @@ function safeId(value: string): string {
   return normalized || "check";
 }
 
-function edlDuration(edl: EdlArtifact): number {
-  return edl.entries.reduce((sum, entry) => sum + entry.end - entry.start, 0);
+function seconds(value: number): string {
+  return value.toFixed(6);
 }
 
 function safeExtension(value: string): string {
