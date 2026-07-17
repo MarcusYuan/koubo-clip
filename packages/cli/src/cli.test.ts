@@ -70,8 +70,10 @@ test("capabilities reports stable software contracts without probing or loading 
     expect(json.provider_modes.standalone.artifact_contract).toBe("shared");
     expect(json.artifact_schema_versions["artifact-manifest.json"]).toBe("1.0");
     expect(json.error_codes).toContain("ASSET_USAGE_PLAN_CONFLICT");
-    expect(json.artifact_schema_versions["production-proposal.json"]).toBe("2.0");
-    expect(json.artifact_contracts["production-proposal"].schema_version).toBe("2.0");
+    expect(json.error_codes).toContain("PROPOSAL_EXECUTION_MISMATCH");
+    expect(json.error_codes).toContain("PROPOSAL_SELECTION_MISMATCH");
+    expect(json.artifact_schema_versions["production-proposal.json"]).toBe("3.0");
+    expect(json.artifact_contracts["production-proposal"].schema_version).toBe("3.0");
     expect(json.capability_ids).toContain("artifact_contract.discovery.v1");
   } finally {
     process.chdir(previousCwd);
@@ -86,7 +88,7 @@ test("artifact contract returns the unique current production proposal contract"
   expect(code).toBe(0);
   const result = JSON.parse(output);
   expect(result.command).toBe("artifact.contract");
-  expect(result.data.schema_version).toBe("2.0");
+  expect(result.data.schema_version).toBe("3.0");
   expect(result.data.schema.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
   expect(result.data.example.options.length).toBe(2);
   expect(/^sha256:[a-f0-9]{64}$/.test(result.data.schema_digest)).toBe(true);

@@ -169,13 +169,15 @@ render 前，工作流应产出人类和机器都可读的 review artifacts：
 
 ## 制作方案确认单
 
-`production-proposal.json` / `.md` 是用户确认前的总方案。它由 skill/agent 基于 `material-report`、`review-package`、用户用途和 element/music 能力写入，CLI 负责校验并物化 markdown。
+`production-proposal.json` / `.md` 是用户确认前的总方案，也是当前唯一可执行的作者合同。它由 skill/agent 基于 `material-report`、`review-package`、用户用途和 element/music 能力写入，CLI 负责校验并物化 markdown。
 
 对“卖货、朋友圈吸引咨询、高级感、种草、专业讲解、去废话保留卖点”等开放式业务目标，skill 不应直接生成素材或渲染。它必须在同一 `production-proposal.json.options[]` 中给出 2-4 个可选业务方向；每个 option 同时包含 `business_direction`、`edit_execution_plan` 和 `asset_requirements`。用户只确认一次 recommended option 或具体 option id。素材 capability 只 fulfill 已确认 option 的槽位；最终是否入片只由 canonical `enrichment-plan.json` 决定。当前独立 `asset-usage-plan.json` 只是简化交接输入，必须先经 CLI 一次性归一化；后续 render 只读取 current canonical plan。
 
-确认单必须同时覆盖剪辑、字幕、UI 动效、图片/生图、音乐、SFX、风险和可选方案。它回答“这条视频会被做成什么样”，而不是替代执行 artifacts。
+确认单必须同时覆盖剪辑、字幕、UI 动效、图片/生图、音乐、SFX、风险和可选方案。它回答“这条视频会被做成什么样”，而不是替代执行 artifacts。被选中的 option 是后续执行合同的来源：结构化 `duration_target`、有序 `timeline`、`text_overlays` 和 `asset_requirements` 一起落到 edit-plan、EDL、enrichment 和 render contract。
 
-确认单只允许承诺已经有证据的事实：可以引用 source timestamps 和 cleanup candidate IDs，但不能伪造最终 output timeline、无证据坐标、未生成 asset path、未获取音乐或 provider 结果。用户回复 `OK` 时使用 `recommended_option_id`；回复具体 option id 时使用对应方案。确认后，skill 再写 `edit-plan.json`、`focus-*`、`music-*`、`asset-manifest.json` 和 `enrichment-plan.json`。
+确认单只允许承诺已经有证据的事实：可以引用 source timestamps 和 cleanup candidate IDs，但不能伪造无证据坐标、未生成 asset path、未获取音乐或 provider 结果。用户回复 `OK` 时使用 `recommended_option_id`；回复具体 option id 时使用对应方案。确认后，skill/agent 写当前合同允许的 edit、focus、request 和 enrichment authoring artifacts；CLI 生成 frame/review/acquisition artifacts、EDL 与 `asset-manifest.json`。
+
+确认后的 option fingerprint 不是单独的标记，而是后续执行合同的一部分：`edit-plan.json` 的 cut set 必须精确对应被确认 option 的 cleanup 决策，`enrichment-plan.json` 只能使用该 option 的 `asset_requirements` 和确认项，不得擅自扩大到未确认的字幕、视觉、音乐或 SFX 语义。任何新的执行语义都必须先重写 proposal 并重新确认。
 
 ## Artifact 作者合同
 
@@ -191,7 +193,7 @@ CLI 的 artifact contract discovery 必须一次返回目标 artifact 的 owners
 
 CLI-owned derived/result artifacts 只公开只读 schema 和 producer/verify/inspect 能力，不提供 authoring template，也不得由 Skill、Agent 或宿主手写。完整 ownership、发现面、诊断与单一 schema 要求见 `docs/artifact-authoring-contracts.md`。
 
-`production-proposal.json` 2.0 是首个强制落地场景。正式发布包必须提供一份包含 2-4 个完整 option、能够被同版本 `project proposal --json` 直接接受的实例；不得继续用 `{}` 或“省略字段遵循 schema”作为 Agent 能获得的唯一结构说明。Option `id` 是唯一方向身份，`recommended_option_id` 是唯一推荐权威；`asset_requirements` 是 visual/image/music/SFX 槽位的唯一权威，`edit_execution_plan` 不接受重复 slots。
+`production-proposal.json` 3.0 是首个强制落地场景。正式发布包必须提供一份包含 2-4 个完整 option、能够被同版本 `project proposal --json` 直接接受的实例；不得继续用 `{}` 或“省略字段遵循 schema”作为 Agent 能获得的唯一结构说明。Option `id` 是唯一方向身份，`recommended_option_id` 是唯一推荐权威；`asset_requirements` 是 visual/image/music/SFX 槽位的唯一权威，`edit_execution_plan` 不接受重复 slots。`duration_target` 说明目标时长区间和容差，`timeline` 用顺序数组描述 candidate_cleanup 或 explicit_segments，`text_overlays` 记录 source-local 文本叠加意图，CLI 再把它们映射到执行层。
 
 ## 增强
 
@@ -232,6 +234,8 @@ project review
 `project enrich-plan` 仍然是 final render 前的最后一份计划合同。它必须消费已经 grounded 的 intent 和 frame evidence，而不是重新解释业务关键词。
 
 `storyboard.json` 是 current enrichment inputs 的 CLI-derived 合成剧本和 QA checklist，不是独立业务决定，也不是完成证明。Production proposal 决定“哪里要加入什么以及为什么”，`enrichment-plan.json` 表达执行选择，CLI 再把它物化成带 `qa_checks[]` 的 storyboard。Render 只消费 lineage current 的 storyboard，并在 `render-result.json.inputs[]` 中绑定其 fingerprint；inspect 先验证 current `render-result.json` 及其 canonical output，再按该 render result 实际绑定的 storyboard checks 抽帧，避免旧 storyboard 或另一份手写检查清单漂移进当前检查。
+
+本地 authoring render 和 strict render 必须共享同一个 `executeResolvedRenderPlan` 和同一帧时序语义；inspect 可以写出结构化 `inspection.json` / `report.md`，但当 blockers 非零时命令仍必须 fail closed，不能把失败包装成成功。
 
 enrichment plan 必须先分类 cleaned material，再选择 visuals：
 
@@ -442,7 +446,7 @@ koubo-clips/<slug>/
 - 任意 artifact 或 MP4 的存在都不能单独证明阶段成功；current 状态必须有匹配的 schema、fingerprint 和 dependency lineage。
 - edit plan、EDL、enrichment、render 和 inspection 必须能追溯到当前上游输入；上游改变后旧下游结果会被明确标记 stale 并被 CLI 拒绝。
 - 宿主可以通过稳定 capability discovery 和只读 project status JSON 恢复流程、获得精确 render inputs、当前 deliverable、blockers、next commands 和最后成功 checkpoint。
-- 不了解仓库源码的 Agent 可以只依赖正式发布包中的 CLI artifact contract 和官方 Skill，生成合法 `production-proposal.json` 2.0；首次校验通过，或最多根据一次聚合 issues 整体修正后通过。
+- 不了解仓库源码的 Agent 可以只依赖正式发布包中的 CLI artifact contract 和官方 Skill，生成合法 `production-proposal.json` 3.0；首次校验通过，或最多根据一次聚合 issues 整体修正后通过。
 - 所有 Agent/Host authored artifact 的 required、optional、enum、unknown-field policy 和合法 example 都能从正式 CLI 发现；Skill、validator、example 和发布包由 contract/schema digest 防止漂移。
 
 ## Detached source 与分布式执行合同

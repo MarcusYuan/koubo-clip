@@ -10,7 +10,7 @@ Before writing the proposal, run:
 koubo-clip artifact contract production-proposal --json
 ```
 
-Fill the returned current template and obey its schema. Do not use this reference, repository source, TypeScript types, test fixtures, or repeated validator failures as a substitute for the contract. The current proposal version is `2.0`.
+Fill the returned current template and obey its schema. Do not use this reference, repository source, TypeScript types, test fixtures, or repeated validator failures as a substitute for the contract. The current proposal version is `3.0`.
 
 Use the same rule for every later Agent/Host-authored artifact:
 
@@ -46,7 +46,7 @@ Use transcript facts, material report, review candidate IDs, source-frame eviden
 
 Before confirmation, describe asset intent only: purpose, search/generation intent, provider preference, license/cost/source risk, and reason. Do not write final asset IDs, paths, provider/download URLs, absolute paths, raw MCP payloads, or output-timeline coordinates that have not been established.
 
-`remove_segments[].candidate_id` must refer to current review candidates. In the confirmed edit plan, `action:"cut"` means delete that candidate range; it is not a keep-list.
+In `candidate_cleanup` mode, every confirmed cleanup candidate ID must become the matching `action:"cut"` decision in `edit-plan.json`, and no extra cut may appear. For arbitrary source-local keeps or reordering, author the complete ordered `edit_execution_plan.timeline.segments[]` in the proposal option; `edit-plan.source_order` is not supported as execution authority.
 
 If an option needs no assets, say why cleanup, source footage, or captions already serve the viewer job.
 
@@ -62,7 +62,7 @@ The command returns:
 
 The user confirms exactly once. `OK` selects `recommended_option_id`; an explicit option ID selects that option. A material change requires updating and revalidating the proposal before the final selection.
 
-After confirmation, fetch the edit-plan contract, then copy the selected option ID and exact returned selection fingerprint into the cleanup plan. The CLI recomputes that projection before compiling the EDL. Changing the selected option makes downstream artifacts stale; changing an unselected option does not.
+After confirmation, fetch the edit-plan contract, then copy the selected option ID and exact returned selection fingerprint into the cleanup plan. The CLI recomputes that projection before compiling the EDL. Changing the selected option makes downstream artifacts stale; changing an unselected option does not. The confirmed option's `duration_target`, ordered `timeline`, `text_overlays`, and `asset_requirements` are the executable parts of the proposal.
 
 ## Asset Fulfillment And Enrichment
 

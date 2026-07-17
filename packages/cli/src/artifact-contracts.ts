@@ -13,7 +13,7 @@ export type ArtifactContract = {
   schema_digest: `sha256:${string}`;
   contract_digest: `sha256:${string}`;
   ownership: "agent_authored" | "host_authored" | "cli_owned";
-  role: "authoritative_input" | "command_request" | "derived" | "execution_result";
+  role: "authoritative_input" | "command_request" | "evidence" | "derived" | "execution_result";
   external_writes_allowed: boolean;
   validator?: string;
   producer?: string;
@@ -94,12 +94,12 @@ const assetSlot = (kind: "visual_asset" | "music" | "sfx" | "image"): JsonSchema
 
 export const productionProposalSchema: JsonSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
-  $id: "https://koubo-clip.dev/schema/production-proposal/2.0",
+  $id: "https://koubo-clip.dev/schema/production-proposal/3.0",
   title: "Koubo Clip Production Proposal",
   ...closed(
     ["version", "source_mode", "presentation_intent", "goal_summary", "material_summary", "recommended_option_id", "options"],
     {
-      version: { const: "2.0" },
+      version: { const: "3.0" },
       source_mode: { enum: ["talking_head_avatar", "screen_recording", "mixed"] },
       presentation_intent: { enum: ["internal_tutorial", "product_demo", "course_lesson", "knowledge_explainer", "short_form"] },
       goal_summary: { type: "string", minLength: 1 },
@@ -136,7 +136,7 @@ export const productionProposalSchema: JsonSchema = {
         }),
         subtitles: closed(["enabled", "style", "conflict_notes"], {
           enabled: { type: "boolean" },
-          style: { type: "string", minLength: 1 },
+          style: { enum: ["none", "plain", "anchor"] },
           conflict_notes: stringArray,
         }),
         visuals: closed(["direction", "viewer_job", "requires_grounding", "notes"], {
@@ -162,11 +162,10 @@ export const productionProposalSchema: JsonSchema = {
           restraint: { type: "string", minLength: 1 },
         }),
         requires_confirmation: stringArray,
-        business_direction: closed(["title", "suitable_for", "editing_strategy", "expected_duration", "asset_style", "risks"], {
+        business_direction: closed(["title", "suitable_for", "editing_strategy", "asset_style", "risks"], {
           title: { type: "string", minLength: 1 },
           suitable_for: { type: "string", minLength: 1 },
           editing_strategy: { type: "string", minLength: 1 },
-          expected_duration: { type: "string", minLength: 1 },
           asset_style: { type: "string", minLength: 1 },
           risks: stringArray,
           tradeoffs: stringArray,
@@ -175,22 +174,18 @@ export const productionProposalSchema: JsonSchema = {
           [
             "objective",
             "target_audience",
-            "final_duration",
+            "duration_target",
             "narrative_structure",
-            "keep_segments",
-            "remove_segments",
-            "reorder_segments",
+            "timeline",
             "text_overlays",
             "user_confirmation_summary",
           ],
           {
             objective: { type: "string", minLength: 1 },
             target_audience: { type: "string", minLength: 1 },
-            final_duration: { type: "string", minLength: 1 },
+            duration_target: { $ref: "#/$defs/durationTarget" },
             narrative_structure: { type: "array", items: { $ref: "#/$defs/narrativeBeat" } },
-            keep_segments: { type: "array", items: { $ref: "#/$defs/keepSegment" } },
-            remove_segments: { type: "array", items: { $ref: "#/$defs/removeSegment" } },
-            reorder_segments: { type: "array", items: { $ref: "#/$defs/reorderSegment" } },
+            timeline: { $ref: "#/$defs/executionTimeline" },
             text_overlays: { type: "array", items: { $ref: "#/$defs/textOverlay" } },
             user_confirmation_summary: { type: "string", minLength: 1 },
           },
@@ -208,24 +203,31 @@ export const productionProposalSchema: JsonSchema = {
       purpose: { type: "string", minLength: 1 },
       source_hint: { type: "string", minLength: 1 },
     }),
-    keepSegment: closed(["source_id", "start", "end", "reason"], {
+    durationTarget: closed(["min_seconds", "max_seconds", "tolerance_frames"], {
+      min_seconds: { type: "number", minimum: 0 },
+      max_seconds: { type: "number", minimum: 0 },
+      target_seconds: { type: "number", minimum: 0 },
+      tolerance_frames: { type: "integer", minimum: 0 },
+    }),
+    executionTimeline: closed(["mode", "segments"], {
+      mode: { enum: ["candidate_cleanup", "explicit_segments"] },
+      segments: { type: "array", items: { $ref: "#/$defs/timelineSegment" } },
+    }),
+    timelineSegment: closed(["id", "source_id", "start", "end", "reason"], {
+      id: { type: "string", minLength: 1, pattern: "^[^/:\\\\]+$" },
       source_id: { type: "string", minLength: 1, pattern: "^[^/:\\\\]+$" },
       start: { type: "number", minimum: 0 },
       end: { type: "number", minimum: 0 },
+      label: { type: "string", minLength: 1 },
       reason: { type: "string", minLength: 1 },
     }),
-    removeSegment: closed(["candidate_id", "reason"], {
-      candidate_id: { type: "string", minLength: 1, pattern: "^[^/:\\\\]+$" },
-      reason: { type: "string", minLength: 1 },
-    }),
-    reorderSegment: closed(["from", "to", "reason"], {
-      from: { type: "string", minLength: 1 },
-      to: { type: "string", minLength: 1 },
-      reason: { type: "string", minLength: 1 },
-    }),
-    textOverlay: closed(["start", "end", "text", "purpose"], {
+    textOverlay: closed(["id", "source_id", "start", "end", "element_id", "text", "purpose"], {
+      id: { type: "string", minLength: 1, pattern: "^[^/:\\\\]+$" },
+      source_id: { type: "string", minLength: 1, pattern: "^[^/:\\\\]+$" },
+      segment_id: { type: "string", minLength: 1, pattern: "^[^/:\\\\]+$" },
       start: { type: "number", minimum: 0 },
       end: { type: "number", minimum: 0 },
+      element_id: { enum: ["caption-highlight", "caption-editorial-emphasis", "caption-pill-karaoke"] },
       text: { type: "string", minLength: 1 },
       purpose: { type: "string", minLength: 1 },
     }),
@@ -241,21 +243,19 @@ const optionTemplate = (id: string) => ({
   label: "",
   reason: "",
   cleanup: { cut_candidate_ids: [], keep_strategy: "", risks: [] },
-  subtitles: { enabled: true, style: "", conflict_notes: [] },
+  subtitles: { enabled: true, style: "plain", conflict_notes: [] },
   visuals: { direction: "", viewer_job: "", requires_grounding: false, notes: [] },
   images: { needed: false, reason: "", missing_assets: [] },
   music: { source: "none", ducking: true, notes: [] },
   sfx: { enabled: false, usage: "", restraint: "" },
   requires_confirmation: [],
-  business_direction: { title: "", suitable_for: "", editing_strategy: "", expected_duration: "", asset_style: "", risks: [] },
+  business_direction: { title: "", suitable_for: "", editing_strategy: "", asset_style: "", risks: [] },
   edit_execution_plan: {
     objective: "",
     target_audience: "",
-    final_duration: "",
+    duration_target: { min_seconds: 0, max_seconds: 0, tolerance_frames: 2 },
     narrative_structure: [],
-    keep_segments: [],
-    remove_segments: [],
-    reorder_segments: [],
+    timeline: { mode: "candidate_cleanup", segments: [] },
     text_overlays: [],
     user_confirmation_summary: "",
   },
@@ -263,7 +263,7 @@ const optionTemplate = (id: string) => ({
 });
 
 export const productionProposalTemplate = {
-  version: "2.0",
+  version: "3.0",
   source_mode: "talking_head_avatar",
   presentation_intent: "knowledge_explainer",
   goal_summary: "",
@@ -292,18 +292,15 @@ const exampleOption = (id: string, label: string, cutCandidateIds: string[], enh
     title: label,
     suitable_for: enhanced ? "A concise product explainer." : "A quick clean publish.",
     editing_strategy: enhanced ? "Lead with the payoff, retain proof, then close clearly." : "Remove only confirmed cleanup candidates.",
-    expected_duration: "30-45 seconds",
     asset_style: enhanced ? "Minimal transparent UI cues." : "Source-first with readable subtitles.",
     risks: [],
   },
   edit_execution_plan: {
     objective: enhanced ? "Explain the payoff quickly and credibly." : "Improve pacing without changing the message.",
     target_audience: "Viewers evaluating the demonstrated product.",
-    final_duration: "30-45 seconds",
+    duration_target: { min_seconds: 0.5, max_seconds: 120, target_seconds: 45, tolerance_frames: 2 },
     narrative_structure: [{ beat: "proof", purpose: "Show the strongest source evidence.", source_hint: "Use the clearest retained segment." }],
-    keep_segments: [],
-    remove_segments: cutCandidateIds.map((candidate_id) => ({ candidate_id, reason: "Confirmed cleanup candidate." })),
-    reorder_segments: [],
+    timeline: { mode: "candidate_cleanup", segments: [] },
     text_overlays: [],
     user_confirmation_summary: enhanced ? "Clean the pauses and add restrained focus cues." : "Clean the pauses and keep the source presentation.",
   },
@@ -311,7 +308,7 @@ const exampleOption = (id: string, label: string, cutCandidateIds: string[], enh
 });
 
 export const productionProposalExample = {
-  version: "2.0",
+  version: "3.0",
   source_mode: "mixed",
   presentation_intent: "product_demo",
   goal_summary: "Turn the source into a concise product explainer.",
@@ -327,7 +324,7 @@ const proposalSchemaDigest = digest(productionProposalSchema);
 const proposalMetadata = {
   artifact_id: "production-proposal",
   filename: "production-proposal.json",
-  schema_version: "2.0",
+  schema_version: "3.0",
   ownership: "agent_authored" as const,
   role: "authoritative_input" as const,
   external_writes_allowed: true,
@@ -437,8 +434,7 @@ const transcriptSchema = { $schema: "https://json-schema.org/draft/2020-12/schem
 }) };
 const editPlanSchema = { $schema: "https://json-schema.org/draft/2020-12/schema", ...closed(["contract_version", "confirmed_option_id", "proposal_selection_fingerprint", "decisions"], {
   contract_version: { const: "1.0" }, confirmed_option_id: id, proposal_selection_fingerprint: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
-  decisions: { type: "array", items: closed(["action"], { action: { enum: ["cut", "keep", "skip"] }, candidate_id: id, source_id: id, reason: { type: "string" } }) },
-  source_order: { type: "array", items: id },
+  decisions: { type: "array", items: closed(["action", "candidate_id"], { action: { enum: ["cut", "keep"] }, candidate_id: id, source_id: id, reason: { type: "string" } }) },
 }) };
 const assetUsageSchema = { $schema: "https://json-schema.org/draft/2020-12/schema", ...closed(["music", "sfx", "visual_assets"], {
   music: { type: "array", items: closed(["asset_ref", "start", "end", "purpose"], {
@@ -483,6 +479,18 @@ const visualRequestItemSchema = closed(["id", "viewer_job", "semantic_query", "a
   preferred_sources: { type: "array", items: visualProvider }, reason: text, output_usage: text,
   selected_candidate_id: id, selection_reason: text, start: number, end: number, zone,
 });
+const projectRelativeVisualPath = { type: "string", minLength: 1, pattern: "^(?![A-Za-z][A-Za-z0-9+.-]*:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\]+$" } satisfies JsonSchema;
+const httpUrl = { type: "string", minLength: 1, pattern: "^https?://" } satisfies JsonSchema;
+const visualCandidateSchema = closed(["id", "request_id", "provider", "asset_type", "title", "semantic_query", "reason"], {
+  id, request_id: id, provider: visualProvider, asset_type: visualAssetType, title: text, semantic_query: text,
+  preview_url: httpUrl, preview_path: projectRelativeVisualPath, source_url: httpUrl, download_url: httpUrl,
+  local_path: projectRelativeVisualPath, license: text, license_url: httpUrl, original_author: text, cost: text,
+  source_risk: text, renderable: { type: "boolean" }, recommended: { type: "boolean" }, reason: text,
+  runtime_dependencies: stringArray,
+});
+const visualCandidatesSchema = versionedRequest("1.0", ["candidates"], {
+  candidates: { type: "array", minItems: 1, items: visualCandidateSchema }, warnings: stringArray,
+});
 const evidenceEntrySchema = closed(["id", "relative_path", "sha256", "size_bytes", "width", "height"], {
   id: opaqueId, relative_path: text, sha256: { type: "string", pattern: "^(?:sha256:)?[a-f0-9]{64}$" },
   size_bytes: { type: "number", minimum: 1 }, width: { type: "number", minimum: 1 }, height: { type: "number", minimum: 1 },
@@ -498,6 +506,7 @@ const focusCandidatesExample = { version: "1.0", source_mode: "talking_head_avat
 const focusGroundingExample = { version: "1.0", groundings: [{ candidate_id: "focus-001", frame_id: "frame-001", confidence: 1, evidence_note: "The target is visible" }] };
 const musicRequestExample = { version: "1.0", id: "music-001", source: "none", reason: "Speech does not need background music" };
 const visualRequestExample = { version: "1.0", source_mode: "talking_head_avatar", presentation_intent: "knowledge_explainer", requests: [{ id: "visual-001", viewer_job: "Orient the viewer", semantic_query: "simple orientation icon", asset_type: "icon", preferred_sources: ["iconify"], reason: "Clarify the section transition" }] };
+const visualCandidatesExample = { version: "1.0", candidates: [{ id: "candidate-001", request_id: "visual-001", provider: "local", asset_type: "image", title: "Product proof", semantic_query: "product proof screenshot", preview_path: "previews/candidate-001.jpg", renderable: true, recommended: false, reason: "Matches the confirmed viewer job", runtime_dependencies: [] }], warnings: [] };
 const evidenceManifestExample = { version: "1.0", entries: [{ id: "frame-001", relative_path: "frame-001.jpg", sha256: "0".repeat(64), size_bytes: 1, width: 224, height: 480, source_id: "src-001", source_time_seconds: 1.25, request_id: "frame-001" }] };
 const sourceMapExample = { "src-001": "/authorized/raw.mp4" };
 
@@ -513,6 +522,7 @@ const discoveredContracts: ArtifactContract[] = [
   writable("focus-grounding", "focus-grounding.json", "1.0", versionedRequest("1.0", ["groundings"], { groundings: { type: "array", items: focusGroundingItemSchema } }), focusGroundingExample, focusGroundingExample, "project focus-grounding", ["focus-frames"]),
   writable("music-request", "music-request.json", "1.0", versionedRequest("1.0", ["id", "source", "reason"], { id, source: { enum: ["none", "local", "minimax", "freesound", "pixabay"] }, reason: text, source_mode: sourceMode, presentation_intent: presentationIntent, mood: text, target_duration_seconds: number, local_path: text, library_track: text, prompt: text, query: text, model: text, volume: { type: "number", minimum: 0, maximum: 1 }, fade_seconds: number, ducking: { type: "boolean" }, min_duration_seconds: number, max_duration_seconds: number }), musicRequestExample, musicRequestExample, "project music-acquire", [], "agent_authored", "command_request"),
   writable("visual-request", "visual-request.json", "1.0", versionedRequest("1.0", ["source_mode", "presentation_intent", "requests"], { source_mode: sourceMode, presentation_intent: presentationIntent, requests: { type: "array", minItems: 1, items: visualRequestItemSchema } }), visualRequestExample, visualRequestExample, "project visual-acquire", [], "agent_authored", "command_request"),
+  writable("visual-candidates", "visual-candidates.json", "1.0", visualCandidatesSchema, visualCandidatesExample, visualCandidatesExample, "project visual-search", ["visual-request"], "host_authored", "evidence"),
   writable("evidence-import-manifest", "manifest.json", "1.0", versionedRequest("1.0", ["entries"], { entries: { type: "array", minItems: 1, items: evidenceEntrySchema } }), evidenceManifestExample, evidenceManifestExample, "project source-frames/focus-frames --import", [], "host_authored", "command_request"),
   writable("source-map", "source-map.json", "1.0", sourceMapSchema, sourceMapExample, sourceMapExample, "render-contract bind", [], "host_authored", "command_request"),
   ...[
@@ -521,7 +531,7 @@ const discoveredContracts: ArtifactContract[] = [
     ["edl", "edl.json", "2.0", "project compile-edl"], ["source-frames", "source-frames.json", "1.0", "project source-frames"],
     ["focus-frames", "focus-frames.json", "1.0", "project focus-frames"], ["focus-review", "focus-review.json", "1.0", "project focus-review"],
     ["music-acquisition", "music-acquisition.json", "1.0", "project music-acquire"], ["music-review", "music-review.json", "1.0", "project music-review"],
-    ["visual-candidates", "visual-candidates.json", "1.0", "project visual-search"], ["visual-acquisition", "visual-acquisition.json", "1.0", "project visual-acquire"],
+    ["visual-acquisition", "visual-acquisition.json", "1.0", "project visual-acquire"],
     ["visual-review", "visual-review.json", "1.0", "project visual-review"], ["asset-manifest", "asset-manifest.json", "1.0", "project enrich-plan"],
     ["storyboard", "storyboard.json", "1.1", "project render"], ["render-result", "render-result.json", "1.0", "project render"],
     ["inspection", "inspection.json", "1.0", "project inspect"], ["render-contract", "render-contract.json", "1.0", "render-contract export"],
@@ -568,6 +578,7 @@ export function assertArtifactContract(artifactId: string, value: unknown): void
   validateJsonSchema(value, contract.schema, "", contract.schema, issues);
   if (artifactId === "production-proposal") addProposalSemanticIssues(value, issues);
   if (artifactId === "source-frame-request") addSourceFrameRequestSemanticIssues(value, issues);
+  if (artifactId === "visual-candidates") addVisualCandidatesSemanticIssues(value, issues);
   if (issues.length) throw new ArtifactValidationError(contract.filename, contract.schema_version, contract.schema_digest, issues);
 }
 
@@ -591,47 +602,165 @@ function addProposalSemanticIssues(value: unknown, issues: ArtifactValidationIss
     const cleanup = isRecord(option.cleanup) && Array.isArray(option.cleanup.cut_candidate_ids) ? option.cleanup.cut_candidate_ids : [];
     addDuplicateIssues(cleanup, `/options/${optionIndex}/cleanup/cut_candidate_ids`, "value", issues);
     const execution = isRecord(option.edit_execution_plan) ? option.edit_execution_plan : {};
-    addProposalRemovalIntentIssues(cleanup, execution.remove_segments, optionIndex, issues);
-    addRangeIssues(execution.keep_segments, `/options/${optionIndex}/edit_execution_plan/keep_segments`, issues);
+    addDurationTargetIssues(execution.duration_target, `/options/${optionIndex}/edit_execution_plan/duration_target`, issues);
+    addExecutionTimelineIssues(execution.timeline, optionIndex, issues);
     addRangeIssues(execution.text_overlays, `/options/${optionIndex}/edit_execution_plan/text_overlays`, issues);
+    addTextOverlayIssues(execution.timeline, execution.text_overlays, optionIndex, issues);
+    addSubtitleExecutionIssues(option, execution.text_overlays, optionIndex, issues);
     const requirements = isRecord(option.asset_requirements) ? option.asset_requirements : {};
+    const allSlots: Array<{ value: unknown; path: string }> = [];
     for (const key of ["visual_asset_slots", "music_slots", "sfx_slots", "image_slots"] as const) {
       const slots = Array.isArray(requirements[key]) ? requirements[key].filter(isRecord) : [];
       addDuplicateIssues(slots.map((slot) => slot.slot_id), `/options/${optionIndex}/asset_requirements/${key}`, "slot_id", issues);
+      slots.forEach((slot, index) => allSlots.push({ value: slot.slot_id, path: `/options/${optionIndex}/asset_requirements/${key}/${index}/slot_id` }));
+    }
+    addGloballyUniqueSlotIssues(allSlots, issues);
+    addMediaRequirementIssues(option, requirements, optionIndex, issues);
+  });
+}
+
+function addGloballyUniqueSlotIssues(slots: Array<{ value: unknown; path: string }>, issues: ArtifactValidationIssue[]): void {
+  const seen = new Set<unknown>();
+  for (const slot of slots) {
+    if (slot.value === undefined || !seen.has(slot.value)) seen.add(slot.value);
+    else issues.push({ path: slot.path, keyword: "unique", message: `duplicate slot_id across asset requirement categories: ${String(slot.value)}` });
+  }
+}
+
+function addSubtitleExecutionIssues(
+  option: Record<string, unknown>,
+  overlaysValue: unknown,
+  optionIndex: number,
+  issues: ArtifactValidationIssue[],
+): void {
+  const subtitles = isRecord(option.subtitles) ? option.subtitles : {};
+  const overlays = Array.isArray(overlaysValue) ? overlaysValue : [];
+  if (subtitles.enabled === false && subtitles.style !== "none") {
+    issues.push({ path: `/options/${optionIndex}/subtitles/style`, keyword: "confirmation", message: "must be none when subtitles are disabled" });
+  }
+  if (subtitles.enabled === true && subtitles.style === "none") {
+    issues.push({ path: `/options/${optionIndex}/subtitles/style`, keyword: "confirmation", message: "must be plain or anchor when subtitles are enabled" });
+  }
+  if (overlays.length > 0 && (subtitles.enabled !== true || subtitles.style !== "anchor")) {
+    issues.push({
+      path: `/options/${optionIndex}/edit_execution_plan/text_overlays`,
+      keyword: "confirmation",
+      message: "requires subtitles.enabled=true with style=anchor",
+    });
+  }
+}
+
+function addDurationTargetIssues(value: unknown, path: string, issues: ArtifactValidationIssue[]): void {
+  if (!isRecord(value)) return;
+  const min = value.min_seconds;
+  const max = value.max_seconds;
+  const target = value.target_seconds;
+  if (typeof min === "number" && typeof max === "number" && max < min) {
+    issues.push({ path: `${path}/max_seconds`, keyword: "range", message: "must be greater than or equal to min_seconds" });
+  }
+  if (typeof target === "number" && typeof min === "number" && typeof max === "number" && (target < min || target > max)) {
+    issues.push({ path: `${path}/target_seconds`, keyword: "range", message: "must be within min_seconds and max_seconds" });
+  }
+}
+
+function addExecutionTimelineIssues(value: unknown, optionIndex: number, issues: ArtifactValidationIssue[]): void {
+  if (!isRecord(value) || !Array.isArray(value.segments)) return;
+  const path = `/options/${optionIndex}/edit_execution_plan/timeline`;
+  const segments = value.segments.filter(isRecord);
+  addDuplicateIssues(segments.map((segment) => segment.id), `${path}/segments`, "id", issues);
+  addRangeIssues(value.segments, `${path}/segments`, issues);
+  if (value.mode === "candidate_cleanup" && value.segments.length > 0) {
+    issues.push({ path: `${path}/segments`, keyword: "mode", message: "must be empty when mode is candidate_cleanup" });
+  }
+  if (value.mode === "explicit_segments" && value.segments.length === 0) {
+    issues.push({ path: `${path}/segments`, keyword: "minItems", message: "must contain at least one segment when mode is explicit_segments" });
+  }
+  const bySource = new Map<string, Array<{ start: number; end: number; index: number }>>();
+  segments.forEach((segment, index) => {
+    if (typeof segment.source_id !== "string" || typeof segment.start !== "number" || typeof segment.end !== "number") return;
+    const ranges = bySource.get(segment.source_id) ?? [];
+    ranges.push({ start: segment.start, end: segment.end, index });
+    bySource.set(segment.source_id, ranges);
+  });
+  for (const ranges of bySource.values()) {
+    const sorted = [...ranges].sort((left, right) => left.start - right.start);
+    for (let index = 1; index < sorted.length; index += 1) {
+      if (sorted[index]!.start < sorted[index - 1]!.end) {
+        issues.push({ path: `${path}/segments/${sorted[index]!.index}/start`, keyword: "overlap", message: "must not overlap another segment from the same source" });
+      }
+    }
+  }
+}
+
+function addTextOverlayIssues(timelineValue: unknown, overlaysValue: unknown, optionIndex: number, issues: ArtifactValidationIssue[]): void {
+  if (!isRecord(timelineValue) || !Array.isArray(timelineValue.segments) || !Array.isArray(overlaysValue)) return;
+  const path = `/options/${optionIndex}/edit_execution_plan/text_overlays`;
+  const segments = timelineValue.segments.filter(isRecord);
+  const segmentById = new Map(segments.map((segment) => [segment.id, segment]));
+  const overlays = overlaysValue.filter(isRecord);
+  addDuplicateIssues(overlays.map((overlay) => overlay.id), path, "id", issues);
+  overlays.forEach((overlay, index) => {
+    if (timelineValue.mode === "candidate_cleanup" && overlay.segment_id !== undefined) {
+      issues.push({ path: `${path}/${index}/segment_id`, keyword: "mode", message: "is not allowed when timeline.mode is candidate_cleanup" });
+      return;
+    }
+    if (timelineValue.mode !== "explicit_segments") return;
+    if (typeof overlay.segment_id !== "string") {
+      issues.push({ path: `${path}/${index}/segment_id`, keyword: "required", message: "segment_id is required for explicit_segments" });
+      return;
+    }
+    const segment = segmentById.get(overlay.segment_id);
+    if (!segment) {
+      issues.push({ path: `${path}/${index}/segment_id`, keyword: "reference", message: "must match timeline.segments[].id" });
+      return;
+    }
+    if (overlay.source_id !== segment.source_id) {
+      issues.push({ path: `${path}/${index}/source_id`, keyword: "reference", message: "must match the referenced timeline segment source_id" });
+    }
+    if (typeof overlay.start === "number" && typeof overlay.end === "number" && typeof segment.start === "number" && typeof segment.end === "number"
+      && (overlay.start < segment.start || overlay.end > segment.end)) {
+      issues.push({ path: `${path}/${index}`, keyword: "containment", message: "must be contained by the referenced timeline segment" });
     }
   });
 }
 
-function addProposalRemovalIntentIssues(cleanupIds: unknown[], removeSegments: unknown, optionIndex: number, issues: ArtifactValidationIssue[]): void {
-  if (!Array.isArray(removeSegments)) return;
-  const cleanup = new Set(cleanupIds.filter((value): value is string => typeof value === "string"));
-  const removals = removeSegments.filter(isRecord);
-  const removalIds = new Set(removals.map((segment) => segment.candidate_id).filter((value): value is string => typeof value === "string"));
-  cleanupIds.forEach((candidateId, index) => {
-    if (typeof candidateId === "string" && !removalIds.has(candidateId)) {
-      issues.push({
-        path: `/options/${optionIndex}/cleanup/cut_candidate_ids/${index}`,
-        keyword: "reference",
-        message: "must match edit_execution_plan.remove_segments candidate_id",
-      });
-    }
-  });
-  removals.forEach((segment, index) => {
-    const candidateId = segment.candidate_id;
-    if (typeof candidateId === "string" && !cleanup.has(candidateId)) {
-      issues.push({
-        path: `/options/${optionIndex}/edit_execution_plan/remove_segments/${index}/candidate_id`,
-        keyword: "reference",
-        message: "must match cleanup.cut_candidate_ids",
-      });
-    }
-  });
+function addMediaRequirementIssues(option: Record<string, unknown>, requirements: Record<string, unknown>, optionIndex: number, issues: ArtifactValidationIssue[]): void {
+  const requiredCount = (key: string) => Array.isArray(requirements[key])
+    ? requirements[key].filter((slot) => isRecord(slot) && slot.required === true).length
+    : 0;
+  const music = isRecord(option.music) ? option.music : {};
+  const sfx = isRecord(option.sfx) ? option.sfx : {};
+  const images = isRecord(option.images) ? option.images : {};
+  if (music.source !== "none" && requiredCount("music_slots") === 0) {
+    issues.push({ path: `/options/${optionIndex}/asset_requirements/music_slots`, keyword: "requiredSlot", message: "must contain a required slot when music is enabled" });
+  }
+  if (music.source === "none" && Array.isArray(requirements.music_slots) && requirements.music_slots.length > 0) {
+    issues.push({ path: `/options/${optionIndex}/asset_requirements/music_slots`, keyword: "confirmation", message: "must be empty when music.source is none" });
+  }
+  if (sfx.enabled === true && requiredCount("sfx_slots") === 0) {
+    issues.push({ path: `/options/${optionIndex}/asset_requirements/sfx_slots`, keyword: "requiredSlot", message: "must contain a required slot when SFX is enabled" });
+  }
+  if (sfx.enabled === false && Array.isArray(requirements.sfx_slots) && requirements.sfx_slots.length > 0) {
+    issues.push({ path: `/options/${optionIndex}/asset_requirements/sfx_slots`, keyword: "confirmation", message: "must be empty when SFX is disabled" });
+  }
+  if (images.needed === true && requiredCount("image_slots") === 0) {
+    issues.push({ path: `/options/${optionIndex}/asset_requirements/image_slots`, keyword: "requiredSlot", message: "must contain a required slot when images are needed" });
+  }
+  if (images.needed === false && Array.isArray(requirements.image_slots) && requirements.image_slots.length > 0) {
+    issues.push({ path: `/options/${optionIndex}/asset_requirements/image_slots`, keyword: "confirmation", message: "must be empty when images.needed is false" });
+  }
 }
 
 function addSourceFrameRequestSemanticIssues(value: unknown, issues: ArtifactValidationIssue[]): void {
   if (!isRecord(value) || !Array.isArray(value.frames)) return;
   const frames = value.frames.filter(isRecord);
   addDuplicateIssues(frames.map((frame) => frame.id), "/frames", "id", issues);
+}
+
+function addVisualCandidatesSemanticIssues(value: unknown, issues: ArtifactValidationIssue[]): void {
+  if (!isRecord(value) || !Array.isArray(value.candidates)) return;
+  const candidates = value.candidates.filter(isRecord);
+  addDuplicateIssues(candidates.map((candidate) => candidate.id), "/candidates", "id", issues);
 }
 
 function addRangeIssues(value: unknown, path: string, issues: ArtifactValidationIssue[]): void {
@@ -725,6 +854,7 @@ function matchesType(value: unknown, type: unknown): boolean {
       : candidate === "array" ? Array.isArray(value)
         : candidate === "object" ? isRecord(value)
           : candidate === "number" ? typeof value === "number" && Number.isFinite(value)
+            : candidate === "integer" ? typeof value === "number" && Number.isSafeInteger(value)
             : typeof value === candidate,
   );
 }

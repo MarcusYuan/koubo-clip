@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import * as nodeFs from "node:fs";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import * as nodePath from "node:path";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { productionProposalExample } from "./artifact-contracts";
@@ -60,6 +62,34 @@ test("enrich-plan returns a QA check for audio SFX", async () => {
   expect(enriched.data.qa_checks.some((check) => check.kind === "sfx" && check.source_element_id === "click")).toBe(true);
 });
 
+test("local project render fails closed when confirmed captions cannot be burned", async () => {
+  if (!hasFfmpeg()) return;
+  const project = await readyProject(false);
+  const compiled = compileEdlProject(project);
+  if (!compiled.ok) throw new Error(compiled.error.message);
+
+  const realFfmpeg = spawnSync("which", ["ffmpeg"], { encoding: "utf8" }).stdout.trim();
+  if (!realFfmpeg) throw new Error("ffmpeg exists but could not be resolved");
+  const bin = mkdtempSync(join(tmpdir(), "koubo-no-caption-filter-"));
+  writeExecutable(join(bin, "ffmpeg"), `#!/bin/sh
+if [ "$1" = "-hide_banner" ] && [ "$2" = "-filters" ]; then
+  exit 0
+fi
+exec '${realFfmpeg.replaceAll("'", "'\\''")}' "$@"
+`);
+
+  const child = spawnSync("bun", [join(process.cwd(), "packages", "cli", "src", "cli.ts"), "project", "render", project], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${bin}${(nodePath as unknown as { delimiter: string }).delimiter}${process.env.PATH ?? ""}` },
+  });
+  if (child.status !== 1) throw new Error(`unexpected child status ${child.status}: ${child.stderr || child.stdout}`);
+  const result = JSON.parse(child.stderr.trim()) as { ok: false; error: { code: string; message: string } };
+
+  expect(result.ok).toBe(false);
+  expect(result.error.code).toBe("RENDER_PREFLIGHT_FAILED");
+  expect(result.error.message).toContain("captions are required");
+});
+
 async function projectWithNineSegmentCuts(durations: number[]): Promise<{ project: string; cutIds: string[] }> {
   const root = mkdtempSync(join(tmpdir(), "koubo-local-timing-"));
   const source = join(root, "raw.mp4");
@@ -91,7 +121,7 @@ async function projectWithNineSegmentCuts(durations: number[]): Promise<{ projec
   return { project, cutIds };
 }
 
-async function readyProject(): Promise<string> {
+async function readyProject(enableSfx = true): Promise<string> {
   const root = mkdtempSync(join(tmpdir(), "koubo-sfx-qa-"));
   const source = join(root, "raw.mp4");
   const project = join(root, "project");
@@ -106,25 +136,27 @@ async function readyProject(): Promise<string> {
   if (!explored.ok) throw new Error(explored.error.message);
   const reviewed = reviewProject(project);
   if (!reviewed.ok) throw new Error(reviewed.error.message);
-  writeProposal(project, [], true);
+  writeProposal(project, [], enableSfx);
   writeConfirmedEditPlan(project, []);
   return project;
 }
 
 function writeProposal(project: string, cutIds: string[], enableSfx = false): void {
   const proposal = structuredClone(productionProposalExample) as ProductionProposalArtifact;
+  proposal.source_mode = "talking_head_avatar";
   proposal.recommended_option_id = "confirmed";
   proposal.options.forEach((option, index) => {
     option.id = index === 0 ? "confirmed" : `unselected-${index}`;
     option.cleanup.cut_candidate_ids = index === 0 ? cutIds : [];
-    option.edit_execution_plan.remove_segments = index === 0
-      ? cutIds.map((candidate_id) => ({ candidate_id, reason: "Confirmed cleanup." }))
-      : [];
+    option.subtitles = { enabled: true, style: "plain", conflict_notes: [] };
     option.visuals = { direction: "No decorative overlays.", viewer_job: "Focus on the cleaned explanation.", requires_grounding: false, notes: [] };
     option.requires_confirmation = [];
     option.sfx = index === 0 && enableSfx
       ? { enabled: true, usage: "Use one restrained click cue for the confirmed action.", restraint: "low volume, no speech masking" }
       : { enabled: false, usage: "No sound effects.", restraint: "Keep the original speech natural." };
+    option.asset_requirements.sfx_slots = index === 0 && enableSfx
+      ? [{ slot_id: "click", kind: "sfx", purpose: "Use one restrained confirmation click.", required: true }]
+      : [];
   });
   writeFileSync(join(project, "production-proposal.json"), JSON.stringify(proposal));
   const proposed = proposalProject(project);
@@ -171,4 +203,9 @@ function makeVideo(path: string, duration: number): void {
     path,
   ], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+}
+
+function writeExecutable(path: string, content: string): void {
+  writeFileSync(path, content);
+  (nodeFs as any).chmodSync(path, 0o755);
 }

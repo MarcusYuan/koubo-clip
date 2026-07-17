@@ -60,6 +60,7 @@ export function resolveHyperframesBinary(): string {
   if (process.env.KOUBO_CLIP_HYPERFRAMES_BIN) return process.env.KOUBO_CLIP_HYPERFRAMES_BIN;
   const candidates = [
     join(sourceRoot, "node_modules", ".bin", "hyperframes"),
+    join(dirname(sourceRoot), ".bin", "hyperframes"),
     join(binaryRoot, "runtime", "bin", "hyperframes"),
     join(process.cwd(), "node_modules", ".bin", "hyperframes"),
   ];

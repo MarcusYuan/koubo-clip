@@ -18,7 +18,7 @@ Use this file when choosing music, SFX, internet visual assets, generated images
 - In `production-proposal.json`, describe visual asset intent only: viewer job, semantic query, preferred source, license/cost/source risk, and why it helps. Do not write final `asset_id`, local path, provider URL, download URL, absolute path, or raw MCP payload before confirmation.
 - Always write the need clearly in `visual-request.json`: viewer job, semantic query, asset type, preferred sources, timing/zone when known, and why it helps the viewer.
 - In `standalone` mode, use `project visual-search`, `project visual-acquire`, and `project visual-review`.
-- In `platform` mode, ask the host/platform visual/component/image/MCP tools to search, authorize, download, export, or generate first. They must write normalized `visual-candidates.json` plus project-local files or stable workspace refs before CLI import/review.
+- In `platform` mode, read `koubo-clip artifact contract visual-candidates --json`, then ask the host/platform visual/component/image/MCP tools to search, authorize, download, export, or generate. They must write contract-valid `visual-candidates.json` plus project-local files before CLI import/review.
 - Record provider/source label, query, license or usage note, author/attribution, hash, runtime dependencies, and any host audit id.
 - Never use provider URLs as final render inputs.
 - Never write raw MCP/provider responses, Bearer tokens, API keys, temporary URLs, absolute paths, or unreviewed remote downloads as render inputs.
@@ -35,7 +35,7 @@ Do not use generated images for subtitles, flowcharts, software screenshots, dat
 
 ## User Assets
 
-If the user provides files, import them into the project, record local paths in `asset-manifest.json`, and still include them in QA checks.
+If the user provides files, import them through the supported CLI acquisition/import path so the CLI records local paths in `asset-manifest.json`; still include them in QA checks.
 
 ## No Asset Plan
 

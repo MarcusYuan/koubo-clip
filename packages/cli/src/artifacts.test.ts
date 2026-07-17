@@ -234,9 +234,9 @@ test("production proposal validates options and forbids premature asset refs", (
   expect(() =>
     parseProductionProposal({
       ...proposal,
-      options: [{ ...proposal.options[0], music: { source: "spotify", ducking: true, notes: [] } }, proposal.options[1]],
+      options: [{ ...proposal.options[0], music: { source: "spotify", ducking: true, notes: [] }, asset_requirements: { ...proposal.options[0]!.asset_requirements, music_slots: [] } }, proposal.options[1]],
     }),
-  ).toThrow("/music/source");
+  ).toThrow("/options/0/asset_requirements/music_slots");
   expect(() =>
     parseProductionProposal({
       ...proposal,
@@ -260,9 +260,9 @@ test("project metadata only accepts the current contract", () => {
   expect(() => artifacts.parseProjectMetadata({ contract_version: "2.0", provider_execution_mode: "standalone" })).toThrow("contract_version");
 });
 
-test("production proposal v2 consumes business direction, execution plan, and asset requirements", () => {
+test("production proposal v3 consumes business direction, execution plan, and asset requirements", () => {
   const proposal = parseProductionProposal(productionProposalExample);
-  expect(proposal.version).toBe("2.0");
+  expect(proposal.version).toBe("3.0");
   expect(proposal.options[0]?.business_direction.title).toBe("Restrained enhancement");
   expect(proposal.options[0]?.edit_execution_plan.narrative_structure[0]?.beat).toBe("proof");
 

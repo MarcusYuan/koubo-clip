@@ -41,18 +41,19 @@ import {
 } from "./render-contract";
 import {
   compileEdlProject,
+  compileCaptionCuesForEdl,
   executeResolvedRenderPlan,
   probeStrictOutputTiming,
   probePortableSourceIdentity,
   resolveRenderContractStoryboard,
   resolveRenderOutputSpec,
+  resolveConfirmedEnrichmentPlan,
   validateEnrichmentPlan,
-  validateProjectAuthoringConformance,
   type EnrichmentStoryboard,
 } from "./project";
 import { computeRendererResourcesDigest } from "./delivery-identity";
 import { verifyInstalledDelivery } from "./delivery-runtime";
-import { artifactReference, commitProjectStage, inputFingerprint, readProjectArtifactManifest, recordJsonArtifact } from "./project-lineage";
+import { artifactReference, commitProjectStage, inputFingerprint, readProjectArtifactManifest, recordJsonArtifact, renderContractAuthoringKeys } from "./project-lineage";
 
 const fsRuntime = nodeFs as unknown as { realpathSync(path: string): string; lstatSync(path: string): { isSymbolicLink(): boolean }; renameSync(from: string, to: string): void };
 const CAPABILITY_IDS = [
@@ -90,9 +91,17 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
     const enrichmentPath = join(projectPath, projectArtifacts.enrichmentPlan);
     const assetManifestPath = join(projectPath, projectArtifacts.assetManifest);
     const enrichment = existsSync(enrichmentPath) ? validateEnrichmentPlan(projectPath, edl) : undefined;
-    const plan = enrichment?.plan;
-    const selectedOption = validateProjectAuthoringConformance(projectPath, plan);
-    const cues = selectedOption?.subtitles.enabled === false ? [] : compileCaptionCues(transcript.segments, edl);
+    const confirmedExecution = resolveConfirmedEnrichmentPlan(projectPath, edl, enrichment?.plan);
+    const plan = confirmedExecution.plan;
+    const selectedOption = confirmedExecution.option;
+    if (!selectedOption) throw coded("CONTRACT_INVALID", "render contract export requires a confirmed production proposal option");
+    const lifecycle = readProjectArtifactManifest(projectPath);
+    if (!lifecycle) throw coded("CONTRACT_INVALID", "render contract export requires artifact-manifest.json");
+    const selectionKey = `proposal-selection:${selectedOption.id}`;
+    const selectionRecord = lifecycle.artifacts[selectionKey];
+    if (!selectionRecord) throw coded("CONTRACT_INVALID", `render contract export requires current ${selectionKey}`);
+    const cues = selectedOption?.subtitles.enabled === false ? [] : compileCaptionCuesForEdl(transcript, edl);
+    if (selectedOption?.subtitles.enabled !== false && cues.length === 0) throw coded("PROPOSAL_EXECUTION_MISMATCH", "the confirmed proposal requires subtitles, but no transcript cues map to the retained EDL");
     const authoringAssets = enrichment?.assets ?? { assets: [] };
     if (plan && !existsSync(assetManifestPath) && referencedAssetIds(plan).size > 0) throw coded("CONTRACT_INVALID", "enrichment plan references assets but asset-manifest.json is missing");
 
@@ -148,8 +157,19 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
       audio: json(plan?.audio ?? { music: [], sfx: [] }),
       output: json({ container: "mp4", width: output.width, height: output.height, fps, video_codec: "h264", pixel_format: "yuv420p", audio_codec: "aac", audio_sample_rate: 48000, audio_channels: 2, canonical_filename: "koubo-final.mp4" }),
       preflight: json({ required_tools: ["ffmpeg", "ffprobe"], required_filters: ["scale", "pad", "fps", "format", "aresample", "aformat"], runtime_dependencies: [...RUNTIME_DEPENDENCIES], expected_duration_seconds: duration, source_probe_tolerance_seconds: 0.05 }),
-      inspection: json({ duration_tolerance_seconds: Math.max(0.05, 2 / 30), require_video: true, require_audio: rawSources.sources.some((source) => Boolean(source.identity?.audio)), checks: storyboard?.qa_checks ?? [], hard_acceptance: true }),
-      authoring_lineage: json({ members: authoringLineage(projectPath, [projectArtifacts.sources, projectArtifacts.edl, projectArtifacts.transcriptJson, ...(plan ? [projectArtifacts.enrichmentPlan] : []), ...(plan && existsSync(assetManifestPath) ? [projectArtifacts.assetManifest] : [])]) }),
+      inspection: json({ duration_tolerance_seconds: Math.max(0.05, 2 / 30), require_video: true, require_audio: rawSources.sources.some((source) => Boolean(source.identity?.audio)), checks: storyboard?.qa_checks ?? [], hard_acceptance: true, proposal_conformance: confirmedExecution.conformance }),
+      authoring_lineage: json({
+        members: authoringLineage(projectPath, [
+          projectArtifacts.sources,
+          projectArtifacts.productionProposal,
+          projectArtifacts.editPlan,
+          projectArtifacts.edl,
+          projectArtifacts.transcriptJson,
+          ...(enrichment ? [projectArtifacts.enrichmentPlan] : []),
+          ...(enrichment && existsSync(assetManifestPath) ? [projectArtifacts.assetManifest] : []),
+        ]),
+        logical_members: [{ key: selectionKey, fingerprint: selectionRecord.fingerprint }],
+      }),
     };
     const contract = createRenderContractV1(payload);
     writeJson(join(staging, "render-contract.json"), contract);
@@ -158,8 +178,7 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
     publishedBundle = true;
     writeJson(projectContractPath, contract);
     wroteProjectContract = true;
-    const lifecycle = readProjectArtifactManifest(projectPath);
-    const inputKeys = ["sources", "edl", "transcript", ...(plan ? ["enrichment-plan"] : []), ...(plan && existsSync(assetManifestPath) ? ["asset-manifest"] : [])];
+    const inputKeys = renderContractAuthoringKeys(selectedOption.id, Boolean(enrichment), Boolean(enrichment && existsSync(assetManifestPath)));
     const inputs = inputKeys.map((key) => {
       const record = lifecycle?.artifacts[key];
       if (!record) throw coded("CONTRACT_INVALID", `render contract export requires current ${key}`);
@@ -301,7 +320,16 @@ export function renderBoundContract(bundleDir: string, bindingsPath: string, run
   }
 }
 
-export function inspectBoundContract(bundleDir: string, resultPath: string): CommandResult<"render-contract.inspect", { inspection_path: string; accepted: boolean; checks: StrictInspectionCheckV1[] }> {
+export function inspectBoundContract(bundleDir: string, resultPath: string): CommandResult<"render-contract.inspect", {
+  inspection_path: string;
+  accepted: boolean;
+  render_status: "success";
+  technical_inspection_status: "passed" | "failed";
+  proposal_conformance_status: "passed" | "failed";
+  business_acceptance_status: "passed" | "failed";
+  overall_status: "completed" | "partial" | "failed";
+  checks: StrictInspectionCheckV1[];
+}> {
   try {
     const contract = readContract(bundleDir);
     verifyRenderAssets(bundleDir, contract.payload.assets);
@@ -322,6 +350,9 @@ export function inspectBoundContract(bundleDir: string, resultPath: string): Com
     const durationDelta = Math.abs(timing.container_duration_seconds - expected);
     checks.push(check("video-frame-count", timing.video_frame_count === frameSchedule.total_frames, `video frame count: expected=${frameSchedule.total_frames} actual=${timing.video_frame_count}`));
     checks.push(check("duration", durationDelta <= tolerance, `${durationDelta <= tolerance ? "output duration matches contract" : "output duration mismatch"}: expected=${seconds(expected)}s actual=${seconds(timing.container_duration_seconds)}s delta=${seconds(durationDelta)}s tolerance=${seconds(tolerance)}s`));
+    const proposalConformance = inspectionPolicy.proposal_conformance;
+    const proposalPassed = Boolean(proposalConformance && typeof proposalConformance === "object" && !Array.isArray(proposalConformance) && (proposalConformance as { status?: unknown }).status === "passed");
+    checks.push(check("proposal-conformance", proposalPassed, proposalPassed ? "frozen authoring proposal conformance passed" : "frozen authoring proposal conformance is missing or failed"));
     checks.push(check("video-stream", identity.video.width > 0 && identity.video.height > 0, "canonical output has a video stream"));
     checks.push(check("video-dimensions", identity.video.display_width === integer(outputSpec.width, "output.width") && identity.video.display_height === integer(outputSpec.height, "output.height"), "canonical output dimensions match the contract"));
     checks.push(check("video-codec", identity.video.codec_name === text(outputSpec.video_codec, "output.video_codec"), "canonical output video codec matches the contract"));
@@ -337,6 +368,9 @@ export function inspectBoundContract(bundleDir: string, resultPath: string): Com
     const resultDigest = strictRenderResultDigest(result);
     const extracted = extractInspectionFrames(outputPath, dirname(resultPath), contract.contract_digest, resultDigest, inspectionPolicy.checks);
     if (extracted.requested > 0) checks.push(check("qa-frame-extraction", extracted.frames.length === extracted.requested, `extracted ${extracted.frames.length}/${extracted.requested} frozen QA frames`));
+    const technicalPassed = checks.filter((item) => item.id !== "proposal-conformance").every((item) => item.status !== "blocker");
+    const businessPassed = technicalPassed && proposalPassed;
+    const overallStatus = businessPassed ? "completed" as const : technicalPassed ? "partial" as const : "failed" as const;
     const blockers = checks.filter((item) => item.status === "blocker").map((item) => item.id);
     const inspection: StrictInspectionV1 = {
       schema_version: "1.0",
@@ -345,6 +379,11 @@ export function inspectBoundContract(bundleDir: string, resultPath: string): Com
       render_result_digest: resultDigest,
       output_sha256: identity.sha256 as Sha256Digest,
       accepted: blockers.length === 0,
+      render_status: "success",
+      technical_inspection_status: technicalPassed ? "passed" : "failed",
+      proposal_conformance_status: proposalPassed ? "passed" : "failed",
+      business_acceptance_status: businessPassed ? "passed" : "failed",
+      overall_status: overallStatus,
       checks,
       frames: extracted.frames,
       warnings: [],
@@ -354,7 +393,20 @@ export function inspectBoundContract(bundleDir: string, resultPath: string): Com
     const inspectionPath = join(dirname(resultPath), "render-contract-inspection.json");
     writeJson(inspectionPath, inspection);
     if (blockers.length > 0) return { ok: false, command: "render-contract.inspect", error: { code: "INSPECTION_ACCEPTANCE_FAILED", message: `strict inspection failed; structured result: ${inspectionPath}` } };
-    return { ok: true, command: "render-contract.inspect", data: { inspection_path: inspectionPath, accepted: true, checks } };
+    return {
+      ok: true,
+      command: "render-contract.inspect",
+      data: {
+        inspection_path: inspectionPath,
+        accepted: true,
+        render_status: "success",
+        technical_inspection_status: "passed",
+        proposal_conformance_status: "passed",
+        business_acceptance_status: "passed",
+        overall_status: "completed",
+        checks,
+      },
+    };
   } catch (error) {
     return failure("render-contract.inspect", error, "RENDER_OUTPUT_INVALID");
   }
@@ -438,18 +490,6 @@ function referencedAssetIds(plan: EnrichmentPlanArtifact): Set<string> {
     ...plan.audio.sfx.flatMap((item) => item.asset_id ? [item.asset_id] : []),
     ...plan.elements.flatMap((item) => item.asset_id ? [item.asset_id] : []),
   ]);
-}
-
-function compileCaptionCues(segments: Array<{ source_id: string; start: number; end: number; text: string }>, edl: EdlArtifact): Array<{ start: number; end: number; text: string }> {
-  const cues: Array<{ start: number; end: number; text: string }> = [];
-  let cursor = 0;
-  for (const entry of [...edl.entries].sort((a, b) => a.output_order - b.output_order)) {
-    for (const segment of segments.filter((item) => item.source_id === entry.source_id && item.start >= entry.start && item.end <= entry.end)) {
-      cues.push({ start: cursor + segment.start - entry.start, end: cursor + segment.end - entry.start, text: segment.text });
-    }
-    cursor += entry.end - entry.start;
-  }
-  return cues;
 }
 
 function assertSourceIdentity(expected: RenderSourceIdentityV1 | ReturnType<typeof probePortableSourceIdentity>, actual: ReturnType<typeof probePortableSourceIdentity>): void {

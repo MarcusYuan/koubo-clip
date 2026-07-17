@@ -62,20 +62,24 @@ try {
   expect(runCliJson(cli, ["project", "review", project], packageRoot).ok === true, "installed CLI review failed");
 
   const proposalContract = runCliJson(cli, ["artifact", "contract", "production-proposal", "--json"], packageRoot).data;
-  expect(proposalContract.schema_version === "2.0", "installed CLI did not expose production proposal 2.0");
+  expect(proposalContract.schema_version === "3.0", "installed CLI did not expose production proposal 3.0");
   expect(proposalContract.schema_digest === capabilities.artifact_contracts["production-proposal"].schema_digest, "proposal schema digest is not exposed by capabilities");
   expect(proposalContract.contract_digest === capabilities.artifact_contracts["production-proposal"].contract_digest, "proposal contract digest is not exposed by capabilities");
   expect(proposalContract.example && proposalContract.template, "installed proposal authoring contract is incomplete");
+  expect(capabilities.artifact_contracts["edit-plan"]?.external_writes_allowed === true, "installed edit-plan contract is not authorable");
+  expect(capabilities.artifact_contracts["enrichment-plan"]?.external_writes_allowed === true, "installed enrichment-plan contract is not authorable");
+  expect(capabilities.artifact_contracts["visual-candidates"]?.ownership === "host_authored", "installed visual-candidates contract is not host-authored");
+  expect(capabilities.artifact_contracts["asset-manifest"]?.external_writes_allowed === false, "installed asset-manifest contract is externally writable");
+  expect(capabilities.artifact_contracts["render-result"]?.external_writes_allowed === false, "installed render-result contract is externally writable");
+  expect(capabilities.artifact_contracts["source-map"]?.ownership === "host_authored", "installed source-map contract is not host-authored");
   const proposal = structuredClone(proposalContract.example);
-  proposal.recommended_option_id = "cleanup-only";
   for (const option of proposal.options) {
     option.cleanup.cut_candidate_ids = [];
-    option.edit_execution_plan.remove_segments = [];
   }
   const confirmedOption = proposal.options.find((option: Json) => option.id === proposal.recommended_option_id);
   expect(Boolean(confirmedOption), "proposal example is missing its recommended option");
   confirmedOption.sfx = { enabled: true, usage: "One restrained confirmation click.", restraint: "low volume, no speech masking" };
-  confirmedOption.asset_requirements.sfx_slots = [{ slot_id: "sfx-confirmation", kind: "sfx", purpose: "Confirm the selected action.", required: true }];
+  confirmedOption.asset_requirements.sfx_slots = [{ slot_id: "click", kind: "sfx", purpose: "Confirm the selected action.", required: true }];
   writeFileSync(join(project, "production-proposal.json"), `${JSON.stringify(proposal)}\n`);
   const proposed = runCliJson(cli, ["project", "proposal", project], packageRoot);
   expect(proposed.ok === true, "installed CLI rejected its own production proposal contract example");
@@ -91,7 +95,7 @@ try {
   expect(runCliJson(cli, ["project", "compile-edl", project], packageRoot).ok === true, "installed CLI portable EDL compilation failed");
   writeFileSync(join(project, "enrichment-plan.json"), `${JSON.stringify({
     version: "2.0",
-    profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor", layout: "overlay", style: "minimal", frame: "clean" },
+    profile: { source_mode: proposal.source_mode, aspect_ratio: "source", caption_identity: "anchor", layout: "overlay", style: "minimal", frame: "clean" },
     elements: [
       {
         id: "caption-identity",

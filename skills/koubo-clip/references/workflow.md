@@ -25,7 +25,7 @@ Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabili
    - Never make precise cuts from transcript text alone.
 
 4. Build one user-facing proposal with 2-4 complete options.
-   - Run `koubo-clip artifact contract production-proposal --json` and fill its complete template. Do not reconstruct required fields or enums from this reference.
+   - Run `koubo-clip artifact contract production-proposal --json` and fill its complete template. Do not reconstruct required fields or enums from this reference. The current proposal contract is `3.0`.
    - For broad goals such as "卖货视频", "朋友圈吸引咨询", "高级感", "种草", "专业讲解", or "去废话保留卖点", each `production-proposal.json.options[]` item must combine `business_direction`, `edit_execution_plan`, and `asset_requirements`.
    - The option `id` is the only direction identity; do not add `business_direction.direction_id` or `option.recommended`.
    - `edit_execution_plan` contains execution intent and confirmation summary, never asset slots.
@@ -33,10 +33,11 @@ Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabili
    - Do not ask the user to choose a direction and then ask again to confirm its execution plan.
 
 5. Validate the proposal and ask for one confirmation.
-   - Write `production-proposal.json` version `2.0` and run `project proposal --json`.
+   - Write `production-proposal.json` version `3.0` and run `project proposal --json`.
    - Show the recommended option and alternatives, including each option's direction, execution plan, asset slots, risks, and confirmation items.
    - Preserve the returned `proposal_fingerprint` and `option_selection_fingerprints` map.
    - `OK` confirms `recommended_option_id`; an explicit option id confirms that option. If the user changes the plan materially, update and validate the proposal before asking for the final choice.
+   - The selected option fingerprint stays bound downstream: `edit-plan.json` must match the confirmed cleanup set, and `enrichment-plan.json` may only use the confirmed option's asset requirements and subtitles/visual/music/SFX choices. The confirmed option's `duration_target`, ordered `timeline`, and `text_overlays` are the executable parts of the proposal, not just display metadata.
    - Do not acquire assets, generate images, or render before the user confirms the proposal.
 
 6. Write execution artifacts after confirmation.
@@ -44,7 +45,7 @@ Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabili
    - `focus-candidates.json` and grounding artifacts for UI-facing inserts. Candidate timing is on the cleaned output timeline; `project focus-frames` maps it through the EDL and records source-local evidence.
    - `visual-request.json` and visual review artifacts for sourced visuals. Every retained request must have an explicit `selected_candidate_id` and `selection_reason` after candidate review; `recommended` and candidate order are hints only.
    - `music-request.json` and music review artifacts for music.
-   - `asset-manifest.json` for local files only.
+   - CLI-generated `asset-manifest.json` for validated local files only.
    - Fetch the enrichment-plan contract, then write `enrichment-plan.json` version `2.0` as `profile + elements + audio`; it is the only canonical final visual/audio usage plan.
    - Use `caption_identity` for caption styling, `visual_asset` for all acquired or generated visuals, `audio.music[]` for BGM, and `audio.sfx[]` for SFX. Cards, slots, top-level captions/music, `generated_asset`, and element-level SFX are invalid.
    - A simplified platform handoff may write standalone `asset-usage-plan.json`, then run `project enrich-plan` to normalize it once. Do not embed new usage plans in `project.json` or `edit-plan.json`, and never let render merge multiple sources.
@@ -60,7 +61,7 @@ Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabili
    - Run `project enrich-plan` and show planned `qa_checks[]`.
    - Run `project render`.
    - Treat only current `render-result.json` as render success; its `canonical_output_key` selects the deliverable and its `inputs[]` records exact consumed artifacts.
-   - Run `project inspect` and review current `inspection.json` plus `inspection_checks[]`; sampled inspection frames use the final output timeline.
+   - Run `project inspect` and review current `inspection.json` plus `inspection_checks[]`; sampled inspection frames use the final output timeline. If inspection reports blockers, the structured result still exists but the command is fail-closed and does not count as accepted.
    - Report the canonical deliverable, render/inspection fingerprints, artifact paths, and any warnings that remain. `report.md` is a rebuildable human view, not machine state.
 
 ## Confirmation Rule
@@ -73,7 +74,7 @@ Use the current CLI contract rather than a partial shape in this reference. `bus
 
 ## Production Proposal Contract
 
-`production-proposal.json` is the confirmation surface. It is not the render plan.
+`production-proposal.json` is the confirmation surface and the execution source of truth for the confirmed option. It is not the render plan.
 
 - Write 2-4 options, not a single plan.
 - For each option, cover: publishing goal, why it fits this material, cleanup strategy, subtitle strategy, visual strategy, image/generated-image intent, music strategy, SFX strategy, risks, and confirmation items.
@@ -93,7 +94,7 @@ Proposal options, each with its own execution plan and asset requirements:
 
 After `project proposal --json`, the user confirms `sales-conversion` once. Copy its returned selection fingerprint into the confirmed edit plan, then ask Hermes/platform capabilities to fulfill the confirmed option's `asset_requirements`.
 
-Convert the confirmed option into execution artifacts: `edit-plan.json` from review candidate ids; `focus-candidates.json`, `focus-frames.json`, `focus-grounding.json`, and `focus-review.json` for UI moments; `visual-request.json` for approved icons/Lottie/UI/image/B-roll intents; `music-request.json` for approved BGM; `asset-manifest.json` only for landed assets; and canonical `enrichment-plan.json` using output-timeline timings.
+Convert the confirmed option into authoring artifacts: `edit-plan.json` from review candidate ids; `focus-candidates.json` and `focus-grounding.json` for UI moments; `visual-request.json` for approved icons/Lottie/UI/image/B-roll intents; `music-request.json` for approved BGM; and canonical `enrichment-plan.json` using output-timeline timings. Use supported CLI commands to produce `focus-frames.json`, `focus-review.json`, acquisition results, and CLI-owned `asset-manifest.json`.
 
 In platform mode, a standalone `asset-usage-plan.json` is the only new shortcut. `project enrich-plan` normalizes it into canonical enrichment before render. `prepared-assets.json` is only an inventory, and neither it nor `asset-manifest.json` is render source of truth.
 

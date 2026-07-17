@@ -2,7 +2,7 @@
 
 ## 状态
 
-本文定义 `koubo-clip@0.0.10` 的公开作者合同。实现和发布必须以 canonical npm tarball 的安装态验收为完成标准，源码工作区通过不等于正式交付完成。
+本文定义 `koubo-clip@0.0.11` 的公开作者合同。实现和发布必须以 canonical npm tarball 的安装态验收为完成标准，源码工作区通过不等于正式交付完成。
 
 ## 目标
 
@@ -67,7 +67,7 @@ Fail-closed 保持不变。未知字段、缺失必填字段、非法 enum、类
   "error": {
     "code": "ARTIFACT_VALIDATION_FAILED",
     "artifact": "production-proposal.json",
-    "schema_version": "2.0",
+      "schema_version": "3.0",
     "schema_digest": "sha256:...",
     "issues": [
       {
@@ -87,26 +87,26 @@ Fail-closed 保持不变。未知字段、缺失必填字段、非法 enum、类
 
 所有作者合同校验使用统一的结构化错误面，不保留只返回首个错误的旧响应别名。项目状态、lineage 或媒体探测等依赖运行态的错误可以在结构校验之后单独返回；CLI 不为通过校验而静默补全业务语义。
 
-## Production Proposal 2.0
+## Production Proposal 3.0
 
 `production-proposal.json` 是第一项必须落地的完整作者合同。正式合同必须让 Agent 在写文件前发现：
 
 - 完整顶层结构；
 - 2–4 个 option 的数量要求；
-- 每个 option 的 cleanup、subtitles、visuals、images、music、SFX、risk/confirmation 字段；
-- `business_direction`、`edit_execution_plan` 和 `asset_requirements` 的完整嵌套结构；option `id` 是唯一方向身份，`recommended_option_id` 是唯一推荐权威；
+- 每个 option 的 cleanup、subtitles、visuals、images、music、SFX、risk/confirmation 字段，以及结构化 `duration_target`、有序 `timeline` 和 `text_overlays`；
+- `business_direction`、`edit_execution_plan` 和 `asset_requirements` 的完整嵌套结构；option `id` 是唯一方向身份，`recommended_option_id` 是唯一推荐权威；被确认 option 的业务方向不是“建议”，而是后续执行合同的一部分；
 - `source_mode`、`presentation_intent`、music source 和 slot kind 等所有闭集枚举；
 - required、optional、允许为空数组和禁止出现字段；
 - `asset_requirements` 是 visual/image/music/SFX 槽位的唯一权威，`edit_execution_plan` 不接受重复 slots；
 - 一份包含 2–4 个完整 option、可被同版本 `project proposal --json` 直接接受的实例。
 
-官方 Skill 继续负责怎样形成一次完整确认面，但不得再用 `{}` 或“省略字段仍遵循 schema”作为唯一结构说明。
+官方 Skill 继续负责怎样形成一次完整确认面，但不得再用 `{}` 或“省略字段仍遵循 schema”作为唯一结构说明。当前 production proposal 的唯一版本是 3.0。
 
 ## 单一事实来源与防漂移
 
 运行时 validator、公开 schema、template、example、capabilities 索引和 Skill reference 中的结构性声明必须由同一合同定义生成，或由自动测试证明等价。不得独立维护互不校验的 TypeScript 类型、手写 parser、JSON Schema 和 Skill 示例。
 
-合同注册测试必须拒绝可写合同中的裸 `items:{"type":"object"}`、缺失 example 或无法通过当前 runtime parser 的 example。`source-frame-request` 1.0 必须完整公开 frame 的五个必填字段和唯一可选 `segment_id`，并聚合返回缺失、类型、范围、未知字段和重复 ID 问题。
+合同注册测试必须拒绝可写合同中的裸 `items:{"type":"object"}`、缺失 example 或无法通过当前 runtime parser 的 example。`source-frame-request` 1.0 必须完整公开 frame 的五个必填字段和唯一可选 `segment_id`；platform host 写入的 `visual-candidates` 1.0 也必须公开闭合 candidate 结构与安全相对路径约束。两者的结构问题都通过当前合同聚合返回，不能压缩成不可诊断的通用错误。
 
 每个正式发布必须证明：
 
@@ -121,7 +121,7 @@ Fail-closed 保持不变。未知字段、缺失必填字段、非法 enum、类
 
 - 每个 CLI release 对每种 artifact 只支持一个当前 schema，不提供 version 选择、协商、旧 parser、legacy normalization 或运行时迁移。
 - Artifact 内仍保留 version 字段，用于 fail-closed、schema digest、delivery identity 和跨机器一致性；不匹配当前 version 时直接返回 `CONTRACT_SCHEMA_UNSUPPORTED`。
-- `production-proposal.json` 当前唯一版本是 `2.0`；`enrichment-plan.json` 当前唯一版本是 `2.0`；其他 artifact 以当前 capabilities/contract registry 声明为准。
+- `production-proposal.json` 当前唯一版本是 `3.0`；`enrichment-plan.json` 当前唯一版本是 `2.0`；其他 artifact 以当前 capabilities/contract registry 声明为准。
 - 旧项目和旧 artifact 不自动恢复或升级。开发阶段的 fixtures、示例和内部项目一次性改写为当前格式；无法改写的项目使用当前 CLI 重新创建。
 - 未来确需破坏性修改时，发布新的 schema version，并在同一变更中删除旧版本 runtime 支持；不得长期并存多个版本。
 - Contract template/example 只用于作者指导，不是运行时默认值，也不进入 project lineage，除非 Agent 明确写入并通过对应 validator。

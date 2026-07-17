@@ -127,4 +127,4 @@ npm publish --access public --registry=https://registry.npmjs.org/
 - `gsap` 固定 `3.15.0`，`hyperframes` 固定 `0.7.36`；strict runtime 禁止联网下载 renderer。
 - `skills install` 必须在复制前验证 bundled Skill，在 staging 后和 atomic replace 后再次验证 installed Skill。
 - Release 外层另生成 artifact SHA-256；外层 digest 不替代 delivery manifest 内部身份。
-- 安装态 authoring smoke 至少读取唯一当前 `production-proposal.json` 2.0 合同，生成 2-4 个完整 options，首次 `project proposal --json` 通过或最多依据一次聚合 issues 整体修正后通过，并验证 option selection fingerprint 可继续绑定 edit plan/compile EDL；同一安装态还必须证明不存在 schema version 选择面，非当前 version 返回 `CONTRACT_SCHEMA_UNSUPPORTED`。
+- 安装态 authoring smoke 至少读取唯一当前 `production-proposal.json` 3.0 合同，生成 2-4 个完整 options，首次 `project proposal --json` 通过或最多依据一次聚合 issues 整体修正后通过，并验证 option selection fingerprint 可继续绑定 edit plan/compile EDL；同一安装态还必须证明不存在 schema version 选择面，非当前 version 返回 `CONTRACT_SCHEMA_UNSUPPORTED`。

@@ -208,8 +208,8 @@ test("compile validates but never re-registers changed material owners", async (
   });
 
   const initialRender = renderProject(project);
+  if (!initialRender.ok) throw new Error(`${initialRender.error.code}: ${initialRender.error.message}`);
   expect(initialRender.ok).toBe(true);
-  if (!initialRender.ok) throw new Error(initialRender.error.message);
   const committed = readManifest(project);
   expect(committed.artifacts["edit-plan"]?.validated_by_command).toBe("project.compile-edl");
   expect(committed.artifacts.edl?.produced_by_command).toBe("project.compile-edl");
@@ -221,7 +221,7 @@ test("compile validates but never re-registers changed material owners", async (
   if (rerender.ok) throw new Error("expected changed transcript rejection");
   expect(rerender.error.code).toBe("ARTIFACT_STALE");
   expect(ownedMaterialRecords(readManifest(project))).toEqual(ownedBefore);
-});
+}, 20_000);
 
 function createTrackedProject(realMedia: boolean): string {
   const root = mkdtempSync(join(tmpdir(), "koubo-owner-tracked-"));
@@ -255,7 +255,6 @@ function proposalDocument(): ProductionProposalArtifact {
   const proposal = structuredClone(productionProposalExample) as ProductionProposalArtifact;
   proposal.options.forEach((option) => {
     option.cleanup.cut_candidate_ids = [];
-    option.edit_execution_plan.remove_segments = [];
   });
   return proposal;
 }

@@ -47,7 +47,7 @@ test("koubo-clip skill documents proposal confirmation gate", () => {
   expect(`${skill}\n${workflow}`).toContain("proposal_fingerprint");
   expect(`${skill}\n${workflow}`).toContain("option_selection_fingerprints");
   expect(`${skill}\n${workflow}`).toContain("koubo-clip artifact contract production-proposal --json");
-  expect(`${skill}\n${workflow}`).toContain('production-proposal.json` version `2.0`');
+  expect(`${skill}\n${workflow}`).toContain("production-proposal.json` version `3.0`");
   expect(`${skill}\n${workflow}`).toContain("`contract_version:\"1.0\"`, `confirmed_option_id`, and the matching `proposal_selection_fingerprint`");
   expect(skill).toContain("Before user confirmation, do not write `edit-plan.json`, `focus-candidates.json`, any `focus-*` execution artifacts, `visual-request.json`, `music-request.json`, `asset-manifest.json`, or `enrichment-plan.json`");
   expect(`${skill}\n${workflow}\n${media}`).toContain("intent, query, provider preference, license/cost/source risk");
@@ -132,7 +132,7 @@ test("koubo-clip skill and READMEs use render-result and inspection as completio
   for (const body of [readme, readmeCn]) {
     expect(body).toContain("artifact-manifest.json");
     expect(body).toContain("pending_validation");
-    expect(body).toContain("LINEAGE_UNPROVEN");
+    expect(body).toContain("CONTRACT_SCHEMA_UNSUPPORTED");
     expect(body).toContain("report.md");
   }
 

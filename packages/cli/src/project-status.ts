@@ -36,9 +36,12 @@ import {
   type ArtifactRecord,
   type ArtifactRole,
   type ArtifactState,
+  type EdlArtifact,
+  type EnrichmentPlanArtifact,
   type InspectionArtifact,
   type ProductionProposalArtifact,
   type ProjectArtifactStatus,
+  type ProjectAcceptanceStatus,
   type ProjectContractVersion,
   type ProjectStageStatus,
   type ProjectStatusArtifact,
@@ -60,16 +63,25 @@ import {
   projectMetadataFingerprintProjection,
   proposalSelectionFingerprint,
   proposalSelectionVirtualPath,
+  renderContractAuthoringKeys,
   renderResultFingerprintProjection,
   visualAcquisitionFingerprintProjection,
 } from "./project-lineage";
 import { sourceIdentityFingerprintProjection } from "./source-identity";
 import { parseRenderContractV1 } from "./render-contract";
+import {
+  applyConfirmedTextOverlays,
+  evaluateProposalExecution,
+  evaluateResolvedProposalExecution,
+  type ProposalExecutionConformance,
+} from "./proposal-execution";
 
 type ParsedArtifacts = {
   sources?: SourcesManifest;
   proposal?: ProductionProposalArtifact;
   editPlan?: ReturnType<typeof parseEditPlan>;
+  edl?: EdlArtifact;
+  enrichmentPlan?: EnrichmentPlanArtifact;
   renderResult?: RenderResult;
   inspection?: InspectionArtifact;
 };
@@ -195,7 +207,7 @@ const artifactDefinitions: readonly ArtifactDefinition[] = [
     key: "production-proposal",
     path: projectArtifacts.productionProposal,
     role: "authoritative_input",
-    schemaVersion: "2.0",
+    schemaVersion: "3.0",
     format: "json",
     parse: (value) => parseProductionProposal(value),
     capture: (value, parsed) => {
@@ -235,6 +247,9 @@ const artifactDefinitions: readonly ArtifactDefinition[] = [
     schemaVersion: "2.0",
     format: "json",
     parse: (value, parsed) => parseEdl(value, parsed.sources),
+    capture: (value, parsed) => {
+      parsed.edl = parseEdl(value, parsed.sources);
+    },
   },
   {
     key: "subtitles",
@@ -427,6 +442,9 @@ const artifactDefinitions: readonly ArtifactDefinition[] = [
     schemaVersion: "2.0",
     format: "json",
     parse: (value) => parseEnrichmentPlan(value),
+    capture: (value, parsed) => {
+      parsed.enrichmentPlan = parseEnrichmentPlan(value);
+    },
   },
   {
     key: "storyboard",
@@ -572,6 +590,20 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
     .sort((left, right) => left.key.localeCompare(right.key));
 
   const stages = buildStages(rootPath, nodes, evaluations, manifest, parsed);
+  const detachedExecution = Boolean(parsed.sources?.sources.length)
+    && parsed.sources!.sources.some((source) => evaluations.get(`source:${source.source_id}`)?.state !== "current");
+  const proposalConformance = evaluateProjectProposalConformance(parsed);
+  const contractStage = stages.find((stage) => stage.stage === "contract-export");
+  if (proposalConformance?.status === "failed" && contractStage) {
+    contractStage.state = "blocked";
+    contractStage.blockers.push(blocker(
+      "PROPOSAL_EXECUTION_MISMATCH",
+      proposalConformance.checks.filter((check) => check.status === "blocker").map((check) => `${check.id}: ${check.message}`).join("; "),
+      projectArtifacts.productionProposal,
+      "Repair the confirmed proposal timeline, duration, overlays, or asset-slot bindings, then recompile the EDL.",
+    ));
+    contractStage.next_commands = [];
+  }
   for (const stage of stages) blockers.push(...stage.blockers);
 
   const renderResultState = evaluations.get("render-result");
@@ -587,11 +619,10 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
     if (evaluation.fingerprint) fingerprints[key] = evaluation.fingerprint;
   }
 
+  const acceptance = projectAcceptanceStatus(parsed, evaluations, stages, detachedExecution, proposalConformance);
   const nextStage = stages.find((stage) => stage.state !== "complete" && stage.state !== "not_applicable");
-  const detachedExecution = Boolean(parsed.sources?.sources.length)
-    && parsed.sources!.sources.some((source) => evaluations.get(`source:${source.source_id}`)?.state !== "current");
-  const contractStage = stages.find((stage) => stage.stage === "contract-export");
   const exportReady = evaluations.get("edl")?.state === "current"
+    && proposalConformance?.status === "passed"
     && (!nodes.get("enrichment-plan")?.exists || evaluations.get("enrichment-plan")?.state === "current");
   const currentContractDigest = nodes.get("render-contract")?.exists && nodes.get("render-contract")?.valid
     ? (readJson(resolve(rootPath, projectArtifacts.renderContract)) as { contract_digest?: string }).contract_digest
@@ -609,6 +640,20 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
   const nextCommands = detachedExecution && (exported || exportReady)
     ? renderContractNextCommands
     : nextStage?.next_commands ?? [];
+  const authoringKeys = parsed.editPlan
+    ? renderContractAuthoringKeys(
+      parsed.editPlan.confirmed_option_id,
+      Boolean(nodes.get("enrichment-plan")?.exists),
+      Boolean(nodes.get("asset-manifest")?.exists),
+    )
+    : [];
+  const authoringInputs = authoringKeys.flatMap((key) => {
+    const evaluation = evaluations.get(key);
+    return evaluation?.state === "current" && evaluation.fingerprint ? [{ key, fingerprint: evaluation.fingerprint }] : [];
+  });
+  const currentAuthoringFingerprint = authoringInputs.length === authoringKeys.length && authoringInputs.length > 0
+    ? inputFingerprint(authoringInputs)
+    : undefined;
 
   return {
     contract_version: "1.0",
@@ -622,6 +667,7 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
     render_inputs: parsed.renderResult?.inputs ?? [],
     next_commands: uniqueStrings(nextCommands),
     blockers: uniqueBlockers(blockers),
+    acceptance,
     ...(lastSuccessfulCheckpoint(manifest) ? { last_successful_checkpoint: lastSuccessfulCheckpoint(manifest)! } : {}),
     sources: (parsed.sources?.sources ?? []).map((source) => ({
       source_id: source.source_id,
@@ -636,12 +682,131 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
       handoff_ready: detachedExecution && exported,
       next_commands: renderContractNextCommands,
       blockers: contractStage?.blockers ?? [],
-      ...(evaluations.get("edl")?.fingerprint ? { current_authoring_fingerprint: inputFingerprint([
-        { key: "edl", fingerprint: evaluations.get("edl")!.fingerprint! },
-        ...(evaluations.get("enrichment-plan")?.fingerprint ? [{ key: "enrichment-plan", fingerprint: evaluations.get("enrichment-plan")!.fingerprint! }] : []),
-      ]) } : {}),
+      ...(currentAuthoringFingerprint ? { current_authoring_fingerprint: currentAuthoringFingerprint } : {}),
       ...(currentContractDigest ? { current_contract_digest: currentContractDigest } : {}),
     },
+  };
+}
+
+function evaluateProjectProposalConformance(parsed: ParsedArtifacts): ProposalExecutionConformance | undefined {
+  if (!parsed.proposal || !parsed.editPlan || !parsed.edl) return undefined;
+  const option = parsed.proposal.options.find((candidate) => candidate.id === parsed.editPlan!.confirmed_option_id);
+  if (!option) return failedProposalConformance(
+    parsed.editPlan.confirmed_option_id,
+    "candidate_cleanup",
+    "proposal-selection",
+    "confirmed option does not exist in production-proposal.json",
+  );
+  if (parsed.editPlan.proposal_selection_fingerprint !== proposalSelectionFingerprint(parsed.proposal, option.id)) {
+    return failedProposalConformance(option.id, option.edit_execution_plan.timeline.mode, "proposal-selection", "edit plan selection fingerprint does not match the confirmed option");
+  }
+  const base = evaluateProposalExecution(option, parsed.edl);
+  if (base.status === "failed") return base;
+  try {
+    const effectivePlan = applyConfirmedTextOverlays(option, parsed.edl, parsed.enrichmentPlan, parsed.proposal.source_mode);
+    return evaluateResolvedProposalExecution(option, parsed.edl, effectivePlan, parsed.proposal.source_mode);
+  } catch (error) {
+    return {
+      ...base,
+      status: "failed",
+      checks: [...base.checks, {
+        id: "resolved-composition",
+        status: "blocker",
+        message: errorMessage(error),
+      }],
+    };
+  }
+}
+
+function failedProposalConformance(
+  optionId: string,
+  executionMode: "candidate_cleanup" | "explicit_segments",
+  checkId: string,
+  message: string,
+): ProposalExecutionConformance {
+  return {
+    status: "failed",
+    option_id: optionId,
+    execution_mode: executionMode,
+    duration_target: { min_seconds: 0, max_seconds: 0, tolerance_frames: 0 },
+    actual_duration_seconds: 0,
+    actual_frame_count: 0,
+    checks: [{ id: checkId, status: "blocker", message }],
+    mapped_overlays: [],
+  };
+}
+
+function projectAcceptanceStatus(
+  parsed: ParsedArtifacts,
+  evaluations: ReadonlyMap<string, ArtifactEvaluation>,
+  stages: readonly ProjectStageStatus[],
+  detachedExecution: boolean,
+  proposalConformance: ProposalExecutionConformance | undefined,
+): ProjectAcceptanceStatus {
+  const proposalStatus = proposalConformance?.status ?? "pending";
+  const edlCurrent = evaluations.get("edl")?.state === "current";
+  const enrichmentCurrent = !parsed.enrichmentPlan || evaluations.get("enrichment-plan")?.state === "current";
+  const authoringStatus = proposalStatus === "failed"
+    ? "blocked"
+    : proposalStatus === "passed" && edlCurrent && enrichmentCurrent
+      ? "complete"
+      : "in_progress";
+  const renderStage = stages.find((stage) => stage.stage === "render");
+  const inspectStage = stages.find((stage) => stage.stage === "inspect");
+  const canonicalOutput = parsed.renderResult?.outputs.find((output) => output.key === parsed.renderResult?.canonical_output_key);
+  const renderCurrent = evaluations.get("render-result")?.state === "current"
+    && Boolean(canonicalOutput && evaluations.get(canonicalOutput.key)?.state === "current");
+  const renderStatus: ProjectAcceptanceStatus["render_status"] = detachedExecution
+    ? "not_applicable"
+    : renderCurrent
+      ? "success"
+      : renderStage?.state === "failed" || evaluations.get("render-result")?.state === "invalid"
+        ? "failed"
+        : "pending";
+  const inspectionCurrent = evaluations.get("inspection")?.state === "current";
+  const technicalStatus: ProjectAcceptanceStatus["technical_inspection_status"] = detachedExecution
+    ? "not_applicable"
+    : inspectionCurrent
+      ? parsed.inspection?.technical_inspection_status
+        ?? ((parsed.inspection?.blockers.length ?? 0) === 0 ? "passed" : "failed")
+      : inspectStage?.state === "failed" || evaluations.get("inspection")?.state === "invalid"
+        ? "failed"
+        : "pending";
+  const businessStatus: ProjectAcceptanceStatus["business_acceptance_status"] = inspectionCurrent
+    ? parsed.inspection?.business_acceptance_status
+      ?? (proposalStatus === "failed" ? "failed" : proposalStatus === "passed" && technicalStatus === "passed" ? "passed" : "pending")
+    : proposalStatus === "failed"
+      ? "failed"
+      : proposalStatus === "passed" && technicalStatus === "passed"
+        ? "passed"
+        : "pending";
+  const overallStatus: ProjectAcceptanceStatus["overall_status"] = inspectionCurrent && parsed.inspection?.overall_status
+    ? parsed.inspection.overall_status
+    : businessStatus === "passed"
+      ? "completed"
+      : proposalStatus === "failed" && technicalStatus === "passed"
+        ? "partial"
+        : renderStatus === "failed" || technicalStatus === "failed"
+          ? "failed"
+          : proposalStatus === "failed"
+            ? "blocked"
+            : "in_progress";
+  return {
+    authoring_status: authoringStatus,
+    proposal_conformance_status: proposalStatus,
+    render_status: renderStatus,
+    technical_inspection_status: technicalStatus,
+    business_acceptance_status: businessStatus,
+    overall_status: overallStatus,
+    ...(proposalConformance ? {
+      proposal_conformance: {
+        option_id: proposalConformance.option_id,
+        execution_mode: proposalConformance.execution_mode,
+        actual_duration_seconds: proposalConformance.actual_duration_seconds,
+        actual_frame_count: proposalConformance.actual_frame_count,
+        checks: proposalConformance.checks,
+      },
+    } : {}),
   };
 }
 
@@ -1694,7 +1859,7 @@ function assertCurrentProjectContract(rootPath: string): void {
     const manifest = readJson(manifestPath!) as Record<string, unknown>;
     if (manifest.contract_version !== "1.0") unsupported('artifact-manifest.json contract_version must be "1.0"');
 
-    assertOptionalArtifactVersion(rootPath, projectArtifacts.productionProposal, "version", "2.0", unsupported);
+    assertOptionalArtifactVersion(rootPath, projectArtifacts.productionProposal, "version", "3.0", unsupported);
     assertOptionalArtifactVersion(rootPath, projectArtifacts.editPlan, "contract_version", "1.0", unsupported, ["asset_usage_plan"]);
     assertOptionalArtifactVersion(rootPath, projectArtifacts.edl, "contract_version", "2.0", unsupported);
     assertOptionalArtifactVersion(

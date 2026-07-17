@@ -230,8 +230,20 @@ export function editPlanFingerprintProjection(editPlan: EditPlanArtifact): unkno
     confirmed_option_id: editPlan.confirmed_option_id,
     proposal_selection_fingerprint: editPlan.proposal_selection_fingerprint,
     decisions: editPlan.decisions,
-    source_order: editPlan.source_order,
   };
+}
+
+export function renderContractAuthoringKeys(optionId: string, includeEnrichment: boolean, includeAssetManifest: boolean): string[] {
+  return [
+    "sources",
+    "production-proposal",
+    `proposal-selection:${optionId}`,
+    "edit-plan",
+    "edl",
+    "transcript",
+    ...(includeEnrichment ? ["enrichment-plan"] : []),
+    ...(includeEnrichment && includeAssetManifest ? ["asset-manifest"] : []),
+  ];
 }
 
 export function assetManifestFingerprintProjection(manifest: AssetManifestArtifact): unknown {

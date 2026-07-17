@@ -80,8 +80,8 @@ export type ReviewPackageArtifact = {
 };
 
 export type EditDecision = {
-  action: "cut" | "keep" | "skip";
-  candidate_id?: string;
+  action: "cut" | "keep";
+  candidate_id: string;
   source_id?: string;
   reason?: string;
 };
@@ -91,7 +91,6 @@ export type EditPlanArtifact = {
   confirmed_option_id: string;
   proposal_selection_fingerprint: ArtifactFingerprint;
   decisions: EditDecision[];
-  source_order?: string[];
 };
 
 export type EdlEntry = {
@@ -537,7 +536,7 @@ export type ProductionProposalCleanup = {
 
 export type ProductionProposalSubtitles = {
   enabled: boolean;
-  style: string;
+  style: "none" | "plain" | "anchor";
   conflict_notes: string[];
 };
 
@@ -587,7 +586,6 @@ export type ProductionBusinessDirection = {
   title: string;
   suitable_for: string;
   editing_strategy: string;
-  expected_duration: string;
   asset_style: string;
   risks: string[];
   tradeoffs?: string[];
@@ -599,27 +597,29 @@ export type ProductionNarrativeBeat = {
   source_hint?: string;
 };
 
-export type ProductionKeepSegment = {
+export type ProductionTimelineSegment = {
+  id: string;
   source_id: string;
   start: number;
   end: number;
+  label?: string;
   reason: string;
 };
 
-export type ProductionRemoveSegment = {
-  candidate_id: string;
-  reason: string;
-};
-
-export type ProductionReorderSegment = {
-  from: string;
-  to: string;
-  reason: string;
+export type ProductionDurationTarget = {
+  min_seconds: number;
+  max_seconds: number;
+  target_seconds?: number;
+  tolerance_frames: number;
 };
 
 export type ProductionTextOverlay = {
+  id: string;
+  source_id: string;
+  segment_id?: string;
   start: number;
   end: number;
+  element_id: "caption-highlight" | "caption-editorial-emphasis" | "caption-pill-karaoke";
   text: string;
   purpose: string;
 };
@@ -652,17 +652,18 @@ export type ProductionAssetRequirements = {
 export type ProductionEditExecutionPlan = {
   objective: string;
   target_audience: string;
-  final_duration: string;
+  duration_target: ProductionDurationTarget;
   narrative_structure: ProductionNarrativeBeat[];
-  keep_segments: ProductionKeepSegment[];
-  remove_segments: ProductionRemoveSegment[];
-  reorder_segments: ProductionReorderSegment[];
+  timeline: {
+    mode: "candidate_cleanup" | "explicit_segments";
+    segments: ProductionTimelineSegment[];
+  };
   text_overlays: ProductionTextOverlay[];
   user_confirmation_summary: string;
 };
 
 export type ProductionProposalArtifact = {
-  version: "2.0";
+  version: "3.0";
   source_mode: EnrichmentSourceMode;
   presentation_intent: FocusPresentationIntent;
   goal_summary: string;
@@ -810,6 +811,11 @@ export type InspectionArtifact = {
   canonical_output_duration_seconds: number;
   canonical_output_probe: Record<string, unknown>;
   expected_duration_seconds: number;
+  render_status?: "success";
+  technical_inspection_status?: "passed" | "failed";
+  proposal_conformance_status?: "passed" | "failed";
+  business_acceptance_status?: "passed" | "failed";
+  overall_status?: "completed" | "partial" | "failed";
   captions_present: boolean;
   enrichment_applied: boolean;
   source_mode?: EnrichmentSourceMode;
@@ -876,6 +882,22 @@ export type ProjectStageStatus = {
   next_commands: string[];
 };
 
+export type ProjectAcceptanceStatus = {
+  authoring_status: "in_progress" | "blocked" | "complete";
+  proposal_conformance_status: "pending" | "passed" | "failed";
+  render_status: "pending" | "success" | "failed" | "not_applicable";
+  technical_inspection_status: "pending" | "passed" | "failed" | "not_applicable";
+  business_acceptance_status: "pending" | "passed" | "failed";
+  overall_status: "in_progress" | "blocked" | "partial" | "failed" | "completed";
+  proposal_conformance?: {
+    option_id: string;
+    execution_mode: "candidate_cleanup" | "explicit_segments";
+    actual_duration_seconds: number;
+    actual_frame_count: number;
+    checks: Array<{ id: string; status: "passed" | "blocker"; message: string }>;
+  };
+};
+
 export type ProjectStatusArtifact = {
   contract_version: "1.0";
   project_contract_version: ProjectContractVersion;
@@ -888,6 +910,7 @@ export type ProjectStatusArtifact = {
   render_inputs: ArtifactFingerprintReference[];
   next_commands: string[];
   blockers: StatusBlocker[];
+  acceptance: ProjectAcceptanceStatus;
   last_successful_checkpoint?: { stage: string; completed_at: string; output_artifact_keys: string[] };
   sources?: Array<{ source_id: string; identity: "available"; materialization: "verified" | "unbound" | "invalid" }>;
   render_contract?: {
@@ -1110,19 +1133,10 @@ export function parseReviewPackage(value: unknown, manifest?: SourcesManifest): 
 export function parseEditPlan(value: unknown, manifest?: SourcesManifest): EditPlanArtifact {
   assertArtifactContract("edit-plan", value);
   const known = sourceIds(manifest);
-  const obj = strictRecord(value, "edit plan", ["contract_version", "confirmed_option_id", "proposal_selection_fingerprint", "decisions", "source_order"]);
+  const obj = strictRecord(value, "edit plan", ["contract_version", "confirmed_option_id", "proposal_selection_fingerprint", "decisions"]);
   const contract_version = projectContractVersion(obj.contract_version, "contract_version");
   const confirmed_option_id = nonBlankString(obj.confirmed_option_id, "confirmed_option_id");
   const proposal_selection_fingerprint = artifactFingerprint(obj.proposal_selection_fingerprint, "proposal_selection_fingerprint");
-  const source_order = obj.source_order === undefined ? undefined : array(obj.source_order, "source_order").map((item, index) => {
-    const id = string(item, `source_order[${index}]`);
-    requireKnownSource(id, known, `source_order[${index}]`);
-    return id;
-  });
-  if (source_order) {
-    unique(source_order, "source_order");
-    if (manifest && source_order.length !== manifest.sources.length) throw new Error("source_order must include every source exactly once");
-  }
   return {
     contract_version,
     confirmed_option_id,
@@ -1133,12 +1147,11 @@ export function parseEditPlan(value: unknown, manifest?: SourcesManifest): EditP
       if (source_id) requireKnownSource(source_id, known, `decisions[${index}].source_id`);
       return {
         action: action(decision.action, `decisions[${index}].action`),
-        candidate_id: decision.candidate_id === undefined ? undefined : string(decision.candidate_id, `decisions[${index}].candidate_id`),
+        candidate_id: nonBlankString(decision.candidate_id, `decisions[${index}].candidate_id`),
         source_id,
         reason: decision.reason === undefined ? undefined : string(decision.reason, `decisions[${index}].reason`),
       };
     }),
-    source_order,
   };
 }
 
@@ -1238,7 +1251,7 @@ export function parseProductionProposal(value: unknown): ProductionProposalArtif
   const obj = strictRecord(value, "production proposal", ["version", "source_mode", "presentation_intent", "goal_summary", "material_summary", "recommended_option_id", "options"]);
   const recommendedOptionId = string(obj.recommended_option_id, "recommended_option_id");
   return {
-    version: "2.0",
+    version: "3.0",
     source_mode: sourceMode(obj.source_mode, "source_mode"),
     presentation_intent: focusPresentationIntent(obj.presentation_intent, "presentation_intent"),
     goal_summary: nonBlankString(obj.goal_summary, "goal_summary"),
@@ -1330,6 +1343,11 @@ export function parseInspection(value: unknown): InspectionArtifact {
     "canonical_output_duration_seconds",
     "canonical_output_probe",
     "expected_duration_seconds",
+    "render_status",
+    "technical_inspection_status",
+    "proposal_conformance_status",
+    "business_acceptance_status",
+    "overall_status",
     "captions_present",
     "enrichment_applied",
     "source_mode",
@@ -1344,6 +1362,20 @@ export function parseInspection(value: unknown): InspectionArtifact {
   ]);
   const canonical_output_path = managedProjectPath(obj.canonical_output_path, "canonical_output_path");
   if (!canonical_output_path.toLowerCase().endsWith(".mp4")) throw new Error("canonical_output_path must reference an MP4");
+  const renderStatus = optionalChoice(obj.render_status, "render_status", ["success"] as const);
+  const technicalStatus = optionalChoice(obj.technical_inspection_status, "technical_inspection_status", ["passed", "failed"] as const);
+  const proposalStatus = optionalChoice(obj.proposal_conformance_status, "proposal_conformance_status", ["passed", "failed"] as const);
+  const businessStatus = optionalChoice(obj.business_acceptance_status, "business_acceptance_status", ["passed", "failed"] as const);
+  const overallStatus = optionalChoice(obj.overall_status, "overall_status", ["completed", "partial", "failed"] as const);
+  if (businessStatus === "passed" && (technicalStatus !== "passed" || proposalStatus !== "passed")) {
+    throw new Error("business_acceptance_status cannot pass unless technical inspection and proposal conformance pass");
+  }
+  if (overallStatus === "completed" && businessStatus !== "passed") {
+    throw new Error("overall_status cannot be completed unless business acceptance passes");
+  }
+  if (overallStatus === "partial" && (technicalStatus !== "passed" || proposalStatus !== "failed" || businessStatus !== "failed")) {
+    throw new Error("overall_status partial requires technical pass and failed proposal/business acceptance");
+  }
   return {
     contract_version: literalVersion(obj.contract_version, "inspection contract_version", "1.0"),
     render_result_fingerprint: artifactFingerprint(obj.render_result_fingerprint, "render_result_fingerprint"),
@@ -1353,6 +1385,11 @@ export function parseInspection(value: unknown): InspectionArtifact {
     canonical_output_duration_seconds: nonNegativeNumber(obj.canonical_output_duration_seconds, "canonical_output_duration_seconds"),
     canonical_output_probe: record(obj.canonical_output_probe, "canonical_output_probe"),
     expected_duration_seconds: nonNegativeNumber(obj.expected_duration_seconds, "expected_duration_seconds"),
+    ...(renderStatus ? { render_status: renderStatus } : {}),
+    ...(technicalStatus ? { technical_inspection_status: technicalStatus } : {}),
+    ...(proposalStatus ? { proposal_conformance_status: proposalStatus } : {}),
+    ...(businessStatus ? { business_acceptance_status: businessStatus } : {}),
+    ...(overallStatus ? { overall_status: overallStatus } : {}),
     captions_present: boolean(obj.captions_present, "captions_present"),
     enrichment_applied: boolean(obj.enrichment_applied, "enrichment_applied"),
     source_mode: obj.source_mode === undefined ? undefined : sourceMode(obj.source_mode, "source_mode"),
@@ -1471,6 +1508,7 @@ export function parseVisualRequest(value: unknown): VisualRequestArtifact {
 }
 
 export function parseVisualCandidates(value: unknown): VisualCandidatesArtifact {
+  assertArtifactContract("visual-candidates", value);
   const obj = record(value, "visual candidates");
   const version = string(obj.version, "version");
   if (version !== "1.0") throw new Error('visual candidates version must be "1.0"');
@@ -1612,7 +1650,6 @@ function productionBusinessDirection(value: unknown, name: string): ProductionBu
     "title",
     "suitable_for",
     "editing_strategy",
-    "expected_duration",
     "asset_style",
     "risks",
     "tradeoffs",
@@ -1621,7 +1658,6 @@ function productionBusinessDirection(value: unknown, name: string): ProductionBu
     title: nonBlankString(obj.title, `${name}.title`),
     suitable_for: nonBlankString(obj.suitable_for, `${name}.suitable_for`),
     editing_strategy: nonBlankString(obj.editing_strategy, `${name}.editing_strategy`),
-    expected_duration: nonBlankString(obj.expected_duration, `${name}.expected_duration`),
     asset_style: nonBlankString(obj.asset_style, `${name}.asset_style`),
     risks: optionalStringArray(obj.risks, `${name}.risks`),
     tradeoffs: obj.tradeoffs === undefined ? undefined : optionalStringArray(obj.tradeoffs, `${name}.tradeoffs`),
@@ -1632,24 +1668,20 @@ function productionEditExecutionPlan(value: unknown, name: string): ProductionEd
   const obj = strictRecord(value, name, [
     "objective",
     "target_audience",
-    "final_duration",
+    "duration_target",
     "narrative_structure",
-    "keep_segments",
-    "remove_segments",
-    "reorder_segments",
+    "timeline",
     "text_overlays",
     "user_confirmation_summary",
   ]);
   return {
     objective: nonBlankString(obj.objective, `${name}.objective`),
     target_audience: nonBlankString(obj.target_audience, `${name}.target_audience`),
-    final_duration: nonBlankString(obj.final_duration, `${name}.final_duration`),
+    duration_target: productionDurationTarget(obj.duration_target, `${name}.duration_target`),
     narrative_structure: array(obj.narrative_structure, `${name}.narrative_structure`).map((item, index) =>
       productionNarrativeBeat(item, `${name}.narrative_structure[${index}]`),
     ),
-    keep_segments: array(obj.keep_segments, `${name}.keep_segments`).map((item, index) => productionKeepSegment(item, `${name}.keep_segments[${index}]`)),
-    remove_segments: array(obj.remove_segments, `${name}.remove_segments`).map((item, index) => productionRemoveSegment(item, `${name}.remove_segments[${index}]`)),
-    reorder_segments: array(obj.reorder_segments, `${name}.reorder_segments`).map((item, index) => productionReorderSegment(item, `${name}.reorder_segments[${index}]`)),
+    timeline: productionTimeline(obj.timeline, `${name}.timeline`),
     text_overlays: array(obj.text_overlays, `${name}.text_overlays`).map((item, index) => productionTextOverlay(item, `${name}.text_overlays[${index}]`)),
     user_confirmation_summary: nonBlankString(obj.user_confirmation_summary, `${name}.user_confirmation_summary`),
   };
@@ -1674,44 +1706,63 @@ function productionNarrativeBeat(value: unknown, name: string): ProductionNarrat
   };
 }
 
-function productionKeepSegment(value: unknown, name: string): ProductionKeepSegment {
-  const obj = strictRecord(value, name, ["source_id", "start", "end", "reason"]);
+function productionTimeline(value: unknown, name: string): ProductionEditExecutionPlan["timeline"] {
+  const obj = strictRecord(value, name, ["mode", "segments"]);
+  const mode = obj.mode;
+  if (mode !== "candidate_cleanup" && mode !== "explicit_segments") throw new Error(`${name}.mode must be candidate_cleanup or explicit_segments`);
+  const segments = array(obj.segments, `${name}.segments`).map((item, index) => productionTimelineSegment(item, `${name}.segments[${index}]`));
+  unique(segments.map((segment) => segment.id), `${name}.segments id`);
+  return { mode, segments };
+}
+
+function productionTimelineSegment(value: unknown, name: string): ProductionTimelineSegment {
+  const obj = strictRecord(value, name, ["id", "source_id", "start", "end", "label", "reason"]);
   const start = nonNegativeNumber(obj.start, `${name}.start`);
   const end = nonNegativeNumber(obj.end, `${name}.end`);
   if (end <= start) throw new Error(`${name}.end must be greater than start`);
   return {
+    id: opaqueIdentifier(obj.id, `${name}.id`),
     source_id: opaqueIdentifier(obj.source_id, `${name}.source_id`),
     start,
     end,
+    label: obj.label === undefined ? undefined : nonBlankString(obj.label, `${name}.label`),
     reason: nonBlankString(obj.reason, `${name}.reason`),
   };
 }
 
-function productionRemoveSegment(value: unknown, name: string): ProductionRemoveSegment {
-  const obj = strictRecord(value, name, ["candidate_id", "reason"]);
+function productionDurationTarget(value: unknown, name: string): ProductionDurationTarget {
+  const obj = strictRecord(value, name, ["min_seconds", "max_seconds", "target_seconds", "tolerance_frames"]);
+  const min_seconds = nonNegativeNumber(obj.min_seconds, `${name}.min_seconds`);
+  const max_seconds = nonNegativeNumber(obj.max_seconds, `${name}.max_seconds`);
+  if (max_seconds < min_seconds) throw new Error(`${name}.max_seconds must be greater than or equal to min_seconds`);
+  const target_seconds = obj.target_seconds === undefined ? undefined : nonNegativeNumber(obj.target_seconds, `${name}.target_seconds`);
+  if (target_seconds !== undefined && (target_seconds < min_seconds || target_seconds > max_seconds)) {
+    throw new Error(`${name}.target_seconds must be within min_seconds and max_seconds`);
+  }
   return {
-    candidate_id: opaqueIdentifier(obj.candidate_id, `${name}.candidate_id`),
-    reason: nonBlankString(obj.reason, `${name}.reason`),
-  };
-}
-
-function productionReorderSegment(value: unknown, name: string): ProductionReorderSegment {
-  const obj = strictRecord(value, name, ["from", "to", "reason"]);
-  return {
-    from: nonBlankString(obj.from, `${name}.from`),
-    to: nonBlankString(obj.to, `${name}.to`),
-    reason: nonBlankString(obj.reason, `${name}.reason`),
+    min_seconds,
+    max_seconds,
+    target_seconds,
+    tolerance_frames: integer(obj.tolerance_frames, `${name}.tolerance_frames`),
   };
 }
 
 function productionTextOverlay(value: unknown, name: string): ProductionTextOverlay {
-  const obj = strictRecord(value, name, ["start", "end", "text", "purpose"]);
+  const obj = strictRecord(value, name, ["id", "source_id", "segment_id", "start", "end", "element_id", "text", "purpose"]);
   const start = nonNegativeNumber(obj.start, `${name}.start`);
   const end = nonNegativeNumber(obj.end, `${name}.end`);
   if (end <= start) throw new Error(`${name}.end must be greater than start`);
+  const elementId = obj.element_id;
+  if (elementId !== "caption-highlight" && elementId !== "caption-editorial-emphasis" && elementId !== "caption-pill-karaoke") {
+    throw new Error(`${name}.element_id must be a supported caption component`);
+  }
   return {
+    id: opaqueIdentifier(obj.id, `${name}.id`),
+    source_id: opaqueIdentifier(obj.source_id, `${name}.source_id`),
+    segment_id: obj.segment_id === undefined ? undefined : opaqueIdentifier(obj.segment_id, `${name}.segment_id`),
     start,
     end,
+    element_id: elementId,
     text: nonBlankString(obj.text, `${name}.text`),
     purpose: nonBlankString(obj.purpose, `${name}.purpose`),
   };
@@ -1769,9 +1820,13 @@ function productionProposalCleanup(value: unknown, name: string): ProductionProp
 
 function productionProposalSubtitles(value: unknown, name: string): ProductionProposalSubtitles {
   const obj = strictRecord(value, name, ["enabled", "style", "conflict_notes"]);
+  const style = obj.style;
+  if (style !== "none" && style !== "plain" && style !== "anchor") {
+    throw new Error(`${name}.style must be none, plain, or anchor`);
+  }
   return {
     enabled: boolean(obj.enabled, `${name}.enabled`),
-    style: string(obj.style, `${name}.style`),
+    style,
     conflict_notes: optionalStringArray(obj.conflict_notes, `${name}.conflict_notes`),
   };
 }
@@ -2185,8 +2240,8 @@ function timing(value: unknown): TimingGranularity {
 }
 
 function action(value: unknown, name: string): EditDecision["action"] {
-  if (value === "cut" || value === "keep" || value === "skip") return value;
-  throw new Error(`${name} must be cut, keep, or skip`);
+  if (value === "cut" || value === "keep") return value;
+  throw new Error(`${name} must be cut or keep`);
 }
 
 function sourceMode(value: unknown, name: string): EnrichmentSourceMode {
@@ -2762,6 +2817,18 @@ function optionalStringNumberOrNull(value: unknown, name: string): string | numb
   if (value === undefined || value === null) return value;
   if (typeof value === "string") return nonBlankString(value, name);
   return nonNegativeNumber(value, name);
+}
+
+function optionalChoice<const TValues extends readonly string[]>(
+  value: unknown,
+  name: string,
+  choices: TValues,
+): TValues[number] | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !choices.some((choice) => choice === value)) {
+    throw new Error(`${name} must be one of ${choices.join(", ")}`);
+  }
+  return value as TValues[number];
 }
 
 function record(value: unknown, name: string): Record<string, unknown> {

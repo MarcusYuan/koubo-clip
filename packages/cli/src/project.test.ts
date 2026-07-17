@@ -229,6 +229,34 @@ test("platform mode visual search rejects provider download urls", async () => {
   expect(searched.error.message).toContain("download_url");
 });
 
+test("platform visual candidates return aggregated public-contract issues", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-contract-"));
+  const project = join(dir, "project");
+  const source = join(dir, "raw.mp4");
+  writeFileSync(source, "not real media");
+  createProject([source], { projectPath: project, providerMode: "platform" });
+  writeFileSync(join(project, "visual-request.json"), JSON.stringify({
+    version: "1.0",
+    source_mode: "screen_recording",
+    presentation_intent: "short_form",
+    requests: [{ id: "alarm", viewer_job: "show alarm cue", semantic_query: "alarm clock", asset_type: "icon", preferred_sources: ["local"], reason: "compare candidates" }],
+  }));
+  writeFileSync(join(project, "visual-candidates.json"), JSON.stringify({
+    version: "1.0",
+    candidates: [{ id: "alarm-local", request_id: "alarm", provider: "local", asset_type: "icon", semantic_query: "alarm clock", unexpected: true }],
+  }));
+
+  const searched = await visualSearchProject(project, { providerMode: "platform" });
+  expect(searched.ok).toBe(false);
+  if (searched.ok) throw new Error("expected visual candidate contract failure");
+  expect(searched.error.code).toBe("ARTIFACT_VALIDATION_FAILED");
+  expect(searched.error.issues?.map((issue) => `${issue.path}:${issue.keyword}`)).toEqual([
+    "/candidates/0/reason:required",
+    "/candidates/0/title:required",
+    "/candidates/0/unexpected:additionalProperties",
+  ]);
+});
+
 test("platform mode visual catalog does not expose local provider state", () => {
   const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-catalog-"));
   const source = join(dir, "raw.mp4");
@@ -569,14 +597,15 @@ test("validates and renders a production proposal without creating execution art
   proposal.options[0]!.id = "balanced";
   proposal.options[0]!.label = "克制增强";
   proposal.options[0]!.cleanup.cut_candidate_ids = ["c-002-filler"];
-  proposal.options[0]!.edit_execution_plan.remove_segments = [{ candidate_id: "c-002-filler", reason: "remove filler" }];
   proposal.options[0]!.images = { needed: true, reason: "one abstract idea is not visible in source", missing_assets: ["concept-image"] };
   proposal.options[0]!.music = { source: "minimax", mood: "quiet tech bed", ducking: true, notes: ["acquire only after OK"] };
   proposal.options[0]!.sfx = { enabled: true, usage: "subtle click accents", restraint: "low volume" };
+  proposal.options[0]!.asset_requirements.image_slots = [{ slot_id: "concept-image", kind: "image", purpose: "show the abstract idea", required: true }];
+  proposal.options[0]!.asset_requirements.music_slots = [{ slot_id: "music", kind: "music", purpose: "quiet tech bed", required: true }];
+  proposal.options[0]!.asset_requirements.sfx_slots = [{ slot_id: "sfx", kind: "sfx", purpose: "subtle click accents", required: true }];
   proposal.options[1]!.id = "cleanup-only";
   proposal.options[1]!.label = "只清理";
   proposal.options[1]!.cleanup.cut_candidate_ids = ["c-002-filler"];
-  proposal.options[1]!.edit_execution_plan.remove_segments = [{ candidate_id: "c-002-filler", reason: "remove filler" }];
   writeFileSync(join(project, "production-proposal.json"), JSON.stringify(proposal));
 
   const proposed = proposalProject(project);
@@ -602,10 +631,6 @@ test("validates and renders a production proposal without creating execution art
   expect(Boolean(initialProposalLifecycle.artifacts["proposal-selection:balanced"])).toBe(true);
   expect(Boolean(initialProposalLifecycle.artifacts["proposal-selection:cleanup-only"])).toBe(true);
   proposal.options[0]!.cleanup.cut_candidate_ids = ["missing-candidate", "another-missing-candidate"];
-  proposal.options[0]!.edit_execution_plan.remove_segments = [
-    { candidate_id: "missing-candidate", reason: "invalid fixture" },
-    { candidate_id: "another-missing-candidate", reason: "invalid fixture" },
-  ];
   writeFileSync(join(project, "production-proposal.json"), JSON.stringify(proposal));
   const invalid = proposalProject(project);
   expect(invalid.ok).toBe(false);
@@ -636,10 +661,8 @@ test("compile-edl rejects edit plans that do not execute selected proposal clean
   proposal.recommended_option_id = "cleanup";
   proposal.options[0]!.id = "cleanup";
   proposal.options[0]!.cleanup.cut_candidate_ids = ["c-002-filler"];
-  proposal.options[0]!.edit_execution_plan.remove_segments = [{ candidate_id: "c-002-filler", reason: "remove filler" }];
   proposal.options[1]!.id = "alternative";
   proposal.options[1]!.cleanup.cut_candidate_ids = [];
-  proposal.options[1]!.edit_execution_plan.remove_segments = [];
   writeFileSync(join(project, "production-proposal.json"), JSON.stringify(proposal));
   const proposed = proposalProject(project);
   expect(proposed.ok).toBe(true);
@@ -1331,8 +1354,8 @@ test("honors explicit source order", async () => {
   await exploreProject(project, { asr: "external" });
   confirmProposalAndWriteEditPlan(project, [], ["src-002", "src-001"]);
   const rendered = renderProject(project);
-  expect(rendered.ok).toBe(true);
   if (!rendered.ok) throw new Error(rendered.error.message);
+  expect(rendered.ok).toBe(true);
   const edl = JSON.parse(readFileSync(join(project, "edl.json"), "utf8"));
   expect(edl.entries.map((entry: { source_id: string }) => entry.source_id)).toEqual(["src-002", "src-001"]);
 });
@@ -1408,7 +1431,7 @@ test("rejects overlapping selected cut candidates", () => {
 test("validates platform asset_usage_plan with prepared visual and audio assets", () => {
   if (!commandExists("ffmpeg")) return;
   const { project } = readyProject(2, "platform");
-  confirmSelectedProposalMedia(project, { visual: true, music: true, sfx: true });
+  confirmSelectedProposalMedia(project, { visual: true, music: true, sfx: true, subtitleStyle: "anchor" });
   const assetDir = join(project, "assets", "koubo-clip");
   mkdirSync(assetDir, { recursive: true });
   makeMusic(join(assetDir, "bgm.wav"), 2);
@@ -1427,9 +1450,9 @@ test("validates platform asset_usage_plan with prepared visual and audio assets"
   writeFileSync(
     join(project, "asset-usage-plan.json"),
     JSON.stringify({
-        music: [{ asset_ref: "assets/koubo-clip/bgm.wav", start: 0, end: 1.8, volume: 0.18, duck_original_audio: true, fade_in: 0.1, fade_out: 0.1, purpose: "增强科技感和节奏感" }],
-        sfx: [{ asset_ref: "assets/koubo-clip/sfx-click.wav", time: 0.7, duration: 0.2, volume: 0.35, purpose: "语音拨打电话功能出现时的提示音" }],
-        visual_assets: [{ asset_ref: "assets/koubo-clip/bluetooth-icon.png", start: 0.2, end: 1.1, position: "top-right", size: "small", animation: "fade-in", asset_type: "icon", purpose: "强化蓝牙耳机产品属性" }],
+        music: [{ id: "music", asset_ref: "assets/koubo-clip/bgm.wav", start: 0, end: 1.8, volume: 0.18, duck_original_audio: true, fade_in: 0.1, fade_out: 0.1, purpose: "增强科技感和节奏感" }],
+        sfx: [{ id: "sfx", asset_ref: "assets/koubo-clip/sfx-click.wav", time: 0.7, duration: 0.2, volume: 0.35, purpose: "语音拨打电话功能出现时的提示音" }],
+        visual_assets: [{ id: "visual", asset_ref: "assets/koubo-clip/bluetooth-icon.png", start: 0.2, end: 1.1, position: "top-right", size: "small", animation: "fade-in", asset_type: "icon", purpose: "强化蓝牙耳机产品属性" }],
     }),
   );
 
@@ -1441,9 +1464,9 @@ test("validates platform asset_usage_plan with prepared visual and audio assets"
     "assets/koubo-clip/sfx-click.wav",
     "assets/koubo-clip/bluetooth-icon.png",
   ]);
-  expect(enriched.data.audio_usage.music[0]?.asset_id).toContain("music-1-bgm");
-  expect(enriched.data.audio_usage.sfx[0]?.asset_id).toContain("sfx-1-sfx-click");
-  expect(enriched.data.element_usage.some((usage) => usage.asset_id?.includes("visual-1-bluetooth-icon"))).toBe(true);
+  expect(enriched.data.audio_usage.music[0]?.asset_id).toBe("music");
+  expect(enriched.data.audio_usage.sfx[0]?.asset_id).toBe("sfx");
+  expect(enriched.data.element_usage.some((usage) => usage.asset_id === "visual")).toBe(true);
   expect(enriched.data.element_usage.some((usage) => usage.element_type === "visual_asset")).toBe(true);
 });
 
@@ -1458,8 +1481,8 @@ test("renders platform asset_usage_plan audio assets and reports audio_usage", (
   writeFileSync(
     join(project, "asset-usage-plan.json"),
     JSON.stringify({
-        music: [{ asset_ref: "assets/koubo-clip/bgm.wav", start: 0, end: 1.8, volume: 0.12, duck_original_audio: true, fade_in: 0.1, fade_out: 0.1, purpose: "背景节奏" }],
-        sfx: [{ asset_ref: "assets/koubo-clip/sfx-click.wav", time: 0.7, duration: 0.2, volume: 0.2, purpose: "按钮提示音" }],
+        music: [{ id: "music", asset_ref: "assets/koubo-clip/bgm.wav", start: 0, end: 1.8, volume: 0.12, duck_original_audio: true, fade_in: 0.1, fade_out: 0.1, purpose: "背景节奏" }],
+        sfx: [{ id: "sfx", asset_ref: "assets/koubo-clip/sfx-click.wav", time: 0.7, duration: 0.2, volume: 0.2, purpose: "按钮提示音" }],
         visual_assets: [],
     }),
   );
@@ -1479,8 +1502,8 @@ test("renders platform asset_usage_plan audio assets and reports audio_usage", (
   expect(inspected.ok).toBe(true);
   if (!inspected.ok) throw new Error(inspected.error.message);
   expect(inspected.data.enrichment_applied).toBe(true);
-  expect(inspected.data.audio_usage.music[0]?.asset_id).toContain("music-1-bgm");
-  expect(inspected.data.audio_usage.sfx[0]?.asset_id).toContain("sfx-1-sfx-click");
+  expect(inspected.data.audio_usage.music[0]?.asset_id).toBe("music");
+  expect(inspected.data.audio_usage.sfx[0]?.asset_id).toBe("sfx");
   expect(readFileSync(inspected.data.report_path, "utf8")).toContain("## Audio Usage");
 });
 
@@ -1541,7 +1564,7 @@ test("keeps pure clipping behavior without asset_usage_plan", () => {
 test("acquires local music and reports provenance through inspect", async () => {
   if (!commandExists("ffmpeg")) return;
   const { project } = readyProject(2);
-  confirmSelectedProposalMedia(project, { music: true });
+  confirmSelectedProposalMedia(project, { music: true, sourceMode: "screen_recording" });
   makeMusic(join(project, "source", "bed.wav"), 2);
   const catalog = musicCatalogProject(project);
   expect(catalog.ok).toBe(true);
@@ -2052,6 +2075,7 @@ test("completes focus flow from candidates to proposed elements and enrich plan 
   const focusGroundingProject = requiredProjectCommand("focusGroundingProject");
   const focusReviewProject = requiredProjectCommand("focusReviewProject");
   const { project } = readyProject(2);
+  confirmSelectedProposalMedia(project, { subtitleStyle: "anchor", sourceMode: "screen_recording" });
 
   writeFileSync(
     join(project, "focus-candidates.json"),
@@ -2213,6 +2237,7 @@ test("completes focus flow from candidates to proposed elements and enrich plan 
 test("enrich-plan rejects hand-written coordinate elements without current focus grounding", () => {
   if (!commandExists("ffmpeg")) return;
   const { project } = readyProject(2);
+  confirmSelectedProposalMedia(project, { subtitleStyle: "anchor", sourceMode: "screen_recording" });
   writeFileSync(
     join(project, "enrichment-plan.json"),
     JSON.stringify({
@@ -2372,7 +2397,7 @@ test("artifact lifecycle: standalone asset usage is consumed, immutable in linea
   makeMusic(join(assetDir, "bed.wav"), 2);
   const handoff = join(project, "asset-usage-plan.json");
   writeFileSync(handoff, JSON.stringify({
-    music: [{ asset_ref: "assets/koubo-clip/bed.wav", start: 0, end: 1.8, volume: 0.1, duck_original_audio: true, fade_in: 0.1, fade_out: 0.1, purpose: "handoff" }],
+    music: [{ id: "music", asset_ref: "assets/koubo-clip/bed.wav", start: 0, end: 1.8, volume: 0.1, duck_original_audio: true, fade_in: 0.1, fade_out: 0.1, purpose: "handoff" }],
     sfx: [], visual_assets: [],
   }));
   expect(enrichPlanProject(project, { providerMode: "platform" }).ok).toBe(true);
@@ -2562,21 +2587,32 @@ function readyProject(duration = 2, providerMode: "standalone" | "platform" = "s
   return { project, source };
 }
 
-function confirmSelectedProposalMedia(project: string, needs: { visual?: boolean; music?: boolean; sfx?: boolean }): void {
+function confirmSelectedProposalMedia(
+  project: string,
+  needs: { visual?: boolean; music?: boolean; sfx?: boolean; subtitleStyle?: "none" | "plain" | "anchor"; sourceMode?: "talking_head_avatar" | "screen_recording" | "mixed" },
+): void {
   const proposal = JSON.parse(readFileSync(join(project, "production-proposal.json"), "utf8")) as ProductionProposalArtifact;
+  if (needs.sourceMode) proposal.source_mode = needs.sourceMode;
   const option = proposal.options.find((item) => item.id === proposal.recommended_option_id);
   if (!option) throw new Error("fixture proposal is missing recommended option");
+  if (needs.subtitleStyle) {
+    option.subtitles = {
+      ...option.subtitles,
+      enabled: needs.subtitleStyle !== "none",
+      style: needs.subtitleStyle,
+    };
+  }
   if (needs.visual) {
     option.images = { needed: true, reason: "confirmed visual handoff", missing_assets: [] };
-    option.asset_requirements.visual_asset_slots = [{ slot_id: "visual-1", kind: "visual_asset", purpose: "confirmed visual handoff", required: true }];
+    option.asset_requirements.image_slots = [{ slot_id: "visual", kind: "image", purpose: "confirmed visual handoff", required: true }];
   }
   if (needs.music) {
     option.music = { source: "local", ducking: true, notes: ["confirmed music handoff"] };
-    option.asset_requirements.music_slots = [{ slot_id: "music-1", kind: "music", purpose: "confirmed music handoff", required: true }];
+    option.asset_requirements.music_slots = [{ slot_id: "music", kind: "music", purpose: "confirmed music handoff", required: true }];
   }
   if (needs.sfx) {
     option.sfx = { enabled: true, usage: "confirmed SFX handoff", restraint: "subtle" };
-    option.asset_requirements.sfx_slots = [{ slot_id: "sfx-1", kind: "sfx", purpose: "confirmed SFX handoff", required: true }];
+    option.asset_requirements.sfx_slots = [{ slot_id: "sfx", kind: "sfx", purpose: "confirmed SFX handoff", required: true }];
   }
   writeFileSync(join(project, "production-proposal.json"), JSON.stringify(proposal));
   const proposed = proposalProject(project);

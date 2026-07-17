@@ -33,6 +33,7 @@
 - 对 Agent/Host authored artifact，一次 JSON 校验应尽可能返回完整且有界的 `issues[]`。每项至少包含 JSON path、稳定 keyword/code 和 message；顶层同时返回 artifact、schema version 和 schema digest。
 - 所有作者合同校验使用同一结构化错误面，不保留只返回第一个错误的旧响应别名。
 - `source-frame-request` 结构错误使用 `ARTIFACT_VALIDATION_FAILED` 聚合返回；只在 JSON 无法读取等尚未形成 artifact value 的情况下使用 request IO 类错误。
+- `visual-candidates` 在 platform mode 是 host-authored evidence，必须先通过公开合同聚合校验；不得把合同错误折叠成通用 `PLATFORM_PROVIDER_BLOCKED`。Provider/path/materialization 等上下文约束在结构通过后继续 fail closed。
 - 聚合结构错误后，项目状态、lineage、candidate/source binding 等运行态错误可以分阶段返回；CLI 不替 Agent 做业务方向、剪辑、素材或文案选择。
 
 ## 单一事实来源
@@ -45,7 +46,7 @@
 
 - Canonical npm tarball 中必须包含 CLI artifact contract discovery、完整 examples 和匹配的官方 Skill。
 - 安装态验收必须在不读取仓库源码或 tests 的情况下，使用发布包合同生成并验证至少一个真实 Agent-authored artifact。
-- `production-proposal.json` 2.0 是首个强制场景：生成 2–4 个完整 options，首次 `project proposal --json` 通过，或最多依据一次聚合 issues 整体修正后通过；随后 option selection fingerprint 必须可绑定 edit plan 并继续 compile EDL。
+- `production-proposal.json` 3.0 是首个强制场景：生成 2–4 个完整 options，首次 `project proposal --json` 通过，或最多依据一次聚合 issues 整体修正后通过；随后 option selection fingerprint 必须可绑定 edit plan 并继续 compile EDL。确认后的 option 不是“建议”，而是执行合同的一部分：被确认 option 的 `duration_target`、有序 `timeline`、`text_overlays` 和 `asset_requirements` 共同构成后续执行合同，edit-plan 的 cut set 和 enrichment 只能落在已确认 option 的语义内，越界必须 blocker。
 - Delivery identity 必须绑定 artifact contract registry/schema digests 和 official Skill digest，防止 CLI、Skill、template/example 与 validator 分属不同版本。
 
 ## 单一 Schema 政策
@@ -54,7 +55,7 @@
 - Artifact 仍保留 version 字段用于 fail-closed 和交付身份；与当前 registry 不一致时返回 `CONTRACT_SCHEMA_UNSUPPORTED`。
 - 不保留旧 parser、legacy normalization、运行时 migration、兼容 union 或多版本测试矩阵。
 - 开发阶段的 fixtures、示例和内部项目直接迁移到当前格式；旧外部项目不自动恢复，使用当前 CLI 重新创建。
-- 当前 `production-proposal.json` 和 `enrichment-plan.json` 都只接受 `2.0`。
+- 当前 `production-proposal.json` 只接受 `3.0`，`enrichment-plan.json` 仍只接受 `2.0`。
 
 ## 禁止行为
 

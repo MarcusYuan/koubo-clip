@@ -292,6 +292,23 @@ test("strict result and inspection parsers require digest-bound receipts", () =>
   };
   expect(parseStrictInspectionV1(inspection)).toEqual(inspection);
 
+  const partial = {
+    ...inspection,
+    accepted: false,
+    render_status: "success",
+    technical_inspection_status: "passed",
+    proposal_conformance_status: "failed",
+    business_acceptance_status: "failed",
+    overall_status: "partial",
+    checks: [{ id: "proposal-conformance", status: "blocker", message: "confirmed option was not realized" }],
+    blockers: ["proposal-conformance"],
+  } as const;
+  expect(parseStrictInspectionV1(partial)).toEqual(partial);
+  expectCode(
+    () => parseStrictInspectionV1({ ...partial, accepted: true, checks: [], blockers: [] }),
+    renderContractErrorCodes.INVALID_STRICT_INSPECTION,
+  );
+
   expectCode(
     () => parseStrictInspectionV1({ ...inspection, blockers: ["duration mismatch"] }),
     renderContractErrorCodes.INVALID_STRICT_INSPECTION,

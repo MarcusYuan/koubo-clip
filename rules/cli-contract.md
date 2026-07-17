@@ -100,7 +100,7 @@ koubo-clip project inspect <project>
 koubo-clip generate <video>
 ```
 
-Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`capabilities` 描述命令、artifact contract index/schema digest、feature flags、provider-mode 语义和 render/inspect 所需 artifact keys，不探测当前机器；`artifact contract` 按 artifact 返回唯一当前 schema 的 ownership、role、完整 schema、适用的 template/example、validator/producer、prerequisites 和 digest，不接受 version 选择；`project status` 只读返回 artifact/stage 状态、blockers、remediation、next commands、canonical deliverable 和最后 checkpoint。`project source-frames` 校验 `source-frame-request.json`，按 request 顺序抽取 source-local JPEG 并返回 manifest path、数量、总 byte size 和稳定 warnings；`project proposal` 聚合校验 `production-proposal.json` 并生成用户确认 markdown，但不生成执行 artifacts；`project element-catalog` 返回完整 vendored HyperFrames 元素目录；`project focus-candidates` 校验 normalized semantic intents、candidate element types 和所需证据；`project focus-frames` 把 cleaned output-timeline candidate timing 经 EDL 映射为 source-local frame evidence；`project focus-grounding` 返回 coordinates 与 evidence 的绑定校验结果；`project focus-review` 返回 `proposed_elements[]`；`project enrich-plan` 返回 `source_mode`、`element_usage[]`、`qa_checks[]` 和 `warnings[]`；`project inspect` 只消费 current render result 的 canonical output，并返回 `source_mode`、`element_usage[]` 和 `inspection_checks[]`。
+Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`capabilities` 描述命令、artifact contract index/schema digest、feature flags、provider-mode 语义和 render/inspect 所需 artifact keys，不探测当前机器；`artifact contract` 按 artifact 返回唯一当前 schema 的 ownership、role、完整 schema、适用的 template/example、validator/producer、prerequisites 和 digest，不接受 version 选择；`project status` 只读返回 artifact/stage 状态、blockers、remediation、next commands、canonical deliverable 和最后 checkpoint。`project source-frames` 校验 `source-frame-request.json`，按 request 顺序抽取 source-local JPEG 并返回 manifest path、数量、总 byte size 和稳定 warnings；`project proposal` 聚合校验 `production-proposal.json` 并生成用户确认 markdown，但不生成执行 artifacts；`project element-catalog` 返回完整 vendored HyperFrames 元素目录；`project focus-candidates` 校验 normalized semantic intents、candidate element types 和所需证据；`project focus-frames` 把 cleaned output-timeline candidate timing 经 EDL 映射为 source-local frame evidence；`project focus-grounding` 返回 coordinates 与 evidence 的绑定校验结果；`project focus-review` 返回 `proposed_elements[]`；`project enrich-plan` 返回 `source_mode`、`element_usage[]`、`qa_checks[]` 和 `warnings[]`；`project inspect` 只消费 current render result 的 canonical output，并返回 `source_mode`、`element_usage[]` 和 `inspection_checks[]`。confirmed proposal 的 option selection fingerprint 继续约束后续 `edit-plan` 和 `enrichment-plan`；被确认 option 的 `duration_target`、有序 `timeline`、`text_overlays` 和 `asset_requirements` 共同构成后续执行合同。若剪辑或素材语义越出已确认 option，CLI 必须返回 blocker 而不是静默修补。local authoring render、strict render 和 strict inspect 共享同一个冻结执行内核和同一帧时序语义，inspect 在 blockers 非零时仍可返回结构化结果，但命令必须 fail closed。
 
 ## Source Frames 合同
 
@@ -127,7 +127,8 @@ Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`c
 - Agent/Host authored artifact 校验保持 fail-closed，并在一次 JSON 响应中尽可能返回完整、有界的 `issues[]`；每项至少包含 JSON path、稳定 keyword/code 和 message。不保留只暴露首个结构错误的旧响应别名。
 - CLI 可以产出 candidates；但不能假装不确定的 semantic edits 是确定的。
 - 用户的原始业务关键词不是 contract key；CLI 和 skills 必须先归一化成固定 semantic intent，再进入 element selection 和 grounding。
-- `production-proposal.json` 是确认层，不是 render source of truth。它可以引用 `review-package` candidate IDs 和 source facts，但不能包含无证据坐标、未确认 asset path、provider URL、最终 output timeline，且不能替代 `edit-plan`、`focus-*`、`music-*`、`asset-manifest` 或 `enrichment-plan`。
+- `production-proposal.json` 是确认层，也是被确认 option 进入执行合同的入口。它可以引用 `review-package` candidate IDs 和 source facts，但不能包含无证据坐标、未确认 asset path、provider URL、最终 output timeline，且不能替代 `edit-plan`、`focus-*`、`music-*`、`asset-manifest` 或 `enrichment-plan`。
+- 被确认的 proposal option fingerprint 必须继续约束执行层：`project proposal` 返回的 `option_selection_fingerprints`、`edit-plan.json` 的 cut set 和后续 `enrichment-plan.json` 的 asset 确认项必须一致；若剪辑或素材语义越出已确认 option，CLI 必须返回 blocker，而不是静默修补。local authoring render、strict render 和 strict inspect 共享同一冻结执行内核；render 成功不代表 inspect accepted，inspect 只有 blockers 为零才算完成。当前 proposal 的唯一当前版本是 3.0，选中的 option 是后续 render contract 的执行真相。
 - Source frames 是用户确认前 hard rule 的唯一媒体产物例外；该例外不允许提前生成 edit plan、focus artifacts、visual/music requests、assets、enrichment 或 render artifacts。
 - Text-only transcripts 不能用于 precise cuts。
 - Chinese word-level ASR 必须视为不可信，直到 validation 证明该文件 timing 精确。
@@ -184,12 +185,14 @@ CLI failures 应使用稳定 code。Provider mode 相关 blocker 至少包含 `c
 - `ARTIFACT_CONTRACT_UNSUPPORTED`: 请求的 artifact 没有公开合同。
 - `CONTRACT_SCHEMA_UNSUPPORTED`: Artifact version 与当前 registry 唯一 schema 不一致。
 - `ARTIFACT_VALIDATION_FAILED`: Agent/Host authored artifact 不符合公开 schema；响应必须包含 artifact、schema version/digest 和聚合 `issues[]`。
+- `PROPOSAL_EXECUTION_MISMATCH`: confirmed proposal、edit-plan 或 enrichment 语义与后续 execution contract 不一致，CLI 不得静默修补。
+- `INSPECTION_ACCEPTANCE_FAILED`: structured inspection 已写出，但存在 blocker，命令必须 fail closed。
 
 ## Render contract
 
 - `render-contract.json`、binding、strict result 和 strict inspection 是 CLI-owned。Skill、host 和 user 不得手写或改写。
 - Export 只接受 sources v2 与 EDL v2；合同 payload 不得含 source path、project path、absolute path、export timestamp 或 `local_media_ref`。
 - Contract bundle、binding output 和 run directory 均不可覆盖。公共合同/result 必须 commit-last。
-- Strict render 只能调用冻结执行内核；禁止调用 authoring EDL compiler、transcript-to-SRT、enrichment validator、storyboard builder 或 provider。
+- Strict render 只能调用冻结执行内核；禁止调用 authoring EDL compiler、transcript-to-SRT、enrichment validator、storyboard builder 或 provider。Local authoring render 和 strict render 共享同一个 execution kernel / frame schedule，只在冻结执行计划之后分叉。
 - Unknown schema/capability/runtime digest、asset tamper、binding member 缺失/多余、source replacement 和 output tamper 都必须返回稳定非零错误。
-- Detached authoring 导出 current contract 后，status 必须进入 distributed handoff，不再推荐本地 `project render` 或要求 `source-materialization.json`。
+- Detached authoring 导出 current contract 后，status 必须进入 distributed handoff，不再推荐本地 `project render` 或要求 `source-materialization.json`。若 strict inspection 发现 blocker，CLI 仍必须返回结构化 inspection 结果并 fail closed；结果存在不代表 accepted。

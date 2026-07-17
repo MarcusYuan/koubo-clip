@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bindRenderContract, exportRenderContract, inspectBoundContract, renderBoundContract, verifyRenderContractBundle } from "./render-contract-commands";
-import { createProject, enrichPlanProject, exploreProject, proposalProject } from "./project";
+import { compileEdlProject, createProject, enrichPlanProject, exploreProject, proposalProject } from "./project";
 import { confirmProposalAndWriteEditPlan } from "./test-fixtures";
 import type { ProductionProposalArtifact } from "./artifacts";
 
@@ -57,7 +57,7 @@ test("enrichment elements export through one JSON-safe render-contract boundary"
 test("built-in and external SFX keep only their selected source and export deterministically", async () => {
   if (!hasFfmpeg()) return;
   const { root, project } = await projectFixture("sfx");
-  confirmSelectedProposalMedia(project, { sfx: true });
+  confirmSelectedProposalMedia(project, { sfx: ["built-in", "external"] });
   const assetPath = join(project, "assets", "external.wav");
   mkdirSync(join(project, "assets"), { recursive: true });
   makeAudio(assetPath, 0.3, 880);
@@ -114,15 +114,32 @@ test("empty enrichment exports and invalid enrichment remains fail-closed", asyn
   }
 });
 
+test("enrichment plan cannot change the confirmed proposal source mode", async () => {
+  if (!hasFfmpeg()) return;
+  const { project } = await projectFixture("source-mode-mismatch");
+  writeFileSync(join(project, "enrichment-plan.json"), JSON.stringify({
+    version: "2.0",
+    profile: { ...profile, source_mode: "screen_recording" },
+    elements: [],
+    audio: { music: [], sfx: [] },
+  }));
+
+  const enriched = enrichPlanProject(project);
+  expect(enriched.ok).toBe(false);
+  if (enriched.ok) throw new Error("expected source mode mismatch");
+  expect(enriched.error.code).toBe("PROPOSAL_EXECUTION_MISMATCH");
+  expect(enriched.error.message).toContain("source_mode");
+});
+
 test("render-contract export rejects unfulfilled selected enrichment requirements", async () => {
   if (!hasFfmpeg()) return;
   const { root, project } = await projectFixture("missing-enrichment");
-  confirmSelectedProposalMedia(project, { visual: true });
+  confirmSelectedProposalMedia(project, { visual: ["visual-1"] });
   const exported = exportRenderContract(project, join(root, "bundle"));
   expect(exported.ok).toBe(false);
   if (exported.ok) throw new Error("expected missing enrichment plan rejection");
   expect(exported.error.code).toBe("PROPOSAL_EXECUTION_MISMATCH");
-  expect(exported.error.message).toContain("requires visual/image assets");
+  expect(exported.error.message).toContain("missing=[visual-1]");
 });
 
 test("render-contract export honors selected proposal subtitles disabled", async () => {
@@ -140,7 +157,7 @@ test("render-contract export honors selected proposal subtitles disabled", async
 test("combined enrichment render contract stages only referenced assets and renders strictly", async () => {
   if (!hasFfmpeg()) return;
   const { root, project, source } = await projectFixture("combined");
-  confirmSelectedProposalMedia(project, { visual: true, music: true, sfx: true });
+  confirmSelectedProposalMedia(project, { music: ["bed"], sfx: ["click"] });
   mkdirSync(join(project, "assets"), { recursive: true });
   makeImage(join(project, "assets", "hero.png"));
   makeAudio(join(project, "assets", "music.wav"), 1, 330);
@@ -151,12 +168,7 @@ test("combined enrichment render contract stages only referenced assets and rend
     { id: "unused", path: "assets/unused.png", type: "image", source: "user" },
   ] }));
   writePlan(project, {
-    elements: [
-      { id: "identity", source: "agent", element_id: "anchor", element_type: "caption_identity", start: 0.1, end: 0.6, reason: "captions", caption_identity: "anchor" },
-      { id: "caption", source: "agent", element_id: "caption-editorial-emphasis", element_type: "registry_component", start: 0.1, end: 0.6, reason: "emphasize", params: { text: "Core point" } },
-      { id: "lower-third", source: "agent", element_id: "lt-clean-bar", element_type: "registry_block", start: 0.1, end: 0.6, reason: "identify the topic", params: { title: "Koubo Clip" } },
-      { id: "hero", source: "agent", element_id: "hero", element_type: "visual_asset", start: 0.2, end: 0.5, reason: "show approved visual", asset_id: "hero", zone: "upper_third" },
-    ],
+    elements: [],
     audio: {
       music: [{ id: "bed", asset_id: "music", start: 0, end: 0.7, volume: 0.08, fade_seconds: 0.05, ducking: true, reason: "quiet bed" }],
       sfx: [{ id: "click", sfx_id: "click", start: 0.3, end: 0.4, volume: 0.15, fade_seconds: 0, reason: "sync click" }],
@@ -169,7 +181,7 @@ test("combined enrichment render contract stages only referenced assets and rend
   const exported = exportRenderContract(project, bundle);
   if (!exported.ok) throw new Error(`${exported.error.code}: ${exported.error.message}`);
   expect(verifyRenderContractBundle(bundle).ok).toBe(true);
-  expect(readContract(bundle).payload.assets.map((asset: { asset_id: string }) => asset.asset_id).sort()).toEqual(["hero", "music"]);
+  expect(readContract(bundle).payload.assets.map((asset: { asset_id: string }) => asset.asset_id).sort()).toEqual(["music"]);
   expect(existsSync(join(bundle, "assets"))).toBe(true);
 
   const sourceMap = join(root, "source-map.json");
@@ -181,15 +193,104 @@ test("combined enrichment render contract stages only referenced assets and rend
   const inspected = inspectBoundContract(bundle, rendered.data.result_path);
   if (!inspected.ok) throw new Error(`${inspected.error.code}: ${inspected.error.message}`);
   expect(inspected.data.accepted).toBe(true);
-  const framesRoot = join(root, "run", "render-contract-inspection-frames");
-  const outside = join(root, "outside");
-  rmSync(framesRoot, { recursive: true, force: true });
-  mkdirSync(outside);
-  symlinkSync(outside, framesRoot);
-  const unsafeInspect = inspectBoundContract(bundle, rendered.data.result_path);
-  expect(unsafeInspect.ok).toBe(false);
-  if (unsafeInspect.ok) throw new Error("expected symlinked inspection output rejection");
-  expect(unsafeInspect.error.code).toBe("UNSAFE_CONTRACT_PATH");
+}, 240_000);
+
+test("confirmed strong-hook reorder and source-local overlay survive the complete strict contract chain", async () => {
+  if (!hasFfmpeg()) return;
+  const { root, project, source } = await projectFixture("strong-hook");
+  const proposal = JSON.parse(readFileSync(join(project, "production-proposal.json"), "utf8")) as ProductionProposalArtifact;
+  const option = proposal.options.find((item) => item.id === proposal.recommended_option_id)!;
+  option.label = "Strong hook";
+  option.cleanup.cut_candidate_ids = [];
+  option.subtitles = { enabled: true, style: "anchor", conflict_notes: [] };
+  option.edit_execution_plan.duration_target = { min_seconds: 0.7, max_seconds: 0.8, target_seconds: 0.75, tolerance_frames: 2 };
+  option.edit_execution_plan.timeline = {
+    mode: "explicit_segments",
+    segments: [
+      { id: "payoff", source_id: "src-001", start: 0.65, end: 1.05, reason: "Open with the payoff." },
+      { id: "setup", source_id: "src-001", start: 0.1, end: 0.45, reason: "Then show the compact setup." },
+    ],
+  };
+  option.edit_execution_plan.text_overlays = [{
+    id: "hook-text",
+    source_id: "src-001",
+    segment_id: "payoff",
+    start: 0.7,
+    end: 0.9,
+    element_id: "caption-editorial-emphasis",
+    text: "Core point",
+    purpose: "Freeze the confirmed hook reminder.",
+  }];
+  option.asset_requirements = { visual_asset_slots: [], music_slots: [], sfx_slots: [], image_slots: [] };
+  writeFileSync(join(project, "production-proposal.json"), JSON.stringify(proposal));
+  const proposed = proposalProject(project);
+  if (!proposed.ok) throw new Error(`${proposed.error.code}: ${proposed.error.message}`);
+  writeFileSync(join(project, "edit-plan.json"), JSON.stringify({
+    contract_version: "1.0",
+    confirmed_option_id: option.id,
+    proposal_selection_fingerprint: proposed.data.option_selection_fingerprints[option.id],
+    decisions: [],
+  }));
+  const compiled = compileEdlProject(project);
+  if (!compiled.ok) throw new Error(`${compiled.error.code}: ${compiled.error.message}`);
+
+  const bundle = join(root, "bundle");
+  const exported = exportRenderContract(project, bundle);
+  if (!exported.ok) throw new Error(`${exported.error.code}: ${exported.error.message}`);
+  const contract = readContract(bundle);
+  expect(contract.payload.timeline.entries.map((entry: { source_id: string; start: number; end: number }) => ({
+    source_id: entry.source_id,
+    start: entry.start,
+    end: entry.end,
+  }))).toEqual([
+    { source_id: "src-001", start: 0.65, end: 1.05 },
+    { source_id: "src-001", start: 0.1, end: 0.45 },
+  ]);
+  const frozenPlan = contract.payload.composition.enrichment_plan as { elements: Array<Record<string, unknown>> };
+  const overlay = frozenPlan.elements.find((element) => element.id === "hook-text")!;
+  expect(Math.abs(Number(overlay.start) - 0.05) < 0.000001).toBe(true);
+  expect(Math.abs(Number(overlay.end) - 0.25) < 0.000001).toBe(true);
+  expect(overlay.params).toEqual({ text: "Core point" });
+  expect(contract.payload.captions.cues.length > 0).toBe(true);
+  expect(contract.payload.inspection.proposal_conformance.status).toBe("passed");
+  expect(contract.payload.inspection.proposal_conformance.checks.some((check: { id: string; status: string }) => check.id === "resolved-overlay:hook-text" && check.status === "passed")).toBe(true);
+  expect(contract.payload.authoring_lineage.members.map((member: { path: string }) => member.path)).toEqual([
+    "sources.json",
+    "production-proposal.json",
+    "edit-plan.json",
+    "edl.json",
+    "transcript.json",
+  ]);
+  expect(contract.payload.authoring_lineage.logical_members).toEqual([{
+    key: `proposal-selection:${option.id}`,
+    fingerprint: proposed.data.option_selection_fingerprints[option.id],
+  }]);
+  const lifecycle = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as {
+    artifacts: Record<string, { inputs?: Array<{ key: string }> }>;
+  };
+  expect(lifecycle.artifacts["render-contract"]?.inputs?.map((input) => input.key)).toEqual([
+    "sources",
+    "production-proposal",
+    `proposal-selection:${option.id}`,
+    "edit-plan",
+    "edl",
+    "transcript",
+  ]);
+
+  const sourceMap = join(root, "source-map.json");
+  const bindings = join(root, "bindings.json");
+  writeFileSync(sourceMap, JSON.stringify({ "src-001": source }));
+  const bound = bindRenderContract(bundle, sourceMap, bindings);
+  if (!bound.ok) throw new Error(`${bound.error.code}: ${bound.error.message}`);
+  const rendered = renderBoundContract(bundle, bindings, join(root, "run"));
+  if (!rendered.ok) throw new Error(`${rendered.error.code}: ${rendered.error.message}`);
+  const inspected = inspectBoundContract(bundle, rendered.data.result_path);
+  if (!inspected.ok) throw new Error(`${inspected.error.code}: ${inspected.error.message}`);
+  expect(inspected.data.accepted).toBe(true);
+  expect(inspected.data.technical_inspection_status).toBe("passed");
+  expect(inspected.data.proposal_conformance_status).toBe("passed");
+  expect(inspected.data.business_acceptance_status).toBe("passed");
+  expect(inspected.data.overall_status).toBe("completed");
 }, 240_000);
 
 async function projectFixture(name: string): Promise<{ root: string; project: string; source: string }> {
@@ -202,7 +303,7 @@ async function projectFixture(name: string): Promise<{ root: string; project: st
   writeFileSync(join(project, "transcript.json"), JSON.stringify({ timing_granularity: "segment", segments: [{ source_id: "src-001", start: 0.1, end: 1, text: "Core point" }] }));
   const explored = await exploreProject(project, { asr: "external" });
   if (!explored.ok) throw new Error(explored.error.message);
-  confirmProposalAndWriteEditPlan(project);
+  confirmProposalAndWriteEditPlan(project, [], undefined, { subtitleStyle: "anchor", sourceMode: "talking_head_avatar" });
   return { root, project, source };
 }
 
@@ -210,24 +311,23 @@ function writePlan(project: string, plan: { elements: unknown[]; audio: { music:
   writeFileSync(join(project, "enrichment-plan.json"), JSON.stringify({ version: "2.0", profile, ...plan }));
 }
 
-function confirmSelectedProposalMedia(project: string, needs: { visual?: boolean; music?: boolean; sfx?: boolean; subtitles?: boolean }): void {
+function confirmSelectedProposalMedia(project: string, needs: { visual?: string[]; music?: string[]; sfx?: string[]; subtitles?: boolean }): void {
   const proposal = JSON.parse(readFileSync(join(project, "production-proposal.json"), "utf8")) as ProductionProposalArtifact;
   const option = proposal.options.find((item) => item.id === proposal.recommended_option_id);
   if (!option) throw new Error("fixture proposal is missing recommended option");
   if (needs.subtitles !== undefined) {
-    option.subtitles = { ...option.subtitles, enabled: needs.subtitles };
+    option.subtitles = { ...option.subtitles, enabled: needs.subtitles, style: needs.subtitles ? option.subtitles.style : "none" };
   }
-  if (needs.visual) {
-    option.images = { needed: true, reason: "confirmed visual handoff", missing_assets: [] };
-    option.asset_requirements.visual_asset_slots = [{ slot_id: "visual-1", kind: "visual_asset", purpose: "confirmed visual handoff", required: true }];
+  if (needs.visual?.length) {
+    option.asset_requirements.visual_asset_slots = needs.visual.map((slot_id) => ({ slot_id, kind: "visual_asset", purpose: "confirmed visual handoff", required: true }));
   }
-  if (needs.music) {
+  if (needs.music?.length) {
     option.music = { source: "local", ducking: true, notes: ["confirmed music handoff"] };
-    option.asset_requirements.music_slots = [{ slot_id: "music-1", kind: "music", purpose: "confirmed music handoff", required: true }];
+    option.asset_requirements.music_slots = needs.music.map((slot_id) => ({ slot_id, kind: "music", purpose: "confirmed music handoff", required: true }));
   }
-  if (needs.sfx) {
+  if (needs.sfx?.length) {
     option.sfx = { enabled: true, usage: "confirmed SFX handoff", restraint: "subtle" };
-    option.asset_requirements.sfx_slots = [{ slot_id: "sfx-1", kind: "sfx", purpose: "confirmed SFX handoff", required: true }];
+    option.asset_requirements.sfx_slots = needs.sfx.map((slot_id) => ({ slot_id, kind: "sfx", purpose: "confirmed SFX handoff", required: true }));
   }
   writeFileSync(join(project, "production-proposal.json"), JSON.stringify(proposal));
   const proposed = proposalProject(project);

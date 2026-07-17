@@ -20,6 +20,7 @@ import {
   parseSourceFrameRequest,
   parseSourcesManifest,
   parseTranscript,
+  parseVisualCandidates,
   parseVisualRequest,
 } from "./artifacts";
 
@@ -35,6 +36,7 @@ const writableArtifactIds = [
   "focus-grounding",
   "music-request",
   "visual-request",
+  "visual-candidates",
   "evidence-import-manifest",
   "source-map",
 ] as const;
@@ -51,11 +53,12 @@ const runtimeParsers: Record<string, (value: unknown) => unknown> = {
   "focus-grounding": parseFocusGrounding,
   "music-request": parseMusicRequest,
   "visual-request": parseVisualRequest,
+  "visual-candidates": parseVisualCandidates,
 };
 
 test("production proposal contract is complete, deterministic, and self-validating", () => {
   const contract = getArtifactContract("production-proposal");
-  expect(contract?.schema_version).toBe("2.0");
+  expect(contract?.schema_version).toBe("3.0");
   expect(contract?.external_writes_allowed).toBe(true);
   expect(contract?.schema.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
   expect(/^sha256:[a-f0-9]{64}$/.test(contract?.schema_digest ?? "")).toBe(true);
@@ -68,10 +71,8 @@ test("production proposal contract is complete, deterministic, and self-validati
 test("production proposal validation aggregates stable closed-schema issues", () => {
   const invalid = structuredClone(productionProposalExample) as Record<string, any>;
   invalid.goal_summary = "";
-  invalid.options[0].recommended = true;
-  invalid.options[0].business_direction.direction_id = invalid.options[0].id;
-  invalid.options[0].edit_execution_plan.remove_intent = "all pauses";
-  invalid.options[0].edit_execution_plan.visual_asset_slots = [];
+  invalid.options[0].label = "";
+  invalid.options[0].business_direction.suitable_for = "";
   invalid.options[1].id = invalid.options[0].id;
 
   expect(() => assertProductionProposalContract(invalid)).toThrow("failed validation");
@@ -80,30 +81,27 @@ test("production proposal validation aggregates stable closed-schema issues", ()
   } catch (error) {
     if (!(error instanceof ArtifactValidationError)) throw error;
     expect(error.code).toBe("ARTIFACT_VALIDATION_FAILED");
-    expect(error.issues.map((issue) => `${issue.path}:${issue.keyword}`)).toEqual([
-      "/goal_summary:minLength",
-      "/options/0/business_direction/direction_id:additionalProperties",
-      "/options/0/edit_execution_plan/remove_intent:additionalProperties",
-      "/options/0/edit_execution_plan/visual_asset_slots:additionalProperties",
-      "/options/0/recommended:additionalProperties",
-      "/options/1/id:unique",
-    ]);
+    const issueCodes = error.issues.map((issue) => `${issue.path}:${issue.keyword}`);
+    expect(issueCodes.length).toBe(4);
+    expect(issueCodes).toContain("/goal_summary:minLength");
+    expect(issueCodes).toContain("/options/0/business_direction/suitable_for:minLength");
+    expect(issueCodes).toContain("/options/0/label:minLength");
+    expect(issueCodes).toContain("/options/1/id:unique");
   }
 });
 
 test("production proposal keeps cleanup and execution removal intent identical", () => {
   const invalid = structuredClone(productionProposalExample) as Record<string, any>;
-  invalid.options[0].edit_execution_plan.remove_segments.push({ candidate_id: "candidate-extra", reason: "Not in cleanup." });
-  invalid.options[1].edit_execution_plan.remove_segments = [];
+  invalid.options[0].sfx.enabled = false;
+  invalid.options[0].asset_requirements.sfx_slots.push({ slot_id: "extra", kind: "sfx", purpose: "extra", required: true });
 
   try {
     assertProductionProposalContract(invalid);
-    throw new Error("expected proposal removal intent validation failure");
+    throw new Error("expected proposal media requirement validation failure");
   } catch (error) {
     if (!(error instanceof ArtifactValidationError)) throw error;
     const issues = error.issues.map((issue) => `${issue.path}:${issue.keyword}`);
-    expect(issues).toContain("/options/0/edit_execution_plan/remove_segments/1/candidate_id:reference");
-    expect(issues).toContain("/options/1/cleanup/cut_candidate_ids/0:reference");
+    expect(issues).toContain("/options/0/asset_requirements/sfx_slots:confirmation");
   }
 });
 
@@ -173,6 +171,17 @@ test("writable runtime parsers reject closed-schema root and nested unknown fiel
   }
 });
 
+test("edit-plan authoring contract only exposes candidate-bound cut and keep decisions", () => {
+  const contract = getArtifactContract("edit-plan")!;
+  expect(JSON.stringify(contract.schema).includes("source_order")).toBe(false);
+  for (const invalid of [
+    { action: "skip", candidate_id: "candidate-1" },
+    { action: "cut" },
+  ]) {
+    expect(() => parseEditPlan({ ...contract.example as object, decisions: [invalid] })).toThrow("failed validation");
+  }
+});
+
 test("source frame request contract is complete and runtime-equivalent", () => {
   expect(parseSourceFrameRequest(sourceFrameRequestExample).frames[0]).toEqual(sourceFrameRequestExample.frames[0]);
   const invalid = {
@@ -209,7 +218,7 @@ test("source frame request rejects non-current version before field repair", () 
 });
 
 test("CLI-owned contracts are discoverable but never authorable", () => {
-  for (const artifactId of ["edl", "render-contract", "render-contract-result", "inspection", "delivery-manifest"]) {
+  for (const artifactId of ["project", "source-materialization", "analysis", "review-package", "edl", "source-frames", "focus-frames", "focus-review", "music-acquisition", "music-review", "visual-acquisition", "visual-review", "asset-manifest", "storyboard", "render-result", "inspection", "render-contract", "source-binding", "render-contract-result", "render-contract-inspection", "delivery-manifest"]) {
     const contract = getArtifactContract(artifactId);
     expect(contract === undefined).toBe(false);
     expect(contract?.ownership).toBe("cli_owned");
@@ -241,4 +250,5 @@ const nestedUnknownCases: Array<[string, (value: Record<string, any>) => void]> 
   ["focus-candidates", (value) => { value.candidates[0].unexpected = true; }],
   ["focus-grounding", (value) => { value.groundings[0].unexpected = true; }],
   ["visual-request", (value) => { value.requests[0].unexpected = true; }],
+  ["visual-candidates", (value) => { value.candidates[0].unexpected = true; }],
 ];

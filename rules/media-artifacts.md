@@ -106,7 +106,8 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 - `source-frames.json` 是 CLI 生成的源画面证据 manifest，按 request 顺序记录从 0 开始的 index、request identity、source_id、source-local time、project-relative JPEG path、尺寸、byte size 和 SHA-256，并汇总 frame count 和总 byte size；实际图片保存在 `.source-frames/frame-0001.jpg` 等稳定顺序路径。
 - `review-package.md` 是 human-readable pre-render review surface。
 - `review-package.json` 包含 original subtitle ranges、proposed cuts、reasons、confidence、unresolved risks 和 source identity。
-- `production-proposal.json` 2.0 是用户确认前的唯一制作方案合同，由 skill/agent 写入。CLI 必须公开其完整 schema、结构闭合 template 和同版本合法 2-4 option example；Skill 先读取该合同再指导填写。每项同时包含 `business_direction`、`edit_execution_plan` 和 `asset_requirements`，以及剪辑、字幕、视觉、图片/生图、音乐、SFX、风险和确认字段。Option `id` 是唯一方向身份，`recommended_option_id` 是唯一推荐权威，`asset_requirements` 是唯一槽位权威。用户只确认一次。Proposal 只能写素材 intent、query、provider preference、license/cost/source risk 和 reason，不能写最终 `asset_id`、local path、provider URL、download URL、绝对路径或 raw MCP payload。
+- `production-proposal.json` 3.0 是用户确认前的唯一制作方案合同，由 skill/agent 写入。CLI 必须公开其完整 schema、结构闭合 template 和同版本合法 2-4 option example；Skill 先读取该合同再指导填写。每项同时包含 `business_direction`、`edit_execution_plan` 和 `asset_requirements`，以及剪辑、字幕、视觉、图片/生图、音乐、SFX、风险和确认字段。Option `id` 是唯一方向身份，`recommended_option_id` 是唯一推荐权威，`asset_requirements` 是唯一槽位权威。被确认 option 的 `duration_target`、有序 `timeline` 和 `text_overlays` 会被 CLI 映射到执行层。用户只确认一次。Proposal 只能写素材 intent、query、provider preference、license/cost/source risk 和 reason，不能写最终 `asset_id`、local path、provider URL、download URL、绝对路径或 raw MCP payload。
+- 被确认 option 的 fingerprint 继续向下游约束：`edit-plan.json` 的 cut set 必须精确对应该 option 的 cleanup 决策；`enrichment-plan.json` 只能实现该 option 已确认的 visual/music/SFX/subtitle 语义，不能在执行层静默补默认值或扩大素材范围。
 - `production-proposal.md` 是 CLI 从 proposal 物化出的 human-readable confirmation surface。它不是 render source of truth，缺失或文案变化不改变 proposal 状态。
 - `focus-candidates.md` 是 semantic focus planning 的 human-readable candidate surface。
 - `focus-candidates.json` 记录 normalized semantic intent、candidate element type、viewer job、风险和所需证据。
@@ -120,7 +121,7 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 - `music-review.json` / `.md` 是给用户和 agent 审查的音乐选择面，说明是否建议把获取到的音乐加入 `enrichment-plan.audio.music[]`。
 - `visual-catalog.json` / `.md` 在 `standalone` mode 下暴露 CLI-owned Iconify/Lordicon、Lottie/dotLottie import、shadcn/21st handoff、Rive future provider，以及 HyperFrames allowlisted runtime dependencies；在 `platform` mode 下这些 provider 应标记为 host-managed 或 disabled。它不能输出 API key 或本机 provider 状态。
 - `visual-request.json` 是 agent/user 写入的视觉素材获取请求，包含 viewer job、semantic query、asset type、preferred sources、用途、可选 timing/zone，以及必填的 `selected_candidate_id` 和 `selection_reason`。两种 mode 都要求这两个选择字段。`reason` 说明为什么需要该素材槽位；`selection_reason` 说明为什么选择该具体候选。`selected_candidate_id` 是 visual acquire 的唯一授权，候选顺序或 `recommended` 都不能替代它。在 `platform` mode 下它是给平台 visual/component capability 的 request spec，CLI 不据此调用 Iconify、Lordicon、URL download 或 MCP。
-- `visual-candidates.json` / `.md` 保存候选素材，包含 provider、preview/source/download URL 或 local handoff path、license、cost/source risk、runtime dependencies 和推荐理由。Search/list 只负责召回；`recommended` 只作展示提示。候选里允许 provider URL；它们不是 render 输入。`preview_path` 只用于 agent/user 比较候选，不能替代选中候选的 `local_path`，也不能被 acquire 消费。`platform` mode 下候选应使用平台脱敏后的 provider/source label、opaque source ref、project-local `preview_path` 或 `local_path`，不保存 API key、Bearer token、provider URL 或 MCP 原始 payload。
+- `visual-candidates.json` / `.md` 保存候选素材，包含 provider、preview/source/download URL 或 local handoff path、license、cost/source risk、runtime dependencies 和推荐理由。Platform host 写 JSON 前必须读取 `artifact contract visual-candidates --json`；结构错误聚合返回。Search/list 只负责召回；`recommended` 只作展示提示。候选里允许 provider URL；它们不是 render 输入。`preview_path` 只用于 agent/user 比较候选，不能替代选中候选的 `local_path`，也不能被 acquire 消费。`platform` mode 下候选应使用平台脱敏后的 provider/source label、opaque source ref、project-local `preview_path` 或 `local_path`，不保存 API key、Bearer token、provider URL 或 MCP 原始 payload。
 - `visual-acquisition.json` 是 CLI 写入的实际下载或导入结果，包含 provider、asset type、project-local path、hash、license、source_url、original_author、acquired_at、runtime dependencies 和 warnings。
 - `visual-review.json` / `.md` 是给用户和 agent 审查的视觉资产选择面，同时保留槽位用途 `usage_reason` 和候选选择理由 `selection_reason`，并说明来源、授权和 runtime 风险。
 - `edit-plan.json` 是唯一 cleanup 决策，包含 `contract_version:"1.0"`、`confirmed_option_id` 和对应 `proposal_selection_fingerprint`。`decisions[].action:"cut"` 表示删除候选片段，不是保留列表。新工作流不得在这里内嵌素材 usage plan。
@@ -140,6 +141,7 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 - `.inspection/<render-fingerprint-prefix>/card-*.jpg`、`.inspection/<render-fingerprint-prefix>/element-*.jpg` 和同类多帧截图包含 render 后基于 final output timeline、由该 render result 绑定的 `storyboard.qa_checks[]` 派生的检查帧；命名空间防止旧 render 的帧与当前检查混淆。
 - `inspection.json` 是 inspection 成功的 machine-readable 证明，绑定 current render result fingerprint、canonical output hash/probe、checks、frame paths、blockers 和 warnings。
 - `report.md` 从 `inspection.json` 确定性生成，总结移除了什么、保留了什么、每个 QA check 的 expected/status/frame paths，以及仍需人工关注什么。它是非阻塞 human view；current inspection 存在时，report 缺失只需要重建，不能把项目降为未完成。
+- 当 `inspection.json` 记录非零 blocker 时，CLI 仍应写出结构化 inspection/report，再返回 `INSPECTION_ACCEPTANCE_FAILED`；有结果不等于 accepted。
 
 ## 检查规则
 
@@ -198,7 +200,7 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 - HyperFrames registry 和 render resources 来自 `packages/cli/vendor/hyperframes`。即使上游 mirror 中存在 `SKILL.md` 或目录名包含 `skills`，它们也不是对外 agent skills；agent 只能通过 `skills/koubo-clip` 的 references 和 CLI `element-catalog` 理解并选择元素，不能把任意 HTML/JS 当成 artifact 输入。
 - Render/inspect 必须按 bytes hash 验证实际 source、asset、frame 和 MP4；mtime/size 不能跨调用替代 hash。
 - Inspect 只能消费 current `render-result.json` 指定的 canonical output。物理残留 `final.mp4`、旧 storyboard 或旧 report 不能改变选择。
-- 项目完成要求 current proposal/edit-plan binding、current EDL、current `render-result.json`、hash/probe 匹配的 canonical output、current `inspection.json` 和零 blocker；MP4 或 Markdown 单独存在不能证明完成。
+- 项目完成要求 current proposal/edit-plan binding、current EDL、current `render-result.json`、hash/probe 匹配的 canonical output、current `inspection.json` 和零 blocker；MP4 或 Markdown 单独存在不能证明完成。`project render` 和 `project inspect` 共享同一个执行内核与帧时序语义，不能由不同口径各自“看起来正确”。
 - Multi-source renders 默认按 `sources.json` 顺序；除非 `edit-plan.json` 明确重排 sources。
 
 ## 失败处理

@@ -91,7 +91,7 @@ koubo-clip project status <project> --json
 
 `capabilities` 描述软件支持的命令、schema、feature flags 和 provider-mode 语义，不探测当前机器；环境检查仍由 `doctor` 负责。`project status` 是只读入口，返回 artifact/stage 状态、blockers、remediation、next commands、精确 render inputs、canonical deliverable 和最后成功 checkpoint。不要扫描目录、比较 mtime，或根据 Markdown、storyboard、`final.mp4` 是否存在猜状态。
 
-没有 manifest 的旧 project 会报告 `legacy_untracked`：结构合法的外部权威输入进入 `pending_validation`，无法证明 lineage 的旧派生结果标为 `stale` / `LINEAGE_UNPROVEN`。按 status 给出的 validator 或 consumer 重跑即可逐步建立新 lineage，不要求重建 source 目录。
+缺少当前 project contract 或 artifact manifest 的旧 project 会返回 `CONTRACT_SCHEMA_UNSUPPORTED`。当前开发版本对每种 artifact 只支持一个 schema，不在运行时猜测 lineage 或迁移旧目录；需要使用当前 CLI 重新创建 project，旧文件如需审计可另行保留。
 
 Render 成功由 current `render-result.json` 证明，其中 `canonical_output_key` 明确选择 clean 或 final MP4。Inspect 只检查该输出并写 current `inspection.json`。`report.md` 是从 inspection 生成的可重建 human view；它缺失不会推翻仍然 current 的机器完成状态。
 

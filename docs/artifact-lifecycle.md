@@ -222,11 +222,11 @@ Inventory JSON 不能代替它所引用文件的 bytes lineage。Manifest 为媒
 | --- | --- | --- | --- | --- |
 | `review-package.json` | derived | CLI | proposal、用户/agent review | transcript + analysis 的 review package，不是新的业务决定 |
 | `review-package.md` | human_view | CLI | 用户/agent | JSON 的可读镜像 |
-| `production-proposal.json` | authoritative_input | Skill/agent | `project proposal`、用户确认、edit plan validation | 单次确认面；`options[]` 中每项同时包含 business direction、edit execution plan 和 asset requirements |
+| `production-proposal.json` | authoritative_input | Skill/agent | `project proposal`、用户确认、edit plan validation | 单次确认面；`options[]` 中每项同时包含 business direction、edit execution plan 和 asset requirements。被确认 option 是后续执行合同的来源 |
 | `production-proposal.md` | human_view | CLI | 用户 | proposal 的可读确认面 |
 | `edit-plan.json` | authoritative_input | Skill/agent | EDL compiler、render、inspect | 唯一 cleanup 决策；必须包含 `confirmed_option_id` 和 `proposal_selection_fingerprint` |
 
-用户确认事件发生在宿主或 agent 对话层。Koubo Clip 不伪造审批系统，也不要求方向和方案各确认一次。`production-proposal.json.options[]` 就是 2-4 个可选业务方向及其执行摘要；用户只选择一次。`proposal_selection_fingerprint` 只覆盖 goal summary、被选 option 的 business direction、execution plan 和 asset requirements，不覆盖未选 option 或 Markdown 文案，因此修改未选方案不会无意义地使 EDL stale。
+用户确认事件发生在宿主或 agent 对话层。Koubo Clip 不伪造审批系统，也不要求方向和方案各确认一次。`production-proposal.json.options[]` 就是 2-4 个可选业务方向及其执行摘要；用户只选择一次。`proposal_selection_fingerprint` 只覆盖 goal summary、被选 option 的 business direction、execution plan 和 asset requirements，不覆盖未选 option 或 Markdown 文案，因此修改未选方案不会无意义地使 EDL stale。当前唯一 proposal 版本是 3.0。
 
 `project proposal` 在用户选择前登记并返回 `proposal_fingerprint` 和完整 `option_selection_fingerprints` map。每个 option projection 至少包含 proposal contract version、option id、goal summary 和该 option 的 semantic projection。用户确认后，agent 把 `confirmed_option_id` 与 map 中对应 fingerprint 写入 edit plan；EDL compiler 从 current proposal 重新计算并逐项比对。
 

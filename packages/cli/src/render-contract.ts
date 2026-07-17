@@ -202,6 +202,11 @@ export type StrictInspectionV1 = {
   render_result_digest: Sha256Digest;
   output_sha256: Sha256Digest;
   accepted: boolean;
+  render_status?: "success";
+  technical_inspection_status?: "passed" | "failed";
+  proposal_conformance_status?: "passed" | "failed";
+  business_acceptance_status?: "passed" | "failed";
+  overall_status?: "completed" | "partial" | "failed";
   checks: StrictInspectionCheckV1[];
   frames: string[];
   warnings: string[];
@@ -458,12 +463,23 @@ export function parseStrictInspectionV1(value: unknown): StrictInspectionV1 {
     "render_result_digest",
     "output_sha256",
     "accepted",
+    "render_status",
+    "technical_inspection_status",
+    "proposal_conformance_status",
+    "business_acceptance_status",
+    "overall_status",
     "checks",
     "frames",
     "warnings",
     "blockers",
     "inspected_at",
-  ], code);
+  ], code, [
+    "render_status",
+    "technical_inspection_status",
+    "proposal_conformance_status",
+    "business_acceptance_status",
+    "overall_status",
+  ]);
   const checks = array(obj.checks, "strict inspection.checks", code).map((check, index): StrictInspectionCheckV1 => {
     const item = strictRecord(check, `strict inspection.checks[${index}]`, ["id", "status", "message"], code);
     const status = item.status;
@@ -482,6 +498,23 @@ export function parseStrictInspectionV1(value: unknown): StrictInspectionV1 {
   if (accepted && (blockers.length > 0 || checks.some((check) => check.status === "blocker"))) {
     fail(code, "strict inspection cannot be accepted with blockers", "accepted");
   }
+  const renderStatus = optionalChoice(obj.render_status, "strict inspection.render_status", ["success"] as const, code);
+  const technicalStatus = optionalChoice(obj.technical_inspection_status, "strict inspection.technical_inspection_status", ["passed", "failed"] as const, code);
+  const proposalStatus = optionalChoice(obj.proposal_conformance_status, "strict inspection.proposal_conformance_status", ["passed", "failed"] as const, code);
+  const businessStatus = optionalChoice(obj.business_acceptance_status, "strict inspection.business_acceptance_status", ["passed", "failed"] as const, code);
+  const overallStatus = optionalChoice(obj.overall_status, "strict inspection.overall_status", ["completed", "partial", "failed"] as const, code);
+  if (businessStatus === "passed" && (technicalStatus !== "passed" || proposalStatus !== "passed")) {
+    fail(code, "business acceptance cannot pass unless technical inspection and proposal conformance pass", "business_acceptance_status");
+  }
+  if (accepted && (technicalStatus === "failed" || proposalStatus === "failed" || businessStatus === "failed" || overallStatus === "partial" || overallStatus === "failed")) {
+    fail(code, "accepted strict inspection cannot contain a failed or partial acceptance status", "accepted");
+  }
+  if (overallStatus === "completed" && businessStatus !== "passed") {
+    fail(code, "overall status cannot be completed unless business acceptance passes", "overall_status");
+  }
+  if (overallStatus === "partial" && (technicalStatus !== "passed" || proposalStatus !== "failed" || businessStatus !== "failed")) {
+    fail(code, "partial overall status requires technical pass and failed proposal/business acceptance", "overall_status");
+  }
   return {
     schema_version: literalVersion(obj.schema_version, "strict inspection.schema_version", STRICT_INSPECTION_SCHEMA_VERSION, code),
     contract_digest: digest(obj.contract_digest, "strict inspection.contract_digest", code),
@@ -489,6 +522,11 @@ export function parseStrictInspectionV1(value: unknown): StrictInspectionV1 {
     render_result_digest: digest(obj.render_result_digest, "strict inspection.render_result_digest", code),
     output_sha256: digest(obj.output_sha256, "strict inspection.output_sha256", code),
     accepted,
+    ...(renderStatus ? { render_status: renderStatus } : {}),
+    ...(technicalStatus ? { technical_inspection_status: technicalStatus } : {}),
+    ...(proposalStatus ? { proposal_conformance_status: proposalStatus } : {}),
+    ...(businessStatus ? { business_acceptance_status: businessStatus } : {}),
+    ...(overallStatus ? { overall_status: overallStatus } : {}),
     checks,
     frames: stringArray(obj.frames, "strict inspection.frames", code).map((path, index) => localPath(path, `strict inspection.frames[${index}]`, code)),
     warnings: stringArray(obj.warnings, "strict inspection.warnings", code),
@@ -853,6 +891,17 @@ function timestamp(value: unknown, name: string, code: RenderContractErrorCode):
 function literalVersion<TVersion extends string>(value: unknown, name: string, expected: TVersion, code: RenderContractErrorCode): TVersion {
   if (value !== expected) fail(code, `${name} must be "${expected}"`, name);
   return expected;
+}
+
+function optionalChoice<const TValues extends readonly string[]>(
+  value: unknown,
+  name: string,
+  choices: TValues,
+  code: RenderContractErrorCode,
+): TValues[number] | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !choices.includes(value)) fail(code, `${name} must be one of ${choices.join(", ")}`, name);
+  return value as TValues[number];
 }
 
 function unique(values: readonly (string | number)[], name: string, code: RenderContractErrorCode): void {

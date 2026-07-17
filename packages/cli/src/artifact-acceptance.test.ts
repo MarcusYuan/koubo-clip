@@ -78,7 +78,7 @@ test("proposal selection fingerprint covers every confirmed selected-option fiel
   expect(proposalSelectionFingerprint(unselectedChanged, "selected")).toBe(baseline);
 });
 
-test("proposal v2 invalidation is scoped to the confirmed option", async () => {
+test("proposal v3 invalidation is scoped to the confirmed option", async () => {
   if (!commandExists("ffmpeg")) return;
   const project = await confirmedProject();
 
@@ -104,6 +104,7 @@ test("proposal v2 invalidation is scoped to the confirmed option", async () => {
   if (!rendered.ok) throw new Error(rendered.error.message);
   const baseline = projectStatus(project);
   const baselineEdlFingerprint = artifact(baseline, "edl")?.fingerprint;
+  const baselineAuthoringFingerprint = baseline.render_contract?.current_authoring_fingerprint;
   expect(artifact(baseline, "edit-plan")?.state).toBe("current");
   expect(artifact(baseline, "edl")?.state).toBe("current");
   expect(artifact(baseline, "render-result")?.state).toBe("current");
@@ -124,6 +125,7 @@ test("proposal v2 invalidation is scoped to the confirmed option", async () => {
   expect(artifact(afterUnselectedChange, "edl")?.fingerprint).toBe(baselineEdlFingerprint);
   expect(artifact(afterUnselectedChange, "render-result")?.state).toBe("current");
   expect(afterUnselectedChange.canonical_deliverable?.key).toBe("render-output:clean");
+  expect(afterUnselectedChange.render_contract?.current_authoring_fingerprint === baselineAuthoringFingerprint).toBe(false);
 
   writeJson(
     join(project, "production-proposal.json"),
@@ -148,7 +150,7 @@ test("a real enriched render stays current through inspect and ignores unused as
   const project = await confirmedProject();
   const proposal = proposalDocument("Selected direction", "Alternative direction");
   proposal.options[0]!.music = { source: "local", ducking: true, notes: ["confirmed music bed"] };
-  proposal.options[0]!.asset_requirements.music_slots = [{ slot_id: "music-1", kind: "music", purpose: "confirmed music bed", required: true }];
+  proposal.options[0]!.asset_requirements.music_slots = [{ slot_id: "bed", kind: "music", purpose: "confirmed music bed", required: true }];
   writeJson(join(project, "production-proposal.json"), proposal);
   const proposed = proposalProject(project);
   expect(proposed.ok).toBe(true);
@@ -196,6 +198,11 @@ test("a real enriched render stays current through inspect and ignores unused as
   expect(afterRender.canonical_deliverable?.key).toBe("render-output:final");
   expect(stage(afterRender, "enrichment")?.state).toBe("complete");
   expect(stage(afterRender, "render")?.state).toBe("complete");
+  expect(afterRender.acceptance.proposal_conformance_status).toBe("passed");
+  expect(afterRender.acceptance.render_status).toBe("success");
+  expect(afterRender.acceptance.technical_inspection_status).toBe("pending");
+  expect(afterRender.acceptance.business_acceptance_status).toBe("pending");
+  expect(afterRender.acceptance.overall_status).toBe("in_progress");
 
   const inspected = inspectProject(project);
   expect(inspected.ok).toBe(true);
@@ -206,6 +213,12 @@ test("a real enriched render stays current through inspect and ignores unused as
   expect(artifact(afterInspect, "inspection")?.state).toBe("current");
   expect(stage(afterInspect, "inspect")?.state).toBe("complete");
   expect(afterInspect.canonical_deliverable?.fingerprint).toBe(fileBytesFingerprint(inspected.data.output_path));
+  expect(inspected.data.render_status).toBe("success");
+  expect(inspected.data.technical_inspection_status).toBe("passed");
+  expect(inspected.data.proposal_conformance_status).toBe("passed");
+  expect(inspected.data.business_acceptance_status).toBe("passed");
+  expect(inspected.data.overall_status).toBe("completed");
+  expect(afterInspect.acceptance.overall_status).toBe("completed");
 
   makeSampleAudio(unusedAsset, 1.5);
   const afterUnusedChange = projectStatus(project);
@@ -242,7 +255,7 @@ function proposalDocument(
   alternativeTitle: string,
 ): ProductionProposalArtifact {
   return {
-    version: "2.0",
+    version: "3.0",
     source_mode: "talking_head_avatar",
     presentation_intent: "knowledge_explainer",
     goal_summary: "make a concise explainer",
@@ -264,7 +277,7 @@ function proposalOption(
     label: title,
     reason: `${title} best fits this fixture`,
     cleanup: { cut_candidate_ids: [], keep_strategy: "keep the complete statement", risks: [] },
-    subtitles: { enabled: true, style: "anchor", conflict_notes: [] },
+    subtitles: { enabled: true, style: "plain", conflict_notes: [] },
     visuals: {
       direction: "none",
       viewer_job: "follow the spoken explanation",
@@ -279,28 +292,23 @@ function proposalOption(
       title,
       suitable_for: "knowledge sharing",
       editing_strategy: "keep the complete explanation",
-      expected_duration: "2s",
       asset_style: "clean captions",
       risks: [],
     },
     edit_execution_plan: {
       objective: "deliver the idea clearly",
       target_audience: "general viewers",
-      final_duration: "2s",
+      duration_target: { min_seconds: 1.7, max_seconds: 1.9, target_seconds: 1.8, tolerance_frames: 2 },
       narrative_structure: [{ beat: "explanation", purpose: "deliver the complete idea" }],
-      keep_segments: [
-        { source_id: "src-001", start: 0.1, end: 1.9, reason: "contains the complete statement" },
-      ],
-      remove_segments: [],
-      reorder_segments: [],
+      timeline: {
+        mode: "explicit_segments",
+        segments: [{ id: "complete-statement", source_id: "src-001", start: 0.1, end: 1.9, reason: "contains the complete statement" }],
+      },
       text_overlays: [],
       user_confirmation_summary: `use ${title}`,
     },
     asset_requirements: {
-      visual_asset_slots: [],
-      music_slots: [],
-      sfx_slots: [],
-      image_slots: [],
+      visual_asset_slots: [], music_slots: [], sfx_slots: [], image_slots: [],
     },
   };
 }

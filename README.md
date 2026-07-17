@@ -71,7 +71,7 @@ raw talking-head footage
 
 Before the proposal, the agent may select up to 20 source times from the transcript and material report, and the CLI creates project-local JPEGs for a vision-capable host to understand the original footage. These read-only source frames do not imply user approval. Before confirmation, koubo-clip does not create the edit plan, focus/visual/music execution artifacts, or a render. A standalone workflow without vision may explicitly mark the omission and continue transcript-only; missing platform vision is a host-workflow blocker. The frame-extraction command itself never calls a vision model or provider.
 
-`project proposal --json` returns a proposal fingerprint and selection fingerprints keyed by option id. After the user confirms, `edit-plan.json` binds that decision with `confirmed_option_id` and the matching fingerprint. Changing the selected option makes downstream artifacts explicitly stale. The EDL is a CLI-derived checkpoint; when a consumer finds it stale and the authoritative inputs are complete, the same deterministic compiler rebuilds it automatically.
+`project proposal --json` returns a proposal fingerprint and selection fingerprints keyed by option id. After the user confirms, `edit-plan.json` binds that decision with `confirmed_option_id` and the matching fingerprint. Changing the selected option makes downstream artifacts explicitly stale. The confirmed option is the executable truth for the downstream plan: its structured `duration_target`, ordered `timeline`, `text_overlays`, and `asset_requirements` continue into EDL, enrichment, render, and inspect. The EDL is a CLI-derived checkpoint; when a consumer finds it stale and the authoritative inputs are complete, the same deterministic compiler rebuilds it automatically.
 
 Render only consumes files or stable references already landed in the current project and the current canonical `enrichment-plan.json`. A simplified platform handoff may write standalone `asset-usage-plan.json`, but `project enrich-plan` must normalize it once before render. It is never a direct render input and is never implicitly merged with canonical or other legacy usage sources. Provider URLs, temporary download links, and API keys are not valid final render inputs.
 
@@ -91,7 +91,7 @@ koubo-clip project status <project> --json
 
 `capabilities` describes supported commands, schemas, feature flags, and provider-mode semantics; it does not probe the current machine. Environment checks remain the job of `doctor`. Read-only `project status` returns artifact/stage state, blockers, remediation, next commands, exact render inputs, the canonical deliverable, and the last successful checkpoint. Do not scan the directory, compare mtimes, or infer state from Markdown, a storyboard, or the presence of `final.mp4`.
 
-A project without a manifest is reported as `legacy_untracked`: structurally valid external authoritative inputs become `pending_validation`, while old derived results whose lineage cannot be proven are `stale` with `LINEAGE_UNPROVEN`. Follow the validator or consumer returned by status to establish new lineage incrementally; the source directory does not need to be rebuilt.
+A project without the current project contract and artifact manifest is rejected with `CONTRACT_SCHEMA_UNSUPPORTED`. The current development release supports one schema per artifact and does not infer lineage or migrate legacy directories at runtime; recreate the project with the current CLI and preserve old files separately if they are still needed for audit.
 
 Render success is represented by current `render-result.json`, whose `canonical_output_key` explicitly selects the clean or final MP4. Inspect checks only that output and writes current `inspection.json`. `report.md` is a rebuildable human view derived from inspection; its absence does not invalidate otherwise-current machine completion.
 
@@ -163,7 +163,7 @@ After `review`, the CLI does not generate a production plan as a black box. The 
 koubo-clip project proposal koubo-clips/raw --json
 ```
 
-`project proposal --json` validates `production-proposal.json`, writes `production-proposal.md`, and returns a selection fingerprint for every option. Each option already combines its business direction, edit execution plan, and asset requirements, so the user confirms exactly once. After confirmation, write the option id and fingerprint into `edit-plan.json`, prepare visual/music artifacts and canonical `enrichment-plan.json`, then run render/inspect.
+`project proposal --json` validates `production-proposal.json`, writes `production-proposal.md`, and returns a selection fingerprint for every option. Each option already combines its business direction, edit execution plan, and asset requirements, so the user confirms exactly once. After confirmation, write the option id and fingerprint into `edit-plan.json`, prepare visual/music artifacts and canonical `enrichment-plan.json`, then run render/inspect. The confirmed option's `duration_target`, ordered `timeline`, and `text_overlays` are part of the execution contract, not just the proposal display.
 
 ## Install
 

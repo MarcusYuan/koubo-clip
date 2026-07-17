@@ -21,7 +21,7 @@ V0 保持：
 
 主要产品修正是：用户确认前应先输出 production proposal，而不是让用户分别面对 cleanup、enrichment、music 和 asset 的执行 JSON。
 
-用户首先需要看到 source footage 包含什么、cleanup 策略会移除什么以及为什么，同时看到这条视频将如何使用字幕、UI 动效、图片/生图、音乐和 SFX。`production-proposal` 是“足以决策”的确认单；用户确认后，系统再生成“足以执行”的 `edit-plan`、`focus-*`、`music-*`、`asset-manifest` 和 `enrichment-plan`。
+用户首先需要看到 source footage 包含什么、cleanup 策略会移除什么以及为什么，同时看到这条视频将如何使用字幕、UI 动效、图片/生图、音乐和 SFX。`production-proposal` 是“足以决策”的确认单，也是被确认 option 落到执行合同的入口；用户确认后，Agent 编写当前公开合同允许的 authoring artifacts，CLI 再生成 EDL、frame/review/acquisition 结果与 `asset-manifest` 等派生产物。
 
 这个确认单不能制造假确定性：没有 frame evidence 时不承诺坐标，没有生成/获取前不承诺 asset path 或 provider 结果，没有 EDL 前不把所有增强点当成最终 output timeline。
 
