@@ -26,7 +26,7 @@ declare function fetch(
 ): Promise<{ ok: boolean; status: number; text(): Promise<string>; json(): Promise<unknown>; arrayBuffer(): Promise<ArrayBuffer> }>;
 
 declare module "bun:test" {
-  export const test: (name: string, fn: () => void) => void;
+  export const test: (name: string, fn: () => void, timeout?: number) => void;
   export const expect: (actual: unknown) => {
     toBe(expected: unknown): void;
     toEqual(expected: unknown): void;

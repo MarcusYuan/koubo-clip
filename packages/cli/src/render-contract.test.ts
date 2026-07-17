@@ -8,6 +8,7 @@ import {
   canonicalJson,
   compileOutputFrameSchedule,
   createRenderContractV1,
+  materializeJsonObject,
   parseRenderBindingV1,
   parseRenderContractV1,
   parseSourceMapV1,
@@ -104,6 +105,22 @@ test("canonical JSON rejects values that JSON.stringify would silently discard o
   const cyclic: Record<string, unknown> = {};
   cyclic.self = cyclic;
   expectCode(() => canonicalJson(cyclic), renderContractErrorCodes.INVALID_JSON_VALUE);
+});
+
+test("contract JSON materialization omits only undefined object properties", () => {
+  expect(materializeJsonObject({ z: undefined, a: { d: undefined, c: 1 } })).toEqual({ a: { c: 1 } });
+  expect(canonicalJson(materializeJsonObject({ z: undefined, a: { d: undefined, c: 1 } }))).toBe('{"a":{"c":1}}');
+
+  expectCode(() => materializeJsonObject({ unsafe: [undefined] }), renderContractErrorCodes.INVALID_JSON_VALUE);
+  const sparse = Array(1);
+  expectCode(() => materializeJsonObject({ unsafe: sparse }), renderContractErrorCodes.INVALID_JSON_VALUE);
+  for (const unsafe of [Number.NaN, Number.POSITIVE_INFINITY, () => undefined, Symbol("unsafe"), 1n]) {
+    expectCode(() => materializeJsonObject({ unsafe }), renderContractErrorCodes.INVALID_JSON_VALUE);
+  }
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  expectCode(() => materializeJsonObject(cyclic), renderContractErrorCodes.INVALID_JSON_VALUE);
+  expectCode(() => materializeJsonObject({ unsafe: new Date(0) }), renderContractErrorCodes.INVALID_JSON_VALUE);
 });
 
 test("output frame schedule uses cumulative boundaries without per-segment drift", () => {

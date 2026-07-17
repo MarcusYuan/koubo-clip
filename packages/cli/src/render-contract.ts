@@ -215,6 +215,14 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(canonicalize(value, "$", new Set()));
 }
 
+export function materializeJsonObject(value: unknown): JsonObject {
+  const materialized = canonicalize(value, "$", new Set(), true);
+  if (!materialized || Array.isArray(materialized) || typeof materialized !== "object") {
+    fail(renderContractErrorCodes.INVALID_JSON_VALUE, "$ must be a JSON object", "$");
+  }
+  return materialized;
+}
+
 export function sha256Digest(value: string | Uint8Array): Sha256Digest {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
@@ -687,7 +695,7 @@ function parseBindingSource(value: unknown, name: string): RenderBindingSourceV1
   };
 }
 
-function canonicalize(value: unknown, path: string, active: Set<object>): JsonValue {
+function canonicalize(value: unknown, path: string, active: Set<object>, omitUndefinedObjectProperties = false): JsonValue {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") {
     if (!Number.isFinite(value)) fail(renderContractErrorCodes.INVALID_JSON_VALUE, `${path} must be a finite JSON number`, path);
@@ -702,14 +710,18 @@ function canonicalize(value: unknown, path: string, active: Set<object>): JsonVa
       const output: JsonValue[] = [];
       for (let index = 0; index < value.length; index += 1) {
         if (!Object.prototype.hasOwnProperty.call(value, index)) fail(renderContractErrorCodes.INVALID_JSON_VALUE, `${path}[${index}] is a sparse array entry`, `${path}[${index}]`);
-        output.push(canonicalize(value[index], `${path}[${index}]`, active));
+        output.push(canonicalize(value[index], `${path}[${index}]`, active, omitUndefinedObjectProperties));
       }
       return output;
     }
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) fail(renderContractErrorCodes.INVALID_JSON_VALUE, `${path} must be a plain JSON object`, path);
     const output: JsonObject = {};
-    for (const key of Object.keys(value).sort()) output[key] = canonicalize((value as Record<string, unknown>)[key], `${path}.${key}`, active);
+    for (const key of Object.keys(value).sort()) {
+      const child = (value as Record<string, unknown>)[key];
+      if (omitUndefinedObjectProperties && child === undefined) continue;
+      output[key] = canonicalize(child, `${path}.${key}`, active, omitUndefinedObjectProperties);
+    }
     return output;
   } finally {
     active.delete(object);

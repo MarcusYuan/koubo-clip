@@ -82,6 +82,22 @@ try {
     decisions: [],
   })}\n`);
   expect(runCliJson(cli, ["project", "compile-edl", project], packageRoot).ok === true, "installed CLI portable EDL compilation failed");
+  writeFileSync(join(project, "enrichment-plan.json"), `${JSON.stringify({
+    version: "2.0",
+    profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor", layout: "overlay", style: "minimal", frame: "clean" },
+    elements: [{
+      id: "caption",
+      source: "agent",
+      element_id: "caption-editorial-emphasis",
+      element_type: "registry_component",
+      start: 0.1,
+      end: 0.7,
+      reason: "verify installed enrichment export",
+      params: { text: "Installed package" },
+    }],
+    audio: { music: [], sfx: [{ id: "click", sfx_id: "click", start: 0.4, end: 0.5, volume: 0.15, fade_seconds: 0, reason: "verify bundled SFX" }] },
+  })}\n`);
+  expect(runCliJson(cli, ["project", "enrich-plan", project], packageRoot).ok === true, "installed CLI enrichment validation failed");
 
   const bundle = join(root, "bundle");
   const exported = runCliJson(cli, ["render-contract", "export", project, "--output", bundle], packageRoot);
@@ -92,6 +108,10 @@ try {
   expect(contract.payload.runtime.delivery_digest === manifest.delivery_digest, "render contract complete delivery digest does not match delivery");
   expect(contract.payload.runtime.renderer_resources_digest === manifest.renderer_resources_digest, "render contract renderer digest does not match delivery");
   expect(contract.payload.runtime.runtime_compatibility_digest === manifest.runtime_compatibility_digest, "render contract runtime digest does not match delivery");
+  const frozenElement = contract.payload.composition.enrichment_plan.elements[0];
+  const frozenSfx = contract.payload.audio.sfx[0];
+  expect(!Object.hasOwn(frozenElement, "asset_id") && !Object.hasOwn(frozenElement, "anchor_point"), "installed contract retained absent element fields");
+  expect(frozenSfx.sfx_id === "click" && !Object.hasOwn(frozenSfx, "asset_id"), "installed contract retained the unused SFX source");
 
   const sourceMap = join(root, "source-map.json");
   const bindings = join(root, "bindings.json");
@@ -152,8 +172,7 @@ function readJson(path: string): Json {
 
 function makeVideo(path: string): void {
   run("ffmpeg", [
-    "-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10",
-    "-f", "lavfi", "-i", "sine=frequency=440:duration=1.2",
+    "-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=30",
     "-t", "1.2", "-pix_fmt", "yuv420p", path,
   ], root);
 }

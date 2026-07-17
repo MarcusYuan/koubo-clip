@@ -16,9 +16,9 @@ import {
   type EnrichmentPlanArtifact,
 } from "./artifacts";
 import {
-  canonicalJson,
   compileOutputFrameSchedule,
   createRenderContractV1,
+  materializeJsonObject,
   parseRenderBindingV1,
   parseRenderContractV1,
   parseSourceMapV1,
@@ -525,16 +525,32 @@ function extractInspectionFrames(outputPath: string, runDir: string, contractDig
   if (requests.length === 0) return { requested: 0, frames: [] };
   const namespace = `${contractDigest.slice(7, 19)}-${resultDigest.slice(7, 19)}`;
   const relativeRoot = join("render-contract-inspection-frames", namespace);
-  const root = resolveContained(runDir, relativeRoot);
+  const root = resolveContainedOutput(runDir, relativeRoot);
   mkdirSync(root, { recursive: true });
   const frames: string[] = [];
   for (const request of requests) {
     const relativePath = join(relativeRoot, `${request.id}.jpg`);
-    const target = resolveContained(runDir, relativePath);
+    const target = resolveContainedOutput(runDir, relativePath);
     const rendered = spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-ss", request.time.toFixed(6), "-i", outputPath, "-frames:v", "1", target], { encoding: "utf8" });
     if (rendered.status === 0 && existsSync(target) && statSync(target).isFile()) frames.push(relativePath.replaceAll("\\", "/"));
   }
   return { requested: requests.length, frames };
+}
+
+function resolveContainedOutput(rootPath: string, relativePath: string): string {
+  const root = fsRuntime.realpathSync(rootPath);
+  const parts = relativePath.split(sep);
+  if (relativePath.includes("\0") || parts.some((part) => part === "" || part === "." || part === "..") || resolve(relativePath) === relativePath) {
+    throw coded("UNSAFE_CONTRACT_PATH", "contract output path is unsafe");
+  }
+  let target = root;
+  for (const part of parts) {
+    target = join(target, part);
+    if (existsSync(target) && fsRuntime.lstatSync(target).isSymbolicLink()) throw coded("UNSAFE_CONTRACT_PATH", "contract output path contains a symlink");
+  }
+  const fromRoot = relative(root, target);
+  if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`)) throw coded("UNSAFE_CONTRACT_PATH", "contract output path escapes its authorized root");
+  return target;
 }
 
 function safeId(value: string): string {
@@ -561,7 +577,7 @@ function writeJson(path: string, value: unknown): void {
 }
 
 function json(value: unknown): JsonObject {
-  return JSON.parse(canonicalJson(value)) as JsonObject;
+  return materializeJsonObject(value);
 }
 
 function text(value: unknown, field: string): string {
