@@ -6250,7 +6250,7 @@ export function executeResolvedRenderPlan(input: {
     if (!input.assets || !input.storyboard) throw commandError("CONTRACT_INVALID", "resolved enrichment requires frozen assets and storyboard");
     storyboardPath = join(workDir, "storyboard.json");
     renderEnrichedVideo(runRoot, cleanPath, subtitlesPath, input.plan, input.assets, { workDir, finalPath: outputPath, storyboardPath }, input.storyboard);
-  } else if (!burnSubtitles(cleanPath, subtitlesPath, outputPath, workDir)) {
+  } else if (input.captions.length === 0 || !burnSubtitles(cleanPath, subtitlesPath, outputPath, workDir)) {
     copyFileSync(cleanPath, outputPath);
   }
   assertStrictOutputTiming(outputPath, frameSchedule, input.durationToleranceSeconds);
