@@ -243,7 +243,7 @@ reviewed edit-plan
 
 CLI 负责校验、music acquisition、visual acquisition 中可确定执行的下载/导入、以及 composition 物化。skill 负责判断哪些时刻值得 enrichment、是否需要音乐/视觉素材以及使用哪个来源；agent/host 负责无法由 CLI 直接搜索的 internet-first handoff，包括通过 host MCP、API 或平台工具查找图标、动效图标、UI templates、图片或 B-roll，并把确认后的候选 metadata 和本地导出交给 CLI。
 
-`enrichment-plan.json` 基于 output timeline，因为剪辑后 source timestamps 会变化。当前唯一合同是 `version:"2.0"`，结构固定为 `profile + elements + audio`：`profile` 选择 `source_mode`；`elements[]` 只选择 HyperFrames `registry_block`、`registry_component`、`animation_rule`、`caption_identity` 或 `visual_asset`；`audio.music[]` 与 `audio.sfx[]` 表达音频计划。所有图片、生图、图标、Lottie、UI handoff 和 B-roll 都作为已验证 `visual_asset` 引用，并通过 manifest provenance 区分来源。`cards`、`slots`、顶层 `captions` / `music`、`generated_asset` 和 element-level SFX 输入无效。
+`enrichment-plan.json` 基于 output timeline，因为剪辑后 source timestamps 会变化。当前唯一合同是 `version:"2.0"`，结构固定为 `profile + elements + audio`：`profile` 选择 `source_mode`；`elements[]` 只选择 HyperFrames `registry_block`、`registry_component`、`animation_rule`、`caption_identity` 或 `visual_asset`；`audio.music[]` 与 `audio.sfx[]` 表达音频计划。caption placement 由 current 0.0.13 safe-layout contract 按输出宽高比解析并冻结，公开 preset 只有 `placement:auto|center_lower|bottom_safe` 和 `size:small|medium|large`，anchor/plain 共享同一 contract。所有图片、生图、图标、Lottie、UI handoff 和 B-roll 都作为已验证 `visual_asset` 引用，并通过 manifest provenance 区分来源。`cards`、`slots`、顶层 `captions` / `music`、`generated_asset` 和 element-level SFX 输入无效。
 
 `storyboard.json` 是 current enrichment inputs 派生出的 render-time executable 和 QA checklist，不是独立业务决定或项目完成证明。CLI 从 `enrichment-plan.json`、subtitles、asset manifest、visual review 和 music review 物化 `storyboard.qa_checks[]`；`project enrich-plan` 先返回同一批 planned QA checks 做 preflight；`project render` 只消费 lineage current 的 storyboard，并把其 fingerprint 写入 `render-result.json.inputs[]`。`project inspect` 的首要输入是 current `render-result.json` 及其 canonical output；只有该结果实际绑定的 current storyboard 才能提供本次 `inspection_checks[]`。不要新增独立 `inspection-plan.json`，也不要让旧 storyboard 因文件仍存在而进入当前 inspection。
 
@@ -277,7 +277,7 @@ HyperFrames 通过交付中锁定的本地 `hyperframes@0.7.36` binary 调用，
 
 CLI vendor 了 HyperFrames 的可创建元素体系：`registry/blocks`、`registry/components`、`registry/examples`、embedded-captions theme/DNA、animation rules/blueprints、SFX、motion-graphics categories、talking-head references 和 creative frame presets。这些是 CLI resources，不是对外 agent skills。Agents 选择元素和 timing；CLI 校验、安装、渲染和报告。Agents 不能向 renderer 传任意 HTML、GSAP、URLs、绝对路径或 `..` 路径。GSAP/Google Fonts 等 runtime dependencies 只能通过 CLI allowlist 和固定版本 catalog 写入，不是公开动画 authoring surface。
 
-vendored 元素进入 renderer 前会经过轻量 adapter 分层。Adapter 从 registry metadata 和少量 override 推导 family、render strategy、source-mode 推荐、screen safety、必填 params、坐标要求和 asset 要求。`registry_block` 默认使用安装到 `.hyperframes/recut/public/` 的原生 composition；code/screen-focus 类为了避免 demo token 或遮挡问题，使用 CLI-owned 透明 overlay。`registry_component` 按 caption component 或 anchored chip 消费，不再统一塞进一个 generic pill。SFX 仍走 FFmpeg mix，但在 element usage 和 report 中显示 adapter 信息。
+vendored 元素进入 renderer 前会经过轻量 adapter 分层。Adapter 从 registry metadata 和少量 override 推导 family、render strategy、source-mode 推荐、screen safety、必填 params、坐标要求和 asset 要求。`caption_identity` 只接收语义选择，实际位置由 CLI 依据 output aspect ratio 和 0.0.13 safe-layout contract 冻结；`registry_block` 默认使用安装到 `.hyperframes/recut/public/` 的原生 composition；code/screen-focus 类为了避免 demo token 或遮挡问题，使用 CLI-owned 透明 overlay。`registry_component` 按 caption component 或 anchored chip 消费，不再统一塞进一个 generic pill。SFX 仍走 FFmpeg mix，但在 element usage 和 report 中显示 adapter 信息。
 
 ## 分发
 

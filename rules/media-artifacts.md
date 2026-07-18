@@ -159,7 +159,7 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 - Source-frame lineage 只绑定 source bytes、当前 request 和 extractor contract/version；transcript 文案变化本身不应让同一 source time 的已验证 frame bytes stale。
 - EDL ranges 必须引用已有 source、位于该 source duration 内，并且在 output order 中不能错误重叠。
 - Strict render 按累计 output timeline 计算帧边界，片段帧数之和必须等于 `round(total_duration * fps)`；不得逐段独立取整或 copy-concat 分段 MP4。最终视频帧数必须 exact，容器 duration 在既定小容差内匹配 frame-domain expected duration；失败诊断必须包含 expected、actual、delta 和 tolerance。
-- 除非明确关闭，captions 是期望存在的。
+- 除非明确关闭，captions 是期望存在的。Caption layout 服从当前 0.0.13 safe-layout contract：output aspect ratio 驱动默认位置，公开 preset 只有 `placement:auto|center_lower|bottom_safe` 和 `size:small|medium|large`，CLI 将 exact layout 冻结到 render contract 2.0。9:16 默认 `center_lower` `(0.50,0.70)`，4:5 默认 `center_lower` `(0.50,0.76)`，横屏默认 `bottom_safe` `(0.50,0.90)`；anchor captions 和 plain subtitle rails 共享同一 contract。
 - Enrichment elements/cards/music 必须使用 output-timeline timing，而不是 source timing。
 - visual enrichment 启用时，captions 在 HyperFrames composition 中使用受支持的 `anchor` identity。
 - Text/image cards 和 registry elements 必须保持 caption readability，并停留在受支持 template zones 内。

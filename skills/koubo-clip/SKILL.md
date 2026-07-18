@@ -30,7 +30,7 @@ Read only the references needed for the current stage:
 - `references/workflow.md`: normal end-to-end flow from explore to inspect.
 - `references/business-planning.md`: single-confirmation proposal options, selection fingerprints, confirmed edit-plan binding, asset requirement slots, and canonical enrichment handoff.
 - `references/visual-selection.md`: deciding source highlights, icons, animated icons, UI templates, images, B-roll, generated images, or no visual insert.
-- `references/captions.md`: caption rail, source subtitle conflict, emphasis, and readability checks.
+- `references/captions.md`: caption rail, source subtitle conflict, 0.0.13 safe-layout presets, emphasis, and readability checks.
 - `references/motion-and-sfx.md`: motion rhythm, click cues, transitions, and restrained SFX.
 - `references/hyperframes-elements.md`: using `project element-catalog`, `element_type`, `visual_role`, source mode, adapter requirements, and coordinate evidence.
 - `references/media-selection.md`: music, internet visual assets, generated images, user assets, and provider boundaries.
@@ -80,6 +80,7 @@ Read only the references needed for the current stage:
 12. Run `koubo-clip artifact contract enrichment-plan --json`, then write canonical `enrichment-plan.json` version `2.0` as `profile + elements + audio` using output-timeline timestamps, local asset refs, grounding evidence, and reasons.
    - Use only `registry_block`, `registry_component`, `animation_rule`, `caption_identity`, and `visual_asset` elements. Generated images are `visual_asset` records distinguished by asset provenance.
    - Put BGM in `audio.music[]` and SFX in `audio.sfx[]`; do not write cards, slots, top-level captions/music, `generated_asset`, or an `sfx` element.
+   - For captions, use the public 0.0.13 safe-layout presets only: `placement:auto|center_lower|bottom_safe` and `size:small|medium|large`. The CLI resolves exact placement from output aspect ratio and freezes it into render contract 2.0. Never write CSS, pixels, or arbitrary coordinates, and never parse `local_media_ref`.
    - A simplified platform handoff may write standalone `asset-usage-plan.json`, after fetching its current contract, then run `project enrich-plan` once to normalize it into canonical enrichment.
    - Embedded usage plans in `project.json` or `edit-plan.json` are invalid. Canonical plus handoff input is `ASSET_USAGE_PLAN_CONFLICT`; never merge them.
 13. Run `koubo-clip project enrich-plan <project> --provider-mode <mode>` and show `qa_checks[]`; fix missing assets, provenance, runtime dependency, timing, coordinate evidence, or authority conflicts before render.

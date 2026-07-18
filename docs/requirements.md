@@ -254,7 +254,7 @@ enrichment plan 应回答：
 
 V0 enrichment 从完整可创建元素体系开始：
 
-- `profile`: 默认 professional explainer style，包含 `source_mode:"talking_head_avatar"`、`caption_identity:"anchor"`、`layout:"stack"`、`style:"whiteboard"`、`frame:"clean"`、`aspect_ratio:"source"`。
+- `profile`: 默认 professional explainer style，包含 `source_mode:"talking_head_avatar"`、`caption_identity:"anchor"`、`layout:"stack"`、`style:"whiteboard"`、`frame:"clean"`、`aspect_ratio:"source"`。Caption placement 由 0.0.13 safe-layout contract 按输出宽高比自动解析并冻结；公开 preset 只有 `placement:auto|center_lower|bottom_safe` 和 `size:small|medium|large`。默认位置是 9:16 `center_lower` `(0.50,0.70)`、4:5 `center_lower` `(0.50,0.76)`、横屏 `bottom_safe` `(0.50,0.90)`，skill 不写 CSS、像素或任意坐标。
 - 2.0 `elements[]`，元素类型只允许 `registry_block`、`registry_component`、`animation_rule`、`caption_identity` 或 `visual_asset`；音乐和 SFX 分别进入 `audio.music[]` 与 `audio.sfx[]`。
 - `project element-catalog` 暴露完整 HyperFrames 可创建元素目录，包括 blocks、components、examples、caption themes/DNA、animation rules/blueprints、SFX、motion categories、talking-head references 和 frame presets。
 - `project element-catalog` 暴露的是 CLI resources 能力，不是让 agent 加载 HyperFrames 上游 skills。Agent 通过 catalog 选择元素，通过 koubo-clip references 理解决策规则。
@@ -267,7 +267,7 @@ V0 enrichment 从完整可创建元素体系开始：
 - 本地 `assets/*` 只表示当前 project 的已确认渲染输入，不是跨 agent、跨项目复用的全局缓存。每次新任务应根据用户目标重新语义检索；如果互联网检索失败，应报告 blocker 或换 provider，而不是退回手写低质 UI。
 - 互联网搜索和 provider 调用发生在 acquisition / host-agent 阶段；render 阶段仍只消费当前 project 已落地或 host workspace 可稳定引用的 assets，保证这一次输出可检查、可追踪。`visual_asset` 是 2.0 唯一的外部视觉素材 element type；图标、Lottie、UI/template、图片、生图和 B-roll 都使用 `visual_asset`，通过 asset provenance 区分来源。
 - element 上可选归一化 `target_rect` 和 `anchor_point` 字段，让 agents 能基于真实 screen inspection 放置 focus boxes 和 callouts。值是 `[0,1]` 内的 ratios；CLI 校验边界。只要这些字段出现于 screen recordings，就必须有 frame evidence 和 `coordinate_source_frame`。
-- 2.0 plans 通过 `caption_identity` 和 registry elements 表达 anchor captions、title、key-point、quote、flowchart、image、screenshot-focus 或 lower-third，不接受 card 输入。
+- 2.0 plans 通过 `caption_identity` 和 registry elements 表达 anchor captions、plain subtitle rails、title、key-point、quote、flowchart、image、screenshot-focus 或 lower-third；anchor/plain 共享同一 safe-layout contract，不接受 card 输入，也不接受手写 CSS、像素或任意坐标。
 - 可选 caption emphasis moments。
 - 可选用户提供或 agent-generated local images。
 - 可选通过 Music Acquisition 获得的 background music，并使用 speech-safe mixing。

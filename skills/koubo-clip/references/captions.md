@@ -8,6 +8,16 @@ Use this file whenever subtitles, source hard captions, or spoken emphasis are i
 - Keep captions readable before making them stylish.
 - Treat source hard captions as existing visual content; avoid duplicating them in the same area.
 
+## Safe Layout
+
+- Caption placement is output-aspect-ratio driven.
+- The public presets are `placement:auto|center_lower|bottom_safe` and `size:small|medium|large`.
+- 9:16 defaults to `center_lower` at `(0.50,0.70)`.
+- 4:5 defaults to `center_lower` at `(0.50,0.76)`.
+- Landscape defaults to `bottom_safe` at `(0.50,0.90)`.
+- Anchor captions and plain subtitle rails share the same safe-layout contract.
+- Agents choose the semantic role, preset, size, and text only. The CLI resolves the exact layout and freezes it into render contract 2.0.
+
 ## Emphasis
 
 - Emphasize only the words that change viewer understanding.
