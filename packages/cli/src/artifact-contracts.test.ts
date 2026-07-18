@@ -143,6 +143,15 @@ test("contract registry exposes every external JSON entry point without version 
   });
 });
 
+test("source manifest contract remains a host-authored command request", () => {
+  const contract = getArtifactContract("source-manifest")!;
+  expect(contract.ownership).toBe("host_authored");
+  expect(contract.role).toBe("command_request");
+  expect(contract.external_writes_allowed).toBe(true);
+  expect(contract.schema_version).toBe("2.0");
+  assertArtifactContract("source-manifest", contract.example);
+});
+
 test("every writable contract has closed array items and a self-validating example", () => {
   for (const artifactId of writableArtifactIds) {
     const contract = getArtifactContract(artifactId)!;

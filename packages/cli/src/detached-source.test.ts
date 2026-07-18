@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -8,6 +8,63 @@ import { compileEdlProject, createProject, exploreProject, sourceFramesProject }
 import { projectStatus } from "./project-status";
 import { exportRenderContract } from "./render-contract-commands";
 import { confirmProposalAndWriteEditPlan } from "./test-fixtures";
+
+test("detached create keeps external seed and writes CLI-owned internal sources only", () => {
+  const root = mkdtempSync(join(tmpdir(), "koubo-detached-create-"));
+  const project = join(root, "project");
+  const seed = join(root, "seed-sources.json");
+  const seedValue = sourceManifest("workspace://opaque-secret-ref");
+  writeFileSync(seed, JSON.stringify(seedValue));
+
+  const created = createProject([], { projectPath: project, sourceManifestPath: seed, providerMode: "platform" });
+
+  expect(created.ok).toBe(true);
+  if (!created.ok) throw new Error(created.error.message);
+  expect(JSON.parse(readFileSync(seed, "utf8"))).toEqual(seedValue);
+  expect(JSON.parse(readFileSync(join(project, "sources.json"), "utf8"))).toEqual(seedValue);
+  expect(existsSync(join(project, "source"))).toBe(false);
+  expect(existsSync(join(project, "source-materialization.json"))).toBe(false);
+
+  const manifest = JSON.parse(readFileSync(join(project, "artifact-manifest.json"), "utf8")) as {
+    artifacts: Record<string, { authored_by?: string; produced_by_command?: string; inputs?: Array<{ key: string }> }>;
+  };
+  expect(manifest.artifacts["source-manifest"]).toBe(undefined);
+  expect(manifest.artifacts.sources?.authored_by).toBe("cli");
+  expect(manifest.artifacts.sources?.produced_by_command).toBe("project.create");
+  expect(manifest.artifacts.sources?.inputs?.map((input) => input.key)).toEqual(["source-identity:src-001"]);
+});
+
+test("detached create rejects a manifest path lexically inside the target before writing target", () => {
+  const root = mkdtempSync(join(tmpdir(), "koubo-detached-conflict-"));
+  const project = join(root, "project");
+  const manifestInsideProject = join(project, "sources.json");
+
+  const created = createProject([], { projectPath: project, sourceManifestPath: manifestInsideProject, providerMode: "platform" });
+
+  expect(created.ok).toBe(false);
+  if (created.ok) throw new Error("expected project conflict");
+  expect(created.error.code).toBe("SOURCE_MANIFEST_PROJECT_CONFLICT");
+  expect(existsSync(project)).toBe(false);
+  expect(existsSync(`${project}-v2`)).toBe(false);
+});
+
+test("detached create allows an external manifest symlink that resolves outside the target", () => {
+  const root = mkdtempSync(join(tmpdir(), "koubo-detached-symlink-"));
+  const outside = join(root, "outside");
+  const seed = join(outside, "sources.json");
+  const link = join(root, "sources-link.json");
+  const project = join(root, "project");
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(seed, JSON.stringify(sourceManifest("workspace://opaque-link-ref")));
+  symlinkSync(seed, link);
+
+  const created = createProject([], { projectPath: project, sourceManifestPath: link, providerMode: "platform" });
+
+  expect(created.ok).toBe(true);
+  if (!created.ok) throw new Error(created.error.message);
+  expect(JSON.parse(readFileSync(join(project, "sources.json"), "utf8")).sources[0]?.local_media_ref).toBe("workspace://opaque-link-ref");
+  expect(existsSync(join(project, "source-materialization.json"))).toBe(false);
+});
 
 test("detached project plans, imports source evidence, and exports without source bytes", async () => {
   if (spawnSync("ffmpeg", ["-version"]).status !== 0) return;
@@ -89,4 +146,32 @@ test("detached project plans, imports source evidence, and exports without sourc
 function makeVideo(path: string): void {
   const result = spawnSync("ffmpeg", ["-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10", "-f", "lavfi", "-i", "sine=frequency=440:duration=1.2", "-t", "1.2", "-pix_fmt", "yuv420p", path], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+}
+
+function sourceManifest(localMediaRef: string): unknown {
+  return {
+    contract_version: "2.0",
+    sources: [{
+      source_id: "src-001",
+      order: 0,
+      original_filename: "raw.mp4",
+      local_media_ref: localMediaRef,
+      identity: {
+        sha256: `sha256:${"a".repeat(64)}`,
+        size_bytes: 123,
+        duration_seconds: 2,
+        video: {
+          codec_name: "h264",
+          width: 160,
+          height: 90,
+          display_width: 160,
+          display_height: 90,
+          rotation: 0,
+          avg_frame_rate: "30/1",
+          pixel_format: "yuv420p",
+        },
+        audio: { codec_name: "aac", sample_rate: 48000, channels: 2, channel_layout: "stereo" },
+      },
+    }],
+  };
 }

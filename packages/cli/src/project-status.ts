@@ -128,7 +128,10 @@ type StageDefinition = {
   notApplicable?: boolean;
 };
 
-const fsRuntime = nodeFs as unknown as { realpathSync(path: string): string };
+const fsRuntime = nodeFs as unknown as {
+  lstatSync(path: string): { isDirectory(): boolean; isSymbolicLink(): boolean };
+  realpathSync(path: string): string;
+};
 
 const artifactDefinitions: readonly ArtifactDefinition[] = [
   {
@@ -516,10 +519,14 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
   let manifestState: ProjectStatusArtifact["manifest_state"] = "invalid";
   let manifestError: string | undefined;
 
-  if (!existsSync(rootPath) || !safeStat(rootPath)?.isDirectory()) {
+  if (!existsSync(rootPath)) {
     blockers.push(blocker("PROJECT_NOT_FOUND", "Project directory does not exist.", undefined, "Create the project before requesting status."));
+  } else if (safeLstat(rootPath)?.isSymbolicLink() || !safeLstat(rootPath)?.isDirectory()) {
+    throwStatusError(targetOccupied(projectArtifacts.project));
   } else {
-    assertCurrentProjectContract(rootPath);
+    const projectContractBlocker = currentProjectContractBlocker(rootPath);
+    if (projectContractBlocker?.code === "PROJECT_METADATA_INVALID") blockers.push(projectContractBlocker);
+    else if (projectContractBlocker) throwStatusError(projectContractBlocker);
   }
 
   const manifestPath = resolveManagedPath(rootPath, projectArtifacts.artifactManifest);
@@ -580,7 +587,7 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
 
   const metadataNode = nodes.get("project");
   const metadata = readProjectIdentity(rootPath);
-  if (metadata.error && metadataNode?.reasonCode !== "ARTIFACT_MISSING") {
+  if (existsSync(rootPath) && metadata.error && metadataNode?.reasonCode !== "ARTIFACT_MISSING" && !blockers.some((item) => item.code === "PROJECT_METADATA_INVALID" && item.artifact === projectArtifacts.project)) {
     blockers.push(blocker("PROJECT_METADATA_INVALID", metadata.error, projectArtifacts.project, "Repair project.json through a supported project command."));
   }
 
@@ -1838,60 +1845,138 @@ function readProjectIdentity(rootPath: string): {
   }
 }
 
-function assertCurrentProjectContract(rootPath: string): void {
+function currentProjectContractBlocker(rootPath: string): StatusBlocker | undefined {
   const projectPath = resolveManagedPath(rootPath, projectArtifacts.project);
   const sourcesPath = resolveManagedPath(rootPath, projectArtifacts.sources);
   const manifestPath = resolveManagedPath(rootPath, projectArtifacts.artifactManifest);
-  const unsupported = (message: string): never => {
-    const error = new Error(message) as Error & { code: string };
-    error.code = "CONTRACT_SCHEMA_UNSUPPORTED";
-    throw error;
-  };
-  if (!projectPath || !existsSync(projectPath)) unsupported('project.json contract_version "1.0" is required');
-  if (!sourcesPath || !existsSync(sourcesPath)) unsupported('sources.json contract_version "2.0" is required');
-  if (!manifestPath || !existsSync(manifestPath)) unsupported('artifact-manifest.json contract_version "1.0" is required');
+  if (!projectPath || !existsSync(projectPath)) return targetOccupied(projectArtifacts.project);
   try {
-    const project = readJson(projectPath!) as Record<string, unknown>;
-    if (project.contract_version !== "1.0") unsupported('project.json contract_version must be "1.0"');
-    if ("asset_usage_plan" in project) unsupported("project.json embedded asset_usage_plan is unsupported");
-    const sources = readJson(sourcesPath!) as Record<string, unknown>;
-    if (sources.contract_version !== "2.0") unsupported('sources.json contract_version must be "2.0"');
-    const manifest = readJson(manifestPath!) as Record<string, unknown>;
-    if (manifest.contract_version !== "1.0") unsupported('artifact-manifest.json contract_version must be "1.0"');
+    const project = readJson(projectPath);
+    if (!project || typeof project !== "object" || Array.isArray(project)) return metadataInvalid();
+    const projectObject = project as Record<string, unknown>;
+    if (projectObject.contract_version !== "1.0") return unsupported(projectArtifacts.project);
+    if ("asset_usage_plan" in projectObject) return unsupported(projectArtifacts.project);
+    try {
+      parseProjectMetadata(projectObject);
+    } catch {
+      return metadataInvalid();
+    }
+  } catch {
+    return metadataInvalid();
+  }
+  if (!sourcesPath || !existsSync(sourcesPath)) return targetOccupied(projectArtifacts.sources);
+  if (!manifestPath || !existsSync(manifestPath)) return targetOccupied(projectArtifacts.artifactManifest);
+  const sourcesBlocker = currentCoreArtifactBlocker(sourcesPath, projectArtifacts.sources, "2.0", parseSourcesManifest);
+  if (sourcesBlocker) return sourcesBlocker;
+  const manifestBlocker = currentCoreArtifactBlocker(manifestPath, projectArtifacts.artifactManifest, "1.0", parseArtifactManifest);
+  if (manifestBlocker) return manifestBlocker;
+  return optionalArtifactContractBlocker(rootPath, projectArtifacts.productionProposal, "version", "3.0")
+    ?? optionalArtifactContractBlocker(rootPath, projectArtifacts.editPlan, "contract_version", "1.0", ["asset_usage_plan"])
+    ?? optionalArtifactContractBlocker(rootPath, projectArtifacts.edl, "contract_version", "2.0")
+    ?? optionalArtifactContractBlocker(rootPath, projectArtifacts.enrichmentPlan, "version", "2.0", ["cards", "slots", "captions", "music"]);
+}
 
-    assertOptionalArtifactVersion(rootPath, projectArtifacts.productionProposal, "version", "3.0", unsupported);
-    assertOptionalArtifactVersion(rootPath, projectArtifacts.editPlan, "contract_version", "1.0", unsupported, ["asset_usage_plan"]);
-    assertOptionalArtifactVersion(rootPath, projectArtifacts.edl, "contract_version", "2.0", unsupported);
-    assertOptionalArtifactVersion(
-      rootPath,
-      projectArtifacts.enrichmentPlan,
-      "version",
-      "2.0",
-      unsupported,
-      ["cards", "slots", "captions", "music"],
-    );
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error) throw error;
-    unsupported(`project contract files are unreadable: ${errorMessage(error)}`);
+function targetOccupied(artifact: string): StatusBlocker {
+  return blocker(
+    "PROJECT_TARGET_OCCUPIED",
+    "Target exists but is not a current Koubo Clip project.",
+    artifact,
+    "Use a valid Koubo Clip project directory, or create a new project in an empty target.",
+  );
+}
+
+function metadataInvalid(): StatusBlocker {
+  return blocker(
+    "PROJECT_METADATA_INVALID",
+    "project.json is invalid.",
+    projectArtifacts.project,
+    "Repair project.json through a supported project command.",
+  );
+}
+
+function unsupported(artifact: string): StatusBlocker {
+  return blocker(
+    "CONTRACT_SCHEMA_UNSUPPORTED",
+    "Project contains an unsupported artifact schema.",
+    artifact,
+    "Recreate the project with this CLI version or replace the artifact with the current schema.",
+  );
+}
+
+function currentCoreArtifactBlocker(
+  path: string,
+  artifact: string,
+  expectedVersion: string,
+  parse: (value: unknown) => unknown,
+): StatusBlocker | undefined {
+  let value: unknown;
+  try {
+    value = readJson(path);
+  } catch {
+    return invalidArtifact(artifact);
+  }
+  const object = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  if (object?.contract_version !== expectedVersion) return unsupported(artifact);
+  try {
+    parse(value);
+    return undefined;
+  } catch {
+    return invalidArtifact(artifact);
   }
 }
 
-function assertOptionalArtifactVersion(
+function invalidArtifact(artifact: string): StatusBlocker {
+  return blocker(
+    "ARTIFACT_INVALID",
+    "Artifact is invalid.",
+    artifact,
+    "Repair or regenerate the artifact through a supported project command.",
+  );
+}
+
+function optionalArtifactContractBlocker(
   rootPath: string,
   filename: string,
   versionField: "version" | "contract_version",
   expected: string,
-  unsupported: (message: string) => never,
   removedFields: readonly string[] = [],
-): void {
+): StatusBlocker | undefined {
   const path = resolveManagedPath(rootPath, filename);
-  if (!path || !existsSync(path)) return;
-  const value = readJson(path) as Record<string, unknown>;
-  if (!value || typeof value !== "object" || Array.isArray(value) || value[versionField] !== expected) {
-    unsupported(`${filename} ${versionField} must be "${expected}"`);
+  if (!path || !existsSync(path)) return undefined;
+  try {
+    const value = readJson(path) as Record<string, unknown>;
+    if (!value || typeof value !== "object" || Array.isArray(value) || value[versionField] !== expected) {
+      return unsupportedArtifact(filename);
+    }
+    const removed = removedFields.find((field) => field in value);
+    if (removed) return unsupportedArtifact(filename);
+  } catch {
+    return invalidArtifact(filename);
   }
-  const removed = removedFields.find((field) => field in value);
-  if (removed) unsupported(`${filename}.${removed} is unsupported by the current contract`);
+  return undefined;
+}
+
+function unsupportedArtifact(artifact: string): StatusBlocker {
+  return blocker(
+    "CONTRACT_SCHEMA_UNSUPPORTED",
+    "Project contains an unsupported artifact schema.",
+    artifact,
+    "Recreate the artifact with this CLI version.",
+  );
+}
+
+function throwStatusError(blocker: StatusBlocker): never {
+  const error = new Error(blocker.message) as Error & {
+    code: string;
+    artifact?: string;
+    remediation: string;
+    stage: string;
+  };
+  error.code = blocker.code;
+  error.artifact = blocker.artifact;
+  error.remediation = blocker.remediation;
+  error.stage = "status";
+  throw error;
 }
 
 function genericJsonObject(value: unknown): Record<string, unknown> {
@@ -1999,6 +2084,14 @@ function readJson(path: string): unknown {
 function safeStat(path: string): ReturnType<typeof statSync> | undefined {
   try {
     return statSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
+function safeLstat(path: string): ReturnType<typeof fsRuntime.lstatSync> | undefined {
+  try {
+    return fsRuntime.lstatSync(path);
   } catch {
     return undefined;
   }

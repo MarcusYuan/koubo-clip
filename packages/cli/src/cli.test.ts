@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -315,7 +315,7 @@ test("project status is routed as a read-only public command", async () => {
   const dir = mkdtempSync(join(tmpdir(), "koubo-cli-status-"));
   const source = join(dir, "source.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "status fixture bytes");
+  makeSourceFrameVideo(source);
   const created = createProject([source], { projectPath: project, providerMode: "platform" });
   if (!created.ok) throw new Error(created.error.message);
   const manifestPath = join(project, "artifact-manifest.json");
@@ -328,6 +328,47 @@ test("project status is routed as a read-only public command", async () => {
   expect(json.data.manifest_state).toBe("tracked");
   expect(json.data.provider_execution_mode).toBe("platform");
   expect(readFileSync(manifestPath, "utf8")).toBe(before);
+});
+
+test("project status failure envelope preserves the status command and remediation", async () => {
+  const project = join(mkdtempSync(join(tmpdir(), "koubo-cli-status-invalid-")), "project");
+  mkdirSync(project);
+  writeFileSync(join(project, "project.json"), "{");
+
+  let error = "";
+  const code = await main(["project", "status", project, "--json"], { stderr: (text) => (error = text) });
+
+  expect(code).toBe(1);
+  expect(error.includes(project)).toBe(false);
+  const json = JSON.parse(error);
+  expect(json.command).toBe("project.status");
+  expect(json.error.code).toBe("PROJECT_METADATA_INVALID");
+  expect(json.error.artifact).toBe("project.json");
+  expect(typeof json.error.remediation === "string" && json.error.remediation.length > 0).toBe(true);
+});
+
+test("project create rejects occupied detached targets without writing", async () => {
+  const cases: Array<{ name: string; seed: (target: string) => void }> = [
+    { name: "empty", seed: (target) => mkdirSync(target) },
+    { name: "unrelated", seed: (target) => { mkdirSync(target); writeFileSync(join(target, "notes.txt"), "not a koubo project"); } },
+    { name: "missing-project-json", seed: (target) => { mkdirSync(target); writeFileSync(join(target, "sources.json"), "{}"); } },
+  ];
+
+  for (const item of cases) {
+    const dir = mkdtempSync(join(tmpdir(), `koubo-cli-occupied-${item.name}-`));
+    const sourceManifest = join(dir, "sources.json");
+    const target = join(dir, "target");
+    writeFileSync(sourceManifest, "{}");
+    item.seed(target);
+    const before = entries(target);
+
+    let error = "";
+    const code = await main(["project", "create", "--source-manifest", sourceManifest, "--project", target, "--provider-mode", "platform", "--json"], { stderr: (text) => (error = text) });
+
+    expect(code).toBe(1);
+    expect(JSON.parse(error).error.code).toBe("PROJECT_TARGET_OCCUPIED");
+    expect(entries(target)).toEqual(before);
+  }
 });
 
 test("source-frames reports a portable missing request error", async () => {
@@ -375,4 +416,8 @@ function makeSourceFrameVideo(path: string): void {
     encoding: "utf8",
   });
   if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+}
+
+function entries(path: string): string[] {
+  return readdirSync(path).sort().map((name) => `${name}:${readFileSync(join(path, name), "utf8")}`);
 }

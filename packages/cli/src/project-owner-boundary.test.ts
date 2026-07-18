@@ -227,8 +227,7 @@ function createTrackedProject(realMedia: boolean): string {
   const root = mkdtempSync(join(tmpdir(), "koubo-owner-tracked-"));
   const source = join(root, "raw.mp4");
   const project = join(root, "project");
-  if (realMedia) makeSampleVideo(source);
-  else writeFileSync(source, "source-bytes");
+  makeSampleVideo(source);
   const created = createProject([source], { projectPath: project });
   if (!created.ok) throw new Error(created.error.message);
   return project;

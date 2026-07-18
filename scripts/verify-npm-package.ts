@@ -41,6 +41,10 @@ try {
   expect(installedSkill.ok === true, "official Skill install failed");
   const copiedSkill = runCliJson(cli, ["skills", "verify", "--path", join(skillInstallRoot, "koubo-clip"), "--json"], packageRoot);
   expect(copiedSkill.digest === manifest.official_skill_digest, "installed Hermes Skill digest does not match delivery");
+  const skillText = readFileSync(join(packageRoot, "skills", "koubo-clip", "SKILL.md"), "utf8");
+  expect(skillText.includes("source-manifest artifact contract") && skillText.includes("outside the project target"), "official Skill does not guide external source-manifest seeds");
+  expect(skillText.includes("missing target -> create") && skillText.includes("existing valid project -> run") && skillText.includes("existing invalid target -> blocker"), "official Skill does not guide three-way project recovery");
+  expect(skillText.includes("do not delete recursively, overwrite, migrate, or retry as a `-v2`/`-v3` parallel project"), "official Skill does not forbid parallel project retries");
 
   const catalog = runCliJson(cli, ["project", "element-catalog", packageRoot], packageRoot);
   expect(catalog.ok === true, "installed renderer resource catalog is unreadable");
@@ -51,9 +55,32 @@ try {
   makeVideo(source);
   const identityProject = join(root, "identity-project");
   expect(runCliJson(cli, ["project", "create", source, "--project", identityProject], packageRoot).ok === true, "installed CLI could not derive a portable source identity");
+  const sourceManifestContract = runCliJson(cli, ["artifact", "contract", "source-manifest", "--json"], packageRoot).data;
+  expect(sourceManifestContract.ownership === "host_authored", "installed source-manifest contract is not host-authored");
+  expect(sourceManifestContract.role === "command_request", "installed source-manifest contract is not a command request");
+  expect(capabilities.artifact_contracts["source-manifest"]?.role === "command_request", "source-manifest command request role is not discoverable from capabilities");
+
+  const invalidJsonTarget = join(root, "invalid-json-project");
+  writeFileSync(join(root, "invalid-sources.json"), "{");
+  const invalidJsonCreate = runCliJsonResult(cli, ["project", "create", "--source-manifest", join(root, "invalid-sources.json"), "--project", invalidJsonTarget, "--provider-mode", "platform", "--json"], packageRoot);
+  expect(invalidJsonCreate.status !== 0, "invalid JSON source-manifest create unexpectedly succeeded");
+  expect(invalidJsonCreate.json.error?.code === "SOURCE_MANIFEST_INVALID", "invalid JSON source-manifest create returned the wrong code");
+  expect(!existsSync(invalidJsonTarget), "invalid JSON source-manifest create left a project target behind");
+
+  const occupiedTarget = join(root, "occupied-project");
+  mkdirSync(occupiedTarget);
+  writeFileSync(join(occupiedTarget, "keep.txt"), "leave this target unchanged\n");
+  const occupiedCreate = runCliJsonResult(cli, ["project", "create", "--source-manifest", join(identityProject, "sources.json"), "--project", occupiedTarget, "--provider-mode", "platform", "--json"], packageRoot);
+  expect(occupiedCreate.status !== 0, "occupied target create unexpectedly succeeded");
+  expect(occupiedCreate.json.error?.code === "PROJECT_TARGET_OCCUPIED", "occupied target create returned the wrong code");
+  expect(readFileSync(join(occupiedTarget, "keep.txt"), "utf8") === "leave this target unchanged\n", "occupied target create changed existing target content");
+
   const project = join(root, "project");
   expect(runCliJson(cli, ["project", "create", "--source-manifest", join(identityProject, "sources.json"), "--project", project, "--provider-mode", "platform"], packageRoot).ok === true, "installed CLI could not create a detached platform project");
   expect(!existsSync(join(project, "source-materialization.json")), "detached authoring project unexpectedly materialized source bytes");
+  const detachedStatus = runCliJson(cli, ["project", "status", project, "--json"], packageRoot).data;
+  expect(detachedStatus.provider_execution_mode === "platform", "detached project status did not preserve platform mode");
+  expect(detachedStatus.sources?.[0]?.materialization === "unbound", "detached project status unexpectedly reports materialized source bytes");
   writeFileSync(join(project, "transcript.json"), `${JSON.stringify({
     timing_granularity: "segment",
     segments: [{ source_id: "src-001", start: 0.1, end: 1.0, text: "installed package contract caption" }],
@@ -176,6 +203,17 @@ function runCliJson(cli: string, args: string[], cwd: string): Json {
   const parsed = JSON.parse(output) as Json;
   if (parsed.ok === false) throw new Error(`koubo-clip ${args.join(" ")} failed: ${JSON.stringify(parsed.error)}`);
   return parsed;
+}
+
+function runCliJsonResult(cli: string, args: string[], cwd: string): { status: number; json: Json } {
+  const result = spawnSync("bun", [cli, ...args], {
+    cwd,
+    env: process.env,
+    encoding: "utf8",
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  const output = (result.stdout || result.stderr).trim();
+  return { status: result.status ?? 1, json: JSON.parse(output) as Json };
 }
 
 function run(command: string, args: string[], cwd: string, env: Record<string, string> = {}): string {

@@ -461,12 +461,24 @@ async function safeProjectCommand(argv: string[]) {
   try {
     return await runProjectCommand(argv);
   } catch (error) {
+    const subcommand = argv[0];
     return {
       ok: false as const,
-      command: "project",
-      error: { code: error && typeof error === "object" && "code" in error ? String(error.code) : "PROJECT_COMMAND_FAILED", message: error instanceof Error ? error.message : String(error) },
+      command: subcommand ? `project.${subcommand}` : "project",
+      error: projectError(error),
     };
   }
+}
+
+function projectError(error: unknown) {
+  const source = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  return {
+    code: typeof source.code === "string" ? source.code : "PROJECT_COMMAND_FAILED",
+    message: error instanceof Error ? error.message : String(error),
+    ...(typeof source.remediation === "string" ? { remediation: source.remediation } : {}),
+    ...(typeof source.artifact === "string" ? { artifact: source.artifact } : {}),
+    ...(typeof source.stage === "string" ? { stage: source.stage } : {}),
+  };
 }
 
 async function runProjectCommand(argv: string[]) {
@@ -494,8 +506,27 @@ async function runProjectCommand(argv: string[]) {
   if (subcommand === "compile-edl") return compileEdlProject(required(rest[0], "project path"));
   if (subcommand === "render") return renderProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "inspect") return inspectProject(required(rest[0], "project path"), { providerMode: mode });
-  if (subcommand === "status") return { ok: true as const, command: "project.status" as const, data: projectStatus(required(rest[0], "project path")) };
+  if (subcommand === "status") {
+    const data = projectStatus(required(rest[0], "project path"));
+    const fatal = data.blockers.find((item) => item.code === "PROJECT_METADATA_INVALID" && item.artifact === projectArtifacts.project);
+    if (fatal) throw projectStatusError(fatal);
+    return { ok: true as const, command: "project.status" as const, data };
+  }
   return { ok: false as const, command: "project", error: { code: "UNKNOWN_PROJECT_COMMAND", message: `Unknown project command: ${subcommand ?? ""}` } };
+}
+
+function projectStatusError(blocker: { code: string; message: string; artifact?: string; remediation: string }) {
+  const error = new Error(blocker.message) as Error & {
+    code: string;
+    artifact?: string;
+    remediation: string;
+    stage: string;
+  };
+  error.code = blocker.code;
+  error.artifact = blocker.artifact;
+  error.remediation = blocker.remediation;
+  error.stage = "status";
+  return error;
 }
 
 function parseArgs(argv: string[]) {

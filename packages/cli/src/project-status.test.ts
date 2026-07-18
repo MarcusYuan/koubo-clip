@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { createProject } from "./project";
@@ -17,7 +17,61 @@ test("project status is read-only for a current detached project", () => {
   expect(status.sources?.[0]?.materialization).toBe("unbound");
   expect(status.artifacts.some((artifact) => artifact.path.startsWith(".virtual/"))).toBe(false);
   expect(Object.keys(status.fingerprints).some((key) => key.startsWith("source-identity:"))).toBe(true);
+  expect(status.render_contract?.execution_mode).toBe("distributed");
   expect(snapshot(project)).toEqual(before);
+});
+
+test("project status reports a missing target without writing", () => {
+  const project = join(mkdtempSync(join(tmpdir(), "koubo-missing-status-")), "missing");
+
+  const status = projectStatus(project);
+
+  expect(status.blockers.some((item) => item.code === "PROJECT_NOT_FOUND")).toBe(true);
+  expect(status.artifacts.every((artifact) => artifact.state === "missing")).toBe(true);
+  expect(existsSync(project)).toBe(false);
+});
+
+test("project status reports malformed project metadata as invalid", () => {
+  const project = minimalProject();
+  writeFileSync(join(project, "project.json"), "{");
+
+  const status = projectStatus(project);
+
+  expect(status.blockers.some((item) => item.code === "PROJECT_METADATA_INVALID" && item.artifact === "project.json")).toBe(true);
+});
+
+test("project status rejects an occupied non-project target", () => {
+  const target = join(mkdtempSync(join(tmpdir(), "koubo-occupied-status-")), "target");
+  writeFileSync(target, "host content");
+
+  try {
+    projectStatus(target);
+    throw new Error("expected occupied target rejection");
+  } catch (error) {
+    expect((error as { code?: string }).code).toBe("PROJECT_TARGET_OCCUPIED");
+  }
+  expect(readFileSync(target, "utf8")).toBe("host content");
+});
+
+test("project status rejects an explicit non-current project metadata version", () => {
+  const project = minimalProject();
+  writeFileSync(join(project, "project.json"), JSON.stringify({ contract_version: "2.0", provider_execution_mode: "platform" }));
+
+  expectSchemaUnsupported(() => projectStatus(project));
+});
+
+test("project status attributes malformed core artifacts to the correct artifact", () => {
+  for (const filename of ["sources.json", "artifact-manifest.json"]) {
+    const project = currentDetachedProject();
+    writeFileSync(join(project, filename), "{");
+    try {
+      projectStatus(project);
+      throw new Error("expected malformed core artifact rejection");
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe("ARTIFACT_INVALID");
+      expect((error as { artifact?: string }).artifact).toBe(filename);
+    }
+  }
 });
 
 test("project status rejects every non-current public project artifact contract", () => {
@@ -81,6 +135,14 @@ function currentDetachedProject(): string {
   }));
   const created = createProject([], { projectPath: project, sourceManifestPath: sourceManifest, providerMode: "platform" });
   if (!created.ok) throw new Error(created.error.message);
+  return project;
+}
+
+function minimalProject(): string {
+  const project = mkdtempSync(join(tmpdir(), "koubo-minimal-status-"));
+  writeFileSync(join(project, "project.json"), JSON.stringify({ contract_version: "1.0", provider_execution_mode: "platform" }));
+  writeFileSync(join(project, "sources.json"), JSON.stringify({ contract_version: "2.0", sources: [] }));
+  writeFileSync(join(project, "artifact-manifest.json"), JSON.stringify({ contract_version: "1.0", artifacts: {}, stage_attempts: {}, updated_at: "2026-01-01T00:00:00.000Z" }));
   return project;
 }
 

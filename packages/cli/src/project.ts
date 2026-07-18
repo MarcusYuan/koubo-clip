@@ -554,7 +554,12 @@ export type AsrProvider = "cloudflare-whisper" | "whisper-cli";
 export type ProviderModeOption = { providerMode?: ProviderExecutionMode };
 
 const CUT_PADDING_SECONDS = 0.05;
-const fsRuntime = nodeFs as unknown as { accessSync(path: string, mode?: number): void; constants: { R_OK: number }; realpathSync(path: string): string };
+const fsRuntime = nodeFs as unknown as {
+  accessSync(path: string, mode?: number): void;
+  constants: { R_OK: number };
+  lstatSync(path: string): { isDirectory(): boolean; isSymbolicLink(): boolean };
+  realpathSync(path: string): string;
+};
 const pathRuntime = nodePath as unknown as { isAbsolute(path: string): boolean };
 const MAX_SOURCE_FRAME_BYTES = 1_500_000;
 const MAX_SOURCE_FRAME_BATCH_BYTES = 30_000_000;
@@ -583,8 +588,28 @@ export function createProject(
     if (options.sourceManifestPath && !options.projectPath) throw commandError("SOURCE_MANIFEST_INVALID", "detached project create requires explicit --project");
     const providerMode = options.providerMode ?? "standalone";
     const projectPath = options.projectPath ?? defaultProjectPath(inputPaths[0]!);
-    if (existsSync(projectPath)) throw new Error(`project already exists: ${projectPath}`);
-    if (!options.sourceManifestPath) mkdirSync(join(projectPath, "source"), { recursive: true });
+    const detached = Boolean(options.sourceManifestPath);
+    if (options.sourceManifestPath) assertDetachedSourceManifestOutsideTarget(projectPath, options.sourceManifestPath);
+    preflightCreateTarget(projectPath);
+    const portableManifest = detached
+      ? readDetachedSourceManifest(options.sourceManifestPath!)
+      : parseSourcesManifest({
+          contract_version: "2.0",
+          sources: inputPaths.map((inputPath, index) => {
+            const sourceId = `src-${String(index + 1).padStart(3, "0")}`;
+            return {
+              source_id: sourceId,
+              order: index,
+              original_filename: basename(inputPath),
+              local_media_ref: `local:${sourceId}`,
+              identity: probeReadableSourceInput(inputPath),
+            };
+          }),
+        });
+
+    mkdirSync(dirname(projectPath), { recursive: true });
+    createProjectTargetDirectory(projectPath);
+    if (!detached) mkdirSync(join(projectPath, "source"));
     mkdirSync(join(projectPath, "assets", "images"), { recursive: true });
     mkdirSync(join(projectPath, "assets", "icons"), { recursive: true });
     mkdirSync(join(projectPath, "assets", "lottie"), { recursive: true });
@@ -593,31 +618,18 @@ export function createProject(
     mkdirSync(join(projectPath, "assets", "overlays"), { recursive: true });
     mkdirSync(join(projectPath, "renders"), { recursive: true });
 
-    const detached = Boolean(options.sourceManifestPath);
     const materialized: Array<{ source_id: string; project_path: string; sha256: string; size_bytes: number }> = [];
-    const portableManifest = detached
-      ? parseSourcesManifest(readJson(resolve(options.sourceManifestPath!)))
-      : parseSourcesManifest({
-          contract_version: "2.0",
-          sources: inputPaths.map((inputPath, index) => {
-            if (!existsSync(inputPath)) throw new Error(`source not found: ${inputPath}`);
-            const sourceId = `src-${String(index + 1).padStart(3, "0")}`;
-            const ext = extname(inputPath) || ".mp4";
-            const projectRelativePath = join("source", `${String(index + 1).padStart(3, "0")}-original${ext}`);
-            const destination = join(projectPath, projectRelativePath);
-            copyFileSync(inputPath, destination);
-            const identity = probePortableSourceIdentity(destination);
-            materialized.push({ source_id: sourceId, project_path: projectRelativePath, sha256: identity.sha256, size_bytes: identity.size_bytes });
-            return {
-              source_id: sourceId,
-              order: index,
-              original_filename: basename(inputPath),
-              local_media_ref: `local:${sourceId}`,
-              identity,
-            };
-          }),
-        });
-    if (portableManifest.contract_version !== "2.0") throw commandError("SOURCE_MANIFEST_INVALID", "--source-manifest requires sources.json contract_version 2.0");
+    if (!detached) {
+      inputPaths.forEach((inputPath, index) => {
+        const source = portableManifest.sources[index]!;
+        const projectRelativePath = join("source", `${String(index + 1).padStart(3, "0")}-original${extname(inputPath) || ".mp4"}`);
+        const destination = join(projectPath, projectRelativePath);
+        copyFileSync(inputPath, destination);
+        const copied = fileCopyFingerprint(destination);
+        if (copied.sha256 !== source.identity?.sha256 || copied.size_bytes !== source.identity.size_bytes) throw commandError("PROJECT_CREATE_FAILED", "Source input changed during project creation.");
+        materialized.push({ source_id: source.source_id, project_path: projectRelativePath, sha256: copied.sha256, size_bytes: copied.size_bytes });
+      });
+    }
     const sources = portableManifest.sources;
 
     const sourcesPath = join(projectPath, projectArtifacts.sources);
@@ -692,7 +704,7 @@ export function createProject(
     });
     return ok("project.create", { project_path: projectPath, project_metadata_path: projectMetadataPath, provider_mode: providerMode, sources_path: sourcesPath, source_count: sources.length });
   } catch (error) {
-    return fail("project.create", errorCode(error, "PROJECT_CREATE_FAILED"), error);
+    return fail("project.create", errorCode(error, "PROJECT_CREATE_FAILED"), sanitizeCreateError(error));
   }
 }
 
@@ -8396,6 +8408,142 @@ function parseVttTranscript(vtt: string, sourceId: string): TranscriptArtifact["
 function defaultProjectPath(inputPath: string): string {
   const slug = basename(inputPath, extname(inputPath)).replace(/[^a-zA-Z0-9._-]+/g, "-") || "project";
   return join("koubo-clips", slug);
+}
+
+function readDetachedSourceManifest(sourceManifestPath: string): SourcesManifest {
+  let value: unknown;
+  try {
+    value = readJson(resolve(sourceManifestPath));
+  } catch {
+    throw commandError("SOURCE_MANIFEST_INVALID", "--source-manifest must be readable JSON");
+  }
+  try {
+    return parseSourcesManifest(value);
+  } catch (error) {
+    if (isArtifactContractError(error)) throw error;
+    throw commandError("SOURCE_MANIFEST_INVALID", "--source-manifest is invalid");
+  }
+}
+
+function assertDetachedSourceManifestOutsideTarget(projectPath: string, sourceManifestPath: string): void {
+  const target = resolve(projectPath);
+  const manifest = resolve(sourceManifestPath);
+  if (sameOrInside(target, manifest) || sameOrInside(realishPath(target), realishPath(manifest))) {
+    throw commandError("SOURCE_MANIFEST_PROJECT_CONFLICT", "--source-manifest must be outside project target");
+  }
+}
+
+function realishPath(path: string): string {
+  const original = resolve(path);
+  let current = original;
+  const suffix: string[] = [];
+  for (;;) {
+    try {
+      return resolve(fsRuntime.realpathSync(current), ...suffix);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return original;
+      suffix.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+function sameOrInside(parent: string, child: string): boolean {
+  const relation = relative(parent, child);
+  return relation === "" || (!relation.startsWith("..") && !pathRuntime.isAbsolute(relation));
+}
+
+function probeReadableSourceInput(path: string): NonNullable<SourceAsset["identity"]> {
+  try {
+    const stat = nodeFs.statSync(path);
+    if (!stat.isFile()) throw new Error("not a file");
+    fsRuntime.accessSync(path, fsRuntime.constants.R_OK);
+    const identity = probePortableSourceIdentity(path);
+    if (
+      identity.duration_seconds <= 0
+      || identity.video.width <= 0
+      || identity.video.height <= 0
+      || identity.video.codec_name === "unknown"
+    ) throw new Error("media probe failed");
+    return identity;
+  } catch {
+    throw commandError("PROJECT_CREATE_FAILED", "Source input must be a readable file.");
+  }
+}
+
+function fileCopyFingerprint(path: string): { sha256: string; size_bytes: number } {
+  const bytes = readFileSync(path);
+  return { sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`, size_bytes: bytes.byteLength };
+}
+
+function preflightCreateTarget(projectPath: string): void {
+  try {
+    fsRuntime.lstatSync(projectPath);
+    throw classifyExistingProjectTarget(projectPath);
+  } catch (error) {
+    if ((error as { code?: unknown }).code === "ENOENT") return;
+    if (errorCode(error, "") === "PROJECT_ALREADY_EXISTS" || errorCode(error, "") === "PROJECT_TARGET_OCCUPIED") throw error;
+    throw projectTargetOccupied();
+  }
+}
+
+function createProjectTargetDirectory(projectPath: string): void {
+  try {
+    mkdirSync(projectPath);
+  } catch (error) {
+    if ((error as { code?: unknown }).code === "EEXIST") throw classifyExistingProjectTarget(projectPath);
+    throw error;
+  }
+}
+
+function classifyExistingProjectTarget(projectPath: string): Error {
+  try {
+    const stat = fsRuntime.lstatSync(projectPath);
+    return !stat.isSymbolicLink() && stat.isDirectory() && isCurrentProject(projectPath)
+      ? projectAlreadyExists()
+      : projectTargetOccupied();
+  } catch {
+    return projectTargetOccupied();
+  }
+}
+
+function isCurrentProject(projectPath: string): boolean {
+  try {
+    parseProjectMetadata(readJson(join(projectPath, projectArtifacts.project)));
+    parseSourcesManifest(readJson(join(projectPath, projectArtifacts.sources)));
+    return readProjectArtifactManifest(projectPath) !== null;
+  } catch {
+    return false;
+  }
+}
+
+function projectAlreadyExists(): Error & { code: string; remediation: string; request: Record<string, unknown> } {
+  const error = commandError("PROJECT_ALREADY_EXISTS", "project already exists") as Error & { code: string; remediation: string; request: Record<string, unknown> };
+  error.remediation = "Run koubo-clip project status <project> --json.";
+  error.request = { command: "project.status", json: true };
+  return error;
+}
+
+function projectTargetOccupied(): Error & { code: string; remediation: string } {
+  const error = commandError("PROJECT_TARGET_OCCUPIED", "project target is already occupied") as Error & { code: string; remediation: string };
+  error.remediation = "Use the project target only after the host provides it unoccupied.";
+  return error;
+}
+
+function sanitizeCreateError(error: unknown): unknown {
+  const code = errorCode(error, "");
+  if ([
+    "SOURCE_INPUT_MODE_CONFLICT",
+    "SOURCE_MANIFEST_PROJECT_CONFLICT",
+    "SOURCE_MANIFEST_INVALID",
+    "ARTIFACT_VALIDATION_FAILED",
+    "CONTRACT_SCHEMA_UNSUPPORTED",
+    "PROJECT_ALREADY_EXISTS",
+    "PROJECT_TARGET_OCCUPIED",
+    "PROJECT_CREATE_FAILED",
+  ].includes(code)) return error;
+  return commandError("PROJECT_CREATE_FAILED", "Project creation failed.");
 }
 
 function normalizeText(text: string): string {

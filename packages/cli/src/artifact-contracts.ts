@@ -512,7 +512,7 @@ const sourceMapExample = { "src-001": "/authorized/raw.mp4" };
 
 const discoveredContracts: ArtifactContract[] = [
   productionProposalContract,
-  writable("source-manifest", "sources.json", "2.0", sourceManifestSchema, sourceManifestExample, sourceManifestExample, "project create --source-manifest", [], "host_authored"),
+  writable("source-manifest", "sources.json", "2.0", sourceManifestSchema, sourceManifestExample, sourceManifestExample, "project create --source-manifest", [], "host_authored", "command_request"),
   writable("transcript", "transcript.json", "1.0", transcriptSchema, transcriptExample, transcriptExample, "project explore", ["sources"], "host_authored"),
   writable("edit-plan", "edit-plan.json", "1.0", editPlanSchema, editPlanExample, editPlanExample, "project compile-edl", ["production-proposal"]),
   writable("enrichment-plan", "enrichment-plan.json", "2.0", enrichmentPlanSchema, enrichmentExample, enrichmentExample, "project enrich-plan", ["edl"]),

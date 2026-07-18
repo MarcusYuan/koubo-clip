@@ -18,7 +18,7 @@ test("creates, explores, and reviews a source-aware project", async () => {
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
 
   const created = createProject([source], { projectPath: project });
   expect(created.ok).toBe(true);
@@ -61,7 +61,7 @@ test("project provider mode defaults, persists, and rejects mismatches", () => {
   const platformProject = join(dir, "platform-project");
   const legacyProject = join(dir, "legacy-project");
   const implicitLegacyProject = join(dir, "implicit-legacy-project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
 
   const standalone = createProject([source], { projectPath: standaloneProject });
   expect(standalone.ok).toBe(true);
@@ -97,11 +97,126 @@ test("project provider mode defaults, persists, and rejects mismatches", () => {
   expect(laterPlatform.error.code).toBe("PROVIDER_MODE_MISMATCH");
 });
 
+test("project create rejects occupied targets without changing them", () => {
+  const root = mkdtempSync(join(tmpdir(), "koubo-create-occupied-"));
+  const seed = join(root, "sources.json");
+  writeDetachedSourceManifest(seed, "workspace://secret-occupied-ref");
+
+  const cases: Array<{ name: string; setup: (target: string) => void }> = [
+    { name: "empty-dir", setup: (target) => mkdirSync(target, { recursive: true }) },
+    { name: "unrelated-dir", setup: (target) => {
+      mkdirSync(target, { recursive: true });
+      writeFileSync(join(target, "note.txt"), "leave me alone");
+    } },
+    { name: "file", setup: (target) => writeFileSync(target, "not a directory") },
+    { name: "symlink", setup: (target) => {
+      const outside = join(root, "outside-symlink-target");
+      mkdirSync(outside, { recursive: true });
+      writeFileSync(join(outside, "note.txt"), "outside");
+      nodeFs.symlinkSync(outside, target);
+    } },
+  ];
+
+  for (const item of cases) {
+    const target = join(root, item.name);
+    item.setup(target);
+    const before = snapshotExistingTarget(target);
+
+    const created = createProject([], { projectPath: target, sourceManifestPath: seed, providerMode: "platform" });
+
+    expectCreateError(created, "PROJECT_TARGET_OCCUPIED", target, "workspace://secret-occupied-ref");
+    expect(snapshotExistingTarget(target)).toEqual(before);
+  }
+});
+
+test("project create rejects an existing current project without resuming or changing it", () => {
+  const root = mkdtempSync(join(tmpdir(), "koubo-create-existing-"));
+  const seed = join(root, "sources.json");
+  const project = join(root, "project");
+  writeDetachedSourceManifest(seed, "workspace://secret-existing-ref");
+  const first = createProject([], { projectPath: project, sourceManifestPath: seed, providerMode: "platform" });
+  expect(first.ok).toBe(true);
+  if (!first.ok) throw new Error(first.error.message);
+  const before = snapshotExistingTarget(project);
+
+  const second = createProject([], { projectPath: project, sourceManifestPath: seed, providerMode: "platform" });
+
+  expectCreateError(second, "PROJECT_ALREADY_EXISTS", project, "workspace://secret-existing-ref");
+  expect(snapshotExistingTarget(project)).toEqual(before);
+  expect(projectStatus(project).manifest_state).toBe("tracked");
+});
+
+test("detached create manifest preflight failures do not create a target", () => {
+  const root = mkdtempSync(join(tmpdir(), "koubo-create-manifest-fail-"));
+  const cases: Array<{ name: string; value: string; code: string; localMediaRef?: string }> = [
+    { name: "invalid-json", value: "{", code: "SOURCE_MANIFEST_INVALID" },
+    { name: "invalid-structure", value: JSON.stringify({ contract_version: "2.0", sources: [{}] }), code: "ARTIFACT_VALIDATION_FAILED" },
+    { name: "wrong-version", value: JSON.stringify({ ...(detachedSourceManifest("workspace://secret-version-ref") as Record<string, unknown>), contract_version: "1.0" }), code: "CONTRACT_SCHEMA_UNSUPPORTED", localMediaRef: "workspace://secret-version-ref" },
+  ];
+
+  for (const item of cases) {
+    const seed = join(root, `${item.name}.json`);
+    const project = join(root, `${item.name}-project`);
+    writeFileSync(seed, item.value);
+
+    const created = createProject([], { projectPath: project, sourceManifestPath: seed, providerMode: "platform" });
+
+    expectCreateError(created, item.code, project, item.localMediaRef);
+    expect(existsSync(project)).toBe(false);
+  }
+});
+
+test("detached create unreadable manifest failure does not create a target", () => {
+  const root = mkdtempSync(join(tmpdir(), "koubo-create-unreadable-manifest-"));
+  const seed = join(root, "sources.json");
+  const project = join(root, "project");
+  writeDetachedSourceManifest(seed, "workspace://secret-unreadable-ref");
+  const fsRuntime = nodeFs as unknown as { chmodSync(path: string, mode: number): void };
+  fsRuntime.chmodSync(seed, 0o000);
+  try {
+    const created = createProject([], { projectPath: project, sourceManifestPath: seed, providerMode: "platform" });
+
+    expectCreateError(created, "SOURCE_MANIFEST_INVALID", project, "workspace://secret-unreadable-ref");
+    expect(existsSync(project)).toBe(false);
+  } finally {
+    fsRuntime.chmodSync(seed, 0o644);
+  }
+});
+
+test("project create local source failures do not create a target", () => {
+  const root = mkdtempSync(join(tmpdir(), "koubo-create-source-fail-"));
+  const missingSource = join(root, "missing.mp4");
+  const missingProject = join(root, "missing-project");
+  const missing = createProject([missingSource], { projectPath: missingProject });
+  expectCreateFailure(missing, missingProject);
+  expect(existsSync(missingProject)).toBe(false);
+
+  const unreadableSource = join(root, "unreadable.mp4");
+  const unreadableProject = join(root, "unreadable-project");
+  writeFileSync(unreadableSource, "not real media");
+  const fsRuntime = nodeFs as unknown as { chmodSync(path: string, mode: number): void };
+  fsRuntime.chmodSync(unreadableSource, 0o000);
+  try {
+    const unreadable = createProject([unreadableSource], { projectPath: unreadableProject });
+    expectCreateFailure(unreadable, unreadableProject);
+    expect(existsSync(unreadableProject)).toBe(false);
+  } finally {
+    fsRuntime.chmodSync(unreadableSource, 0o644);
+  }
+
+  const invalidSource = join(root, "invalid.mp4");
+  const invalidProject = join(root, "invalid-project");
+  writeFileSync(invalidSource, "not media");
+  const invalid = createProject([invalidSource], { projectPath: invalidProject });
+  expectCreateFailure(invalid, invalidProject);
+  expect(existsSync(invalidProject)).toBe(false);
+});
+
 test("platform mode explore blocks missing transcript before ASR", async () => {
   const dir = mkdtempSync(join(tmpdir(), "koubo-platform-asr-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project, providerMode: "platform" });
 
   const explored = await exploreProject(project, { asr: "auto", asrProvider: "whisper-cli", providerMode: "platform" });
@@ -117,7 +232,7 @@ test("platform mode blocks music provider acquisition before network", async () 
   const dir = mkdtempSync(join(tmpdir(), "koubo-platform-music-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project, providerMode: "platform" });
   writeFileSync(
     join(project, "music-request.json"),
@@ -146,7 +261,7 @@ test("platform mode music catalog does not expose local provider state", () => {
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
   const library = join(dir, "secret-library");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   mkdirSync(library, { recursive: true });
   writeFileSync(join(library, "track.mp3"), "not real audio");
   createProject([source], { projectPath: project, providerMode: "platform" });
@@ -176,7 +291,7 @@ test("platform mode visual search rejects provider download urls", async () => {
   const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-download-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project, providerMode: "platform" });
   writeFileSync(
     join(project, "visual-request.json"),
@@ -233,7 +348,7 @@ test("platform visual candidates return aggregated public-contract issues", asyn
   const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-contract-"));
   const project = join(dir, "project");
   const source = join(dir, "raw.mp4");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project, providerMode: "platform" });
   writeFileSync(join(project, "visual-request.json"), JSON.stringify({
     version: "1.0",
@@ -261,7 +376,7 @@ test("platform mode visual catalog does not expose local provider state", () => 
   const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-catalog-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project, providerMode: "platform" });
 
   const oldLordicon = process.env.LORDICON_API_KEY;
@@ -284,7 +399,7 @@ test("platform mode visual search rejects provider source and preview urls", asy
   const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-source-url-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project, providerMode: "platform" });
   writeFileSync(
     join(project, "visual-request.json"),
@@ -342,7 +457,7 @@ test("platform mode visual search and acquire consume local candidates only", as
   const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project, providerMode: "platform" });
   writeFileSync(join(project, "handoff.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10H0z"/></svg>');
   writeFileSync(
@@ -412,7 +527,7 @@ test("platform visual acquire requires an explicit reviewed project-local select
   const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-contract-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project, providerMode: "platform" });
   writeFileSync(join(project, "preview.png"), "preview");
   writeFileSync(join(project, "selected.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10H0z"/></svg>');
@@ -505,7 +620,7 @@ test("platform mode visual provider paths return blockers instead of fetching", 
   const dir = mkdtempSync(join(tmpdir(), "koubo-platform-visual-block-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project, providerMode: "platform" });
   writeFileSync(
     join(project, "visual-request.json"),
@@ -577,7 +692,7 @@ test("validates and renders a production proposal without creating execution art
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-proposal-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project });
   writeFileSync(
     join(project, "transcript.json"),
@@ -710,7 +825,7 @@ test("visual acquisition accepts a confirmed local handoff candidate", async () 
   const dir = mkdtempSync(join(tmpdir(), "koubo-visual-project-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project });
   writeFileSync(join(project, "assets", "visuals", "handoff-alarm.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10H0z"/></svg>');
   writeFileSync(
@@ -777,7 +892,7 @@ test("visual lifecycle binds acquisition to selected members and cleans removed 
   const dir = mkdtempSync(join(tmpdir(), "koubo-visual-lineage-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project, providerMode: "platform" });
   writeFileSync(join(project, "selected.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10H0z"/></svg>');
   writeFileSync(join(project, "alternate.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><circle cx="5" cy="5" r="4"/></svg>');
@@ -897,7 +1012,7 @@ test("visual acquire records known-input failure without replacing the last succ
   const dir = mkdtempSync(join(tmpdir(), "koubo-visual-failure-lineage-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project, providerMode: "platform" });
   writeFileSync(join(project, "selected.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10H0z"/></svg>');
   const writeRequest = (candidateId: string) => writeFileSync(
@@ -970,7 +1085,7 @@ test("visual acquire wrapper failure restores the current asset, manifest, and a
   const dir = mkdtempSync(join(tmpdir(), "koubo-visual-wrapper-checkpoint-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project, providerMode: "platform" });
   const selectedPath = join(project, "selected.svg");
   writeFileSync(selectedPath, '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10H0z"/></svg>');
@@ -1037,7 +1152,7 @@ test("visual acquire preserves current non-visual asset lineage in a mixed manif
   const dir = mkdtempSync(join(tmpdir(), "koubo-visual-mixed-assets-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project, providerMode: "platform" });
 
   const userAssetPath = join(project, "assets", "images", "user-image.png");
@@ -1134,7 +1249,7 @@ test("explore fails clearly when transcript is missing", async () => {
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project });
 
   const explored = await exploreProject(project, { asr: "off" });
@@ -2530,11 +2645,84 @@ function writeExecutable(dir: string, name: string, content: string, fsRuntime: 
   fsRuntime.chmodSync(path, 0o755);
 }
 
+function expectCreateError(result: ReturnType<typeof createProject>, code: string, absoluteTarget: string, localMediaRef?: string): void {
+  expectCreateFailure(result, absoluteTarget, localMediaRef);
+  if (result.ok) throw new Error("expected project create to fail");
+  expect(result.error.code).toBe(code);
+}
+
+function expectCreateFailure(result: ReturnType<typeof createProject>, absoluteTarget: string, localMediaRef?: string): void {
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("expected project create to fail");
+  const serialized = JSON.stringify(result.error);
+  expect(serialized.includes(absoluteTarget)).toBe(false);
+  if (localMediaRef) expect(serialized.includes(localMediaRef)).toBe(false);
+}
+
+function writeDetachedSourceManifest(path: string, localMediaRef: string): void {
+  writeFileSync(path, JSON.stringify(detachedSourceManifest(localMediaRef)));
+}
+
+function detachedSourceManifest(localMediaRef: string): unknown {
+  return {
+    contract_version: "2.0",
+    sources: [{
+      source_id: "src-001",
+      order: 0,
+      original_filename: "raw.mp4",
+      local_media_ref: localMediaRef,
+      identity: {
+        sha256: `sha256:${"b".repeat(64)}`,
+        size_bytes: 123,
+        duration_seconds: 2,
+        video: {
+          codec_name: "h264",
+          width: 160,
+          height: 90,
+          display_width: 160,
+          display_height: 90,
+          rotation: 0,
+          avg_frame_rate: "30/1",
+          pixel_format: "yuv420p",
+        },
+        audio: { codec_name: "aac", sample_rate: 48000, channels: 2, channel_layout: "stereo" },
+      },
+    }],
+  };
+}
+
+function snapshotExistingTarget(target: string): unknown {
+  const fs = nodeFs as unknown as typeof nodeFs & {
+    lstatSync(path: string): { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
+    readlinkSync(path: string): string;
+  };
+  const stat = fs.lstatSync(target);
+  if (stat.isSymbolicLink()) return { kind: "symlink", target: fs.readlinkSync(target) };
+  if (stat.isFile()) return { kind: "file", bytes: readFileSync(target, "utf8") };
+  if (!stat.isDirectory()) return { kind: "other" };
+  const entries: Array<{ path: string; kind: string; bytes?: string; target?: string }> = [];
+  const visit = (directory: string) => {
+    for (const name of nodeFs.readdirSync(directory).sort()) {
+      const path = join(directory, name);
+      const entryStat = fs.lstatSync(path);
+      const entry = { path: nodePath.relative(target, path), kind: entryStat.isDirectory() ? "dir" : entryStat.isSymbolicLink() ? "symlink" : "file" };
+      entries.push(entryStat.isSymbolicLink()
+        ? { ...entry, target: fs.readlinkSync(path) }
+        : entryStat.isFile()
+          ? { ...entry, bytes: readFileSync(path, "utf8") }
+          : entry);
+      if (entryStat.isDirectory()) visit(path);
+    }
+  };
+  visit(target);
+  return { kind: "dir", entries };
+}
+
 async function projectWithAnalysis(timing: "word" | "segment" | "text-only", language: string | undefined): Promise<string> {
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-unsafe-"));
   const source = join(dir, "raw.mp4");
   const project = join(dir, "project");
-  writeFileSync(source, "not real media");
+  writeValidSource(source);
   createProject([source], { projectPath: project });
   writeFileSync(
     join(project, "transcript.json"),
@@ -2623,6 +2811,16 @@ function confirmSelectedProposalMedia(
     ...editPlan,
     proposal_selection_fingerprint: proposed.data.option_selection_fingerprints[proposal.recommended_option_id],
   }));
+}
+
+let validSourceFixturePath: string | undefined;
+
+function writeValidSource(path: string): void {
+  if (!validSourceFixturePath) {
+    validSourceFixturePath = join(mkdtempSync(join(tmpdir(), "koubo-valid-source-")), "fixture.mp4");
+    makeSampleVideo(validSourceFixturePath, 60);
+  }
+  copyFileSync(validSourceFixturePath, path);
 }
 
 function makeSampleVideo(path: string, duration = 3, size = "160x90") {
