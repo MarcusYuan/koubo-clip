@@ -430,6 +430,10 @@ CLI 命令遵循 commit-last：
 
 CLI 只支持当前 project contract 和每种 artifact 的唯一当前 schema。缺少当前 `project.json` contract、`artifact-manifest.json`，或包含旧 artifact version/embedded usage 字段的项目，`project status` 返回 `CONTRACT_SCHEMA_UNSUPPORTED`，不扫描旧目录恢复 lineage，也不执行运行时 migration。
 
+Project 初始化输入不属于该 project lifecycle。`--source-manifest` 指向 target 外的 host-authored seed；CLI 成功创建 target 后才产生 project-owned `project.json`、`sources.json` 和 lineage。恢复采用固定三分支：target 不存在时 create；合法当前 project 运行只读 status；target 已存在但不是合法当前 project 时返回 blocker。不得通过补写 CLI-owned 文件、递归删除、覆盖或创建 `-v2`/`-v3` 目录恢复。
+
+确定性 create preflight 失败不创建 target。Preflight 完成并开始落盘后的异常仍遵守失败保留原则：保留诊断目录但不将半提交 artifacts 标记为 current，也不自动清理。
+
 开发期 fixtures、示例和内部项目一次性改写为当前格式。无法改写的项目使用当前 CLI 重新创建；旧 Markdown、EDL、storyboard、MP4 和 report 可以由用户自行保留，但不进入当前 project 状态。
 
 ## 完成定义

@@ -45,6 +45,8 @@ koubo-clip project create <video> --provider-mode platform
 
 默认 mode 是 `standalone`。Project 创建或摄入后应把 `provider_execution_mode` 写入 project metadata；后续命令显式传 `--provider-mode` 时只能与 project metadata 一致，不一致返回 blocker。需要切换 mode 时新建 project。
 
+`project create --source-manifest` 的 manifest 是 target 外部的 host-authored seed，不是可预写进 project 的 artifact。CLI 必须在任何 target mkdir 前完成参数、路径关系、读取、JSON、schema/version 和 source identity preflight；失败不得留下 target。Create 只接受不存在的 target：合法已有 project 返回 `PROJECT_ALREADY_EXISTS` 并指向 status，其他占用返回 `PROJECT_TARGET_OCCUPIED`。不得覆盖、删除、迁移、接管或自动选择平行项目名。
+
 `standalone` mode 允许 CLI 在明确的 explore/acquisition commands 中使用用户已配置 provider。`platform` mode 禁止 CLI 主动调用需要 API key、联网、额度、MCP、用户授权、审计或 provider provenance 的外部能力；这些由 host/platform tool fulfillment 负责。CLI 只消费已落地 artifacts、project-relative local paths 或未来 stable workspace refs。
 
 在 `platform` mode 下：
@@ -185,6 +187,11 @@ CLI failures 应使用稳定 code。Provider mode 相关 blocker 至少包含 `c
 - `ARTIFACT_CONTRACT_UNSUPPORTED`: 请求的 artifact 没有公开合同。
 - `CONTRACT_SCHEMA_UNSUPPORTED`: Artifact version 与当前 registry 唯一 schema 不一致。
 - `ARTIFACT_VALIDATION_FAILED`: Agent/Host authored artifact 不符合公开 schema；响应必须包含 artifact、schema version/digest 和聚合 `issues[]`。
+- `SOURCE_MANIFEST_PROJECT_CONFLICT`: detached source manifest 位于 project target 内部。
+- `SOURCE_MANIFEST_INVALID`: detached source manifest 无法读取或不是合法 JSON；schema 结构和 version 分别使用 `ARTIFACT_VALIDATION_FAILED` 与 `CONTRACT_SCHEMA_UNSUPPORTED`。
+- `PROJECT_ALREADY_EXISTS`: target 已经是合法当前 project；恢复必须运行 `project status`。
+- `PROJECT_TARGET_OCCUPIED`: target 已存在但不是可创建目标；CLI 不修改或清理它。
+- `PROJECT_METADATA_INVALID`: 已有 `project.json` 无法解析。
 - `PROPOSAL_EXECUTION_MISMATCH`: confirmed proposal、edit-plan 或 enrichment 语义与后续 execution contract 不一致，CLI 不得静默修补。
 - `INSPECTION_ACCEPTANCE_FAILED`: structured inspection 已写出，但存在 blocker，命令必须 fail closed。
 

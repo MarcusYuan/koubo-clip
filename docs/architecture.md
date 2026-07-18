@@ -309,6 +309,8 @@ Strict timeline 的权威时长属于 output frame domain：CLI 按累计 output
 
 Source lineage 分为 `source-identity:*`、`source-materialization` 和 `source:*` bytes。规划依赖 identity；ASR、抽帧和本地 render 才依赖 bytes。External evidence import 先验证完整批次的 containment、regular-file、hash、size、JPEG probe 和 request/EDL mapping，再原子发布 canonical evidence。
 
+Detached 初始化分成 preflight 和 commit：CLI 在任何 project mkdir 前校验参数、外部 source manifest 的读取/schema/version、manifest 与 target 的路径关系以及 source identity。Preflight 失败不得创建 target；进入 commit 后的 IO/lineage 失败保留诊断目录。外部 manifest 是 host-authored create seed，必须位于 target 外；project 内的 `project.json`、`sources.json` 和 artifact manifest 只能由 CLI 创建。Create 不承担恢复，也不接管、清理或改名已有 target。
+
 Evidence JPEG probe 在进程边界区分 executable/transport unavailable、non-zero exit、invalid output、codec mismatch 和 dimension mismatch；size、hash、request/candidate binding 分别校验。错误只暴露稳定 code 和脱敏事实。
 
 Lineage 可以包含 `proposal-selection:*`、`source-identity:*` 等逻辑节点，但 `.virtual/*` 是内部实现路径，不进入公开 `artifacts[].path`。外部所需逻辑 fingerprint 通过 status 的 `fingerprints` map 或对应命令结果获取。当任一 source 未 materialize 时，authoring status 选择 distributed execution 分支：合同导出前推荐 export，导出后声明 handoff ready 并给出 strict consumer 命令链；本地 project render/inspect 不进入该分支的完成条件。

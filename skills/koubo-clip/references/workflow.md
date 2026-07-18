@@ -7,6 +7,7 @@ Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabili
 ## Stages
 
 1. Create and explore the project.
+   - Use a three-way target check before creating anything: missing target -> create; existing valid project -> run status and resume; existing invalid target -> blocker. Never precreate the project target for `project create`, keep any host seed source manifest outside the project target, and never retry with a `-v2`/`-v3` parallel project.
    - Choose `standalone` or `platform` once, then pass the same `--provider-mode` to project commands.
    - Run `project create --provider-mode <mode>`.
    - In `standalone` mode, run `project explore --asr auto` unless a transcript already exists.
@@ -14,7 +15,7 @@ Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabili
    - Read `material-report.md` before asking final positioning questions.
 
 2. Collect source-frame evidence before business planning.
-   - Read `transcript.json`, `material-report.md`, and `sources.json`.
+   - Read `transcript.json`, `material-report.md`, and the CLI-owned project `sources.json`.
    - Select 1-20 source-local times that answer useful visual questions; prefer coverage over duplicates and do not pad the request to reach the limit.
    - Write `source-frame-request.json`, run `project source-frames --provider-mode <mode>`, then read `source-frames.json` and its project-relative JPEGs.
    - The CLI extracts frames only. When host vision is available, combine visual observations with ASR facts. Without standalone vision, continue transcript-only but mark the visual check as not performed; without platform vision, report a host-workflow blocker.
@@ -92,7 +93,7 @@ Proposal options, each with its own execution plan and asset requirements:
 - `authentic-review`: realistic seeding version. Keep more natural speech, use anchor captions plus a few key-point lower thirds, no music by default, and only source UI highlights. Use when credibility matters more than packaging. Reason for no extra assets: decoration would reduce trust and can hide UI.
 - `tutorial-demo`: tutorial explainer version. Organize around steps, use transparent UI focus/callouts, step labels, and maybe one navigation/function icon. Use when the viewer must learn the workflow. Risk: screen coordinates need `focus-frames` and `focus-grounding`.
 
-After `project proposal --json`, the user confirms `sales-conversion` once. Copy its returned selection fingerprint into the confirmed edit plan, then ask Hermes/platform capabilities to fulfill the confirmed option's `asset_requirements`.
+After `project proposal --json`, the user confirms `sales-conversion` once. Copy its returned selection fingerprint into the confirmed edit plan, then ask host/platform capabilities to fulfill the confirmed option's `asset_requirements`.
 
 Convert the confirmed option into authoring artifacts: `edit-plan.json` from review candidate ids; `focus-candidates.json` and `focus-grounding.json` for UI moments; `visual-request.json` for approved icons/Lottie/UI/image/B-roll intents; `music-request.json` for approved BGM; and canonical `enrichment-plan.json` using output-timeline timings. Use supported CLI commands to produce `focus-frames.json`, `focus-review.json`, acquisition results, and CLI-owned `asset-manifest.json`.
 

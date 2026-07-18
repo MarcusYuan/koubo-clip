@@ -206,6 +206,7 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 ## 失败处理
 
 - 失败后保留 project directory。
+- `project create` 的确定性 preflight 是例外边界：参数、外部 source manifest、target 关系或 source 输入校验失败时 target 尚未创建。只有 preflight 已成功并进入 project 落盘后的失败才保留诊断目录；CLI 不自动删除已有 target。
 - 公共 writer 遵循 parse/validate -> input fingerprint -> current dependency check -> staging -> output parse/probe/hash -> atomic replace -> manifest success 的 commit-last 顺序。失败只记录 stage attempt，不创建假的 output record。
 - inspection 期间不要生成新策略。
 - 不要把手写 replacement subtitles、manifests 或 render scripts 作为正常恢复路径。
@@ -213,6 +214,7 @@ Workflow stage 状态是 `not_started`、`ready`、`blocked`、`complete`、`sta
 ## Portable source 与 evidence import
 
 - `sources.json` v2 不含路径；`source-materialization.json` v1 的 path 必须是已验证 project-relative regular file，并绑定 identity hash/size。
+- `--source-manifest` 读取的外部 `sources.json` 是 host-authored create seed，必须位于尚不存在的 project target 外部；创建成功后 CLI 在 project 内生成 authoritative `sources.json`。外部 seed 不登记为 project artifact，不得通过预建 target、手写内部 manifest 或 `-v2`/`-v3` 目录重试来绕过生命周期。
 - `local_media_ref` 只能作为 opaque metadata 保存。不得传给 filesystem、FFmpeg、下载器、错误或 status。
 - `source-frames --import` 和 `focus-frames --import` 只读取 evidence directory 内的 manifest-relative regular JPEG；拒绝 symlink、escape、partial batch、hash/size/probe 或 binding mismatch。
 - Focus import 必须用 current EDL 重新计算 output-time 到 source/time 的映射；外部 manifest 的映射只作为待验证声明。

@@ -7,6 +7,7 @@
 ## Ownership
 
 - 每个公开 artifact 必须声明 `agent_authored`、`host_authored` 或 `cli_owned` ownership，以及唯一当前 schema version、role、writer、validator/producer 和 lifecycle prerequisites。
+- `source-manifest` 是特殊的 host-authored `command_request`：它是 project target 外部的 create seed。创建成功后 project 内的 authoritative `sources.json` 由 CLI 独立写入，二者不得因同名而混淆 ownership 或 lineage。
 - `agent_authored` artifact 必须公开完整 schema、template、合法 example 和 validator。
 - `host_authored` artifact 必须公开完整 schema、合法 example、摄入/校验命令和安全约束；需要宿主填写复杂结构时也必须提供 template。
 - `cli_owned` artifact 只公开只读 schema 和 producer/verify/inspect 能力，必须声明 `external_writes_allowed:false`；Skill、Agent、宿主和用户不得手写、修改或修复。

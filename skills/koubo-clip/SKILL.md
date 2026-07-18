@@ -39,12 +39,14 @@ Read only the references needed for the current stage:
 ## Workflow
 
 1. Run `koubo-clip --version` and `koubo-clip capabilities --json` before relying on a command or schema. Before writing any Agent/Host-authored artifact, run `koubo-clip artifact contract <artifact-id> --json`, use its current template/schema, and then read the relevant business reference. Never reconstruct a contract from this Skill, repository source, TypeScript types, or validator failures. Choose exactly one provider mode for the project:
-   - Use `platform` when the task comes from Hermes, TaskWorkspace, LocalAgent, workspace refs, asset ids, controlled local artifacts, or the "koubo-clip/口播快剪" employee capability.
+   - Use `platform` when the task comes from a host, TaskWorkspace, LocalAgent, workspace refs, asset ids, controlled local artifacts, or the "koubo-clip/口播快剪" employee capability.
    - Use `standalone` for ordinary local CLI use where the user's machine owns provider configuration.
    - If a project already has `project.json`, obey its `provider_execution_mode`; do not mix modes in one project.
-2. When resuming an existing project, run `koubo-clip project status <project> --json` first. Follow its blockers, remediation, `next_commands`, source identity/materialization state, and last checkpoint; never infer state by scanning files. For a new project:
-   - With local media, run `project create <video...> --project <dir> --provider-mode <mode>`; the CLI writes portable identity and a separate verified materialization.
-   - Without local media bytes, first fetch the source-manifest artifact contract, fill it, then run `project create --source-manifest <sources-v2.json> --project <dir> --provider-mode <mode>`. Treat `local_media_ref` as opaque metadata. Never resolve it, echo it, pass it to a filesystem tool, or copy media into the project.
+2. Use a three-way target check before creating anything: missing target -> create; existing valid project -> run `koubo-clip project status <project> --json` and resume; existing invalid target -> blocker. Never precreate the project target for `project create`, and do not delete recursively, overwrite, migrate, or retry as a `-v2`/`-v3` parallel project.
+   - When resuming an existing project, run `koubo-clip project status <project> --json` first. Follow its blockers, remediation, `next_commands`, source identity/materialization state, and last checkpoint; never infer state by scanning files.
+   - For a new project:
+     - With local media, run `project create <video...> --project <dir> --provider-mode <mode>`; the CLI writes portable identity and a separate verified materialization.
+     - Without local media bytes, first fetch the source-manifest artifact contract, fill the host seed manifest outside the project target, then run `project create --source-manifest <host-seed-sources.json> --project <dir> --provider-mode <mode>`. The host seed `sources.json` is external input; the CLI-owned project `sources.json` lives inside the project after creation. Never invent `sources-v2.json` or `sources-v3.json`, and never handwrite `project.json`, internal `sources.json`, or artifact manifests. Treat `local_media_ref` as opaque metadata. Never resolve it, echo it, pass it to a filesystem tool, or copy media into the project.
 3. If the user or host already has a transcript, put it at `<project>/transcript.json`; otherwise:
    - In `standalone` mode, run `koubo-clip project explore <project> --provider-mode standalone --asr auto`.
    - In `platform` mode, ask the host/platform ASR capability to write `transcript.json` first, then run `koubo-clip project explore <project> --provider-mode platform --asr external`.

@@ -452,6 +452,7 @@ koubo-clips/<slug>/
 ## Detached source 与分布式执行合同
 
 - `sources.json` v2 只保存 portable identity 和 opaque `local_media_ref`，不得保存机器路径；authoring project 的已验证本地副本单独写入 `source-materialization.json` v1。
+- `project create --source-manifest` 读取的 host-authored `sources.json` 只是位于 project target 外部的创建 seed；target 必须尚不存在且只能由 CLI 创建。创建成功后，CLI 在 target 内写入独立的 authoritative `sources.json`，外部 seed 不进入 project lineage。恢复时只有不存在的 target 才能 create；合法当前 project 先运行 status；被其他内容占用的 target 必须 fail closed，不能覆盖、删除、迁移或改用 `-v2`/`-v3` 平行目录。
 - Detached project 不要求原片存在，不创建 `source/`，并允许 external transcript、source/focus evidence、proposal、edit plan、portable EDL、captions、resolved storyboard 和 contract export 完成。
 - `edl.json` v2 只含 `source_id` 与 source-local ranges。CLI 在 materialized render 或 strict binding 时才解析真实路径。
 - `render-contract export` 生成不可覆盖的目录合同包。合同 digest 仅覆盖 canonical payload；bundle 只含实际引用的 content-addressed 非源素材。
