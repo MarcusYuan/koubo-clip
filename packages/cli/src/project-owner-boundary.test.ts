@@ -7,10 +7,10 @@ import type { ArtifactManifest, ProductionProposalArtifact } from "./artifacts";
 import { productionProposalExample } from "./artifact-contracts";
 import {
   commandExists,
+  compileEdlProject,
   createProject,
   exploreProject,
   proposalProject,
-  renderProject,
   reviewProject,
   validateEnrichmentPlan,
 } from "./project";
@@ -207,19 +207,19 @@ test("compile validates but never re-registers changed material owners", async (
     decisions: [],
   });
 
-  const initialRender = renderProject(project);
-  if (!initialRender.ok) throw new Error(`${initialRender.error.code}: ${initialRender.error.message}`);
-  expect(initialRender.ok).toBe(true);
+  const initialCompile = compileEdlProject(project);
+  if (!initialCompile.ok) throw new Error(`${initialCompile.error.code}: ${initialCompile.error.message}`);
+  expect(initialCompile.ok).toBe(true);
   const committed = readManifest(project);
   expect(committed.artifacts["edit-plan"]?.validated_by_command).toBe("project.compile-edl");
   expect(committed.artifacts.edl?.produced_by_command).toBe("project.compile-edl");
   const ownedBefore = ownedMaterialRecords(committed);
 
   writeTranscript(project, "changed after compile");
-  const rerender = renderProject(project);
-  expect(rerender.ok).toBe(false);
-  if (rerender.ok) throw new Error("expected changed transcript rejection");
-  expect(rerender.error.code).toBe("ARTIFACT_STALE");
+  const recompile = compileEdlProject(project);
+  expect(recompile.ok).toBe(false);
+  if (recompile.ok) throw new Error("expected changed transcript rejection");
+  expect(recompile.error.code).toBe("ARTIFACT_STALE");
   expect(ownedMaterialRecords(readManifest(project))).toEqual(ownedBefore);
 }, 20_000);
 
