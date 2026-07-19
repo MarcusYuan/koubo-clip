@@ -137,10 +137,44 @@ test("contract registry exposes every external JSON entry point without version 
       layout: "stack",
       style: "minimal",
       frame: "clean",
+      caption_layout: { placement: "auto", size: "medium" },
     },
     elements: [],
     audio: { music: [], sfx: [] },
   });
+});
+
+test("caption layout contract fields are closed and enum validated", () => {
+  const proposal = structuredClone(productionProposalExample);
+  proposal.options[0]!.subtitles.placement = "bottom_safe";
+  proposal.options[0]!.subtitles.size = "large";
+  assertProductionProposalContract(proposal);
+
+  try {
+    assertProductionProposalContract({
+      ...proposal,
+      options: [{ ...proposal.options[0], subtitles: { ...proposal.options[0]!.subtitles, size: "huge" } }, proposal.options[1]],
+    });
+    throw new Error("expected proposal subtitle size validation failure");
+  } catch (error) {
+    if (!(error instanceof ArtifactValidationError)) throw error;
+    expect(error.issues.map((issue) => `${issue.path}:${issue.keyword}`)).toContain("/options/0/subtitles/size:enum");
+  }
+
+  const enrichment = structuredClone(getArtifactContract("enrichment-plan")!.example) as Record<string, any>;
+  enrichment.profile.caption_layout = { placement: "center_lower", size: "small" };
+  assertArtifactContract("enrichment-plan", enrichment);
+
+  try {
+    assertArtifactContract("enrichment-plan", {
+      ...enrichment,
+      profile: { ...enrichment.profile, caption_layout: { placement: "center_lower", size: "small", extra: true } },
+    });
+    throw new Error("expected enrichment caption layout validation failure");
+  } catch (error) {
+    if (!(error instanceof ArtifactValidationError)) throw error;
+    expect(error.issues.map((issue) => `${issue.path}:${issue.keyword}`)).toContain("/profile/caption_layout/extra:additionalProperties");
+  }
 });
 
 test("source manifest contract remains a host-authored command request", () => {

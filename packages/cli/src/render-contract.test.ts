@@ -7,10 +7,10 @@ import {
   assertBundleRelativeAssetPath,
   canonicalJson,
   compileOutputFrameSchedule,
-  createRenderContractV1,
+  createRenderContractV2,
   materializeJsonObject,
   parseRenderBindingV1,
-  parseRenderContractV1,
+  parseRenderContractV2,
   parseSourceMapV1,
   parseStrictInspectionV1,
   parseStrictRenderResultV1,
@@ -24,14 +24,13 @@ import {
   verifyRenderAssets,
   verifyRenderBinding,
   type RenderBindingV1,
-  type RenderContractPayloadV1,
-  type RenderContractV1,
+  type RenderContractPayloadV2,
   type StrictRenderResultV1,
 } from "./render-contract";
 
 const SOURCE_DIGEST = `sha256:${"a".repeat(64)}` as const;
 
-function payload(): RenderContractPayloadV1 {
+function payload(): RenderContractPayloadV2 {
   return {
     runtime: { renderer: "koubo-clip", cli_version: "0.0.1" },
     sources: [
@@ -67,11 +66,11 @@ function payload(): RenderContractPayloadV1 {
       },
     ],
     timeline: { entries: [{ source_id: "source-1", start: 1, end: 4, output_start: 0, output_end: 3, output_order: 0, reason: "keep" }] },
-    captions: { cues: [{ start: 0, end: 2, text: "hello" }] },
+    captions: { cues: [{ start: 0, end: 2, text: "hello" }], layout: { placement: "center_lower", size: "medium", anchor_x_ratio: 0.5, anchor_y_ratio: 0.7, font_size_px: 46 } },
     composition: { elements: [] },
     assets: [],
     audio: { music: [], sfx: [] },
-    output: { filename: "final.mp4" },
+    output: { filename: "final.mp4", width: 1920, height: 1080, fps: 30 },
     preflight: { require_audio: true },
     inspection: { duration_tolerance_seconds: 0.25 },
     authoring_lineage: { edit_plan: `sha256:${"b".repeat(64)}` },
@@ -141,43 +140,91 @@ test("output frame schedule uses cumulative boundaries without per-segment drift
 });
 
 test("render contract parser is closed and verifies the digest over payload only", () => {
-  const contract = createRenderContractV1(payload());
+  const contract = createRenderContractV2(payload());
+  expect(contract.schema_version).toBe("2.0");
   expect(contract.contract_digest).toBe(renderContractDigest(contract.payload));
-  expect(parseRenderContractV1(clone(contract))).toEqual(contract);
+  expect(contract.payload.captions.layout).toEqual({
+    placement: "center_lower",
+    size: "medium",
+    anchor_x_ratio: 0.5,
+    anchor_y_ratio: 0.7,
+    font_size_px: 46,
+  });
+  expect(parseRenderContractV2(clone(contract))).toEqual(contract);
 
   const reordered = clone(contract);
   reordered.payload.runtime = { cli_version: "0.0.1", renderer: "koubo-clip" };
-  expect(parseRenderContractV1(reordered).contract_digest).toBe(contract.contract_digest);
+  expect(parseRenderContractV2(reordered).contract_digest).toBe(contract.contract_digest);
 
   const changed = clone(contract);
-  changed.payload.output = { filename: "other.mp4" };
-  expectCode(() => parseRenderContractV1(changed), renderContractErrorCodes.CONTRACT_DIGEST_MISMATCH);
+  changed.payload.output = { ...changed.payload.output, filename: "other.mp4" };
+  expectCode(() => parseRenderContractV2(changed), renderContractErrorCodes.CONTRACT_DIGEST_MISMATCH);
 
   const unknown = { ...contract, fallback_project_path: "/tmp/project" };
-  expectCode(() => parseRenderContractV1(unknown), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
+  expectCode(() => parseRenderContractV2(unknown), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
+});
+
+test("render contract v2 requires typed caption layout in parsed contracts", () => {
+  const contract = createRenderContractV2({
+    ...payload(),
+    captions: {
+      cues: [{ start: 0, end: 2, text: "hello" }],
+      layout: { placement: "bottom_safe", size: "large", anchor_x_ratio: 0.5, anchor_y_ratio: 0.88, font_size_px: 56 },
+    },
+  });
+  expect(parseRenderContractV2(clone(contract))).toEqual(contract);
+
+  const empty = createRenderContractV2({ ...payload(), captions: { cues: [], layout: null } });
+  expect(parseRenderContractV2(clone(empty)).payload.captions.layout).toBe(null);
+
+  const old = { ...contract, schema_version: "1.0" };
+  expectCode(() => parseRenderContractV2(old), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
+
+  const missingLayout = clone(contract) as unknown as { payload: { captions: Record<string, unknown> } };
+  delete missingLayout.payload.captions.layout;
+  expectCode(() => parseRenderContractV2(missingLayout), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
+
+  for (const layout of [
+    { placement: "top", size: "large", anchor_x_ratio: 0.5, anchor_y_ratio: 0.8, font_size_px: 56 },
+    { placement: "bottom_safe", size: "huge", anchor_x_ratio: 0.5, anchor_y_ratio: 0.8, font_size_px: 56 },
+    { placement: "bottom_safe", size: "large", anchor_x_ratio: 1.1, anchor_y_ratio: 0.8, font_size_px: 56 },
+    { placement: "center_lower", size: "large", anchor_x_ratio: 0.5, anchor_y_ratio: 0.83, font_size_px: 56 },
+    { placement: "bottom_safe", size: "large", anchor_x_ratio: 0.5, anchor_y_ratio: 0.91, font_size_px: 56 },
+    { placement: "bottom_safe", size: "large", anchor_x_ratio: 0.5, anchor_y_ratio: 0.8, font_size_px: 0 },
+    { placement: "bottom_safe", size: "large", anchor_x_ratio: 0.5, anchor_y_ratio: Number.NaN, font_size_px: 56 },
+    null,
+  ]) {
+    expectCode(() => createRenderContractV2({ ...payload(), captions: { cues: [{ start: 0, end: 2, text: "hello" }], layout } }), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
+  }
+
+  expectCode(() => createRenderContractV2({
+    ...payload(),
+    captions: { cues: [{ start: 0, end: 2, text: "hello" }], layout: { placement: "bottom_safe", size: "medium", anchor_x_ratio: 0.5, anchor_y_ratio: 0.9, font_size_px: 46 } },
+    output: { filename: "final.mp4", width: 1080, height: 1920, fps: 30 },
+  }), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
 });
 
 test("render contract rejects source paths, unknown source references, and out-of-range timeline entries", () => {
   const withPath = payload() as unknown as { sources: Array<Record<string, unknown>> };
   withPath.sources[0].project_path = "/private/source.mp4";
-  expectCode(() => createRenderContractV1(withPath), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
+  expectCode(() => createRenderContractV2(withPath), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
 
   const unknownSource = payload();
   unknownSource.timeline.entries[0].source_id = "source-2";
-  expectCode(() => createRenderContractV1(unknownSource), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
+  expectCode(() => createRenderContractV2(unknownSource), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
 
   const pastDuration = payload();
   pastDuration.timeline.entries[0].end = 10.1;
-  expectCode(() => createRenderContractV1(pastDuration), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
+  expectCode(() => createRenderContractV2(pastDuration), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
 
   const missingAudioSection = payload() as unknown as Record<string, unknown>;
   delete missingAudioSection.audio;
-  expectCode(() => createRenderContractV1(missingAudioSection), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
+  expectCode(() => createRenderContractV2(missingAudioSection), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
 
   const videoOnly = payload();
   delete videoOnly.sources[0].identity.audio;
   videoOnly.sources[0].binding_requirements.require_audio = false;
-  expect(createRenderContractV1(videoOnly).payload.sources[0].identity.audio).toBe(undefined);
+  expect(createRenderContractV2(videoOnly).payload.sources[0].identity.audio).toBe(undefined);
 });
 
 test("bundle asset paths are content-addressed and traversal-safe", () => {
@@ -240,7 +287,7 @@ test("source map and binding parsers reject fallback metadata and bind exact ide
   expect(parseSourceMapV1({ "source-1": "/media/source.mp4" })).toEqual({ "source-1": "/media/source.mp4" });
   expectCode(() => parseSourceMapV1({ "source-1": "https://example.test/source.mp4" }), renderContractErrorCodes.INVALID_SOURCE_MAP);
 
-  const contract = createRenderContractV1(payload());
+  const contract = createRenderContractV2(payload());
   const bindingBase = {
     schema_version: "1.0" as const,
     contract_digest: contract.contract_digest,

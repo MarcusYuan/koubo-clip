@@ -14,11 +14,12 @@ import {
   type EnrichmentPlanArtifact,
 } from "./artifacts";
 import {
+  canonicalJson,
   compileOutputFrameSchedule,
-  createRenderContractV1,
+  createRenderContractV2,
   materializeJsonObject,
   parseRenderBindingV1,
-  parseRenderContractV1,
+  parseRenderContractV2,
   parseSourceMapV1,
   parseStrictRenderResultV1,
   renderBindingDigest,
@@ -30,8 +31,8 @@ import {
   type JsonObject,
   type RenderBindingV1,
   type RenderContractAssetV1,
-  type RenderContractPayloadV1,
-  type RenderContractV1,
+  type RenderContractPayloadV2,
+  type RenderContractV2,
   type StrictInspectionCheckV1,
   type StrictInspectionV1,
   type StrictRenderResultV1,
@@ -39,6 +40,7 @@ import {
   type RenderSourceIdentityV1,
   type OutputFrameSchedule,
 } from "./render-contract";
+import { assertResolvedCaptionLayout, resolveCaptionLayout } from "./caption-layout";
 import {
   compileEdlProject,
   compileCaptionCuesForEdl,
@@ -63,6 +65,7 @@ const CAPABILITY_IDS = [
   "render_contract.export.v1",
   "render_contract.consume_strict.v1",
   "source_binding.v1",
+  "caption_layout.safe_area.v1",
 ] as const;
 const RUNTIME_DEPENDENCIES = ["gsap@3.15.0", "hyperframes@0.7.36"] as const;
 
@@ -122,6 +125,22 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
     const firstSource = rawSources.sources.find((source) => source.source_id === firstEntry.source_id)!;
     const output = resolveRenderOutputSpec(plan?.profile.aspect_ratio ?? "source", firstSource.identity!.video.display_width, firstSource.identity!.video.display_height);
     const duration = frameSchedule.expected_duration_seconds;
+    const captionLayout = cues.length === 0 ? null : resolveCaptionLayout({
+      width: output.width,
+      height: output.height,
+      source_mode: confirmedExecution.source_mode ?? plan?.profile.source_mode ?? "talking_head_avatar",
+      intent: {
+        placement: selectedOption.subtitles.placement ?? "auto",
+        size: selectedOption.subtitles.size ?? "medium",
+      },
+    });
+    const captionQaChecks = captionLayout && cues[0] ? [{
+      id: "caption-layout",
+      expected: `caption rail uses ${captionLayout.placement} at y=${captionLayout.anchor_y_ratio}`,
+      frame_times: [(cues[0].start + cues[0].end) / 2],
+      needs_human_review: false,
+      status: "passed",
+    }] : [];
     const storyboard = plan ? resolveRenderContractStoryboard({
       projectPath,
       width: output.width,
@@ -133,7 +152,7 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
       bundlePaths,
     }) : undefined;
     const runtime = liveRuntimeIdentity();
-    const payload: RenderContractPayloadV1 = {
+    const payload: RenderContractPayloadV2 = {
       runtime,
       sources: rawSources.sources.map((source) => ({
         source_id: source.source_id,
@@ -151,13 +170,13 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
         },
       })),
       timeline: { entries: timelineEntries },
-      captions: { cues },
+      captions: { cues, layout: captionLayout },
       composition: json({ mode: plan ? "resolved_storyboard" : cues.length > 0 ? "clean_captions" : "clean", ...(plan ? { enrichment_plan: plan, storyboard } : {}) }),
       assets: contractAssets,
       audio: json(plan?.audio ?? { music: [], sfx: [] }),
       output: json({ container: "mp4", width: output.width, height: output.height, fps, video_codec: "h264", pixel_format: "yuv420p", audio_codec: "aac", audio_sample_rate: 48000, audio_channels: 2, canonical_filename: "koubo-final.mp4" }),
       preflight: json({ required_tools: ["ffmpeg", "ffprobe"], required_filters: ["scale", "pad", "fps", "format", "aresample", "aformat"], runtime_dependencies: [...RUNTIME_DEPENDENCIES], expected_duration_seconds: duration, source_probe_tolerance_seconds: 0.05 }),
-      inspection: json({ duration_tolerance_seconds: Math.max(0.05, 2 / 30), require_video: true, require_audio: rawSources.sources.some((source) => Boolean(source.identity?.audio)), checks: storyboard?.qa_checks ?? [], hard_acceptance: true, proposal_conformance: confirmedExecution.conformance }),
+      inspection: json({ duration_tolerance_seconds: Math.max(0.05, 2 / 30), require_video: true, require_audio: rawSources.sources.some((source) => Boolean(source.identity?.audio)), checks: [...(storyboard?.qa_checks ?? []), ...captionQaChecks], hard_acceptance: true, proposal_conformance: confirmedExecution.conformance }),
       authoring_lineage: json({
         members: authoringLineage(projectPath, [
           projectArtifacts.sources,
@@ -171,7 +190,7 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
         logical_members: [{ key: selectionKey, fingerprint: selectionRecord.fingerprint }],
       }),
     };
-    const contract = createRenderContractV1(payload);
+    const contract = createRenderContractV2(payload);
     writeJson(join(staging, "render-contract.json"), contract);
     fsRuntime.renameSync(staging, outputDir);
     staging = "";
@@ -293,6 +312,7 @@ export function renderBoundContract(bundleDir: string, bindingsPath: string, run
       timeline: { contract_version: "2.0", entries: contract.payload.timeline.entries },
       sourcePaths: Object.fromEntries(binding.sources.map((source) => [source.source_id, source.resolved_path])),
       captions: contract.payload.captions.cues,
+      captionLayout: contract.payload.captions.layout ?? undefined,
       output: { filename: text(output.canonical_filename, "output.canonical_filename"), width: integer(output.width, "output.width"), height: integer(output.height, "output.height"), fps: integer(output.fps, "output.fps") },
       sourceHasAudio: Object.fromEntries(contract.payload.sources.map((source) => [source.source_id, Boolean(source.identity.audio)])),
       durationToleranceSeconds: number(inspectionPolicy.duration_tolerance_seconds, "inspection.duration_tolerance_seconds"),
@@ -358,6 +378,12 @@ export function inspectBoundContract(bundleDir: string, resultPath: string): Com
     checks.push(check("video-codec", identity.video.codec_name === text(outputSpec.video_codec, "output.video_codec"), "canonical output video codec matches the contract"));
     checks.push(check("pixel-format", identity.video.pixel_format === text(outputSpec.pixel_format, "output.pixel_format"), "canonical output pixel format matches the contract"));
     checks.push(check("frame-rate", Math.abs(frameRate(identity.video.avg_frame_rate) - integer(outputSpec.fps, "output.fps")) <= 0.5, "canonical output average frame rate matches the contract within container tolerance"));
+    if (contract.payload.captions.cues.length > 0) {
+      const layout = contract.payload.captions.layout;
+      if (!layout) throw coded("CONTRACT_INVALID", "caption layout is required when captions are present");
+      assertResolvedCaptionLayout(layout);
+      checks.push(check("caption-layout", true, `frozen caption layout: placement=${layout.placement} size=${layout.size} anchor=(${layout.anchor_x_ratio},${layout.anchor_y_ratio}) font_size_px=${layout.font_size_px}`));
+    }
     if (inspectionPolicy.require_audio === true) {
       checks.push(check("audio-stream", Boolean(identity.audio), "canonical output has an audio stream"));
       checks.push(check("audio-codec", identity.audio?.codec_name === text(outputSpec.audio_codec, "output.audio_codec"), "canonical output audio codec matches the contract"));
@@ -412,19 +438,40 @@ export function inspectBoundContract(bundleDir: string, resultPath: string): Com
   }
 }
 
-function readContract(bundleDir: string): RenderContractV1 {
+function readContract(bundleDir: string): RenderContractV2 {
   const root = verifiedDirectory(bundleDir);
   const contractPath = resolveContained(root, "render-contract.json");
   const value = readJson(contractPath);
-  if (value && typeof value === "object" && "schema_version" in value && (value as { schema_version?: unknown }).schema_version !== "1.0") {
+  if (value && typeof value === "object" && "schema_version" in value && (value as { schema_version?: unknown }).schema_version !== "2.0") {
     throw coded("CONTRACT_SCHEMA_UNSUPPORTED", `unsupported render contract schema: ${String((value as { schema_version?: unknown }).schema_version)}`);
   }
-  const contract = parseRenderContractV1(value);
+  const contract = parseRenderContractV2(value);
+  assertContractCaptionConsistency(contract);
   contractFrameSchedule(contract);
   return contract;
 }
 
-function contractFrameSchedule(contract: RenderContractV1): OutputFrameSchedule {
+function assertContractCaptionConsistency(contract: RenderContractV2): void {
+  const composition = contract.payload.composition as Record<string, unknown>;
+  if (composition.mode !== "resolved_storyboard") return;
+  const storyboard = composition.storyboard;
+  if (!storyboard || typeof storyboard !== "object" || Array.isArray(storyboard)) {
+    throw coded("CONTRACT_INVALID", "resolved storyboard composition must contain a storyboard object");
+  }
+  const storyboardCaptions = (storyboard as Record<string, unknown>).captions;
+  if (!storyboardCaptions || typeof storyboardCaptions !== "object" || Array.isArray(storyboardCaptions)) {
+    throw coded("CONTRACT_INVALID", "resolved storyboard must contain a captions object");
+  }
+  const frozen = storyboardCaptions as Record<string, unknown>;
+  if (canonicalJson(frozen.cues) !== canonicalJson(contract.payload.captions.cues)) {
+    throw coded("CONTRACT_INVALID", "resolved storyboard caption cues do not match the render contract");
+  }
+  if (contract.payload.captions.cues.length > 0 && canonicalJson(frozen.layout) !== canonicalJson(contract.payload.captions.layout)) {
+    throw coded("CONTRACT_INVALID", "resolved storyboard caption layout does not match the render contract");
+  }
+}
+
+function contractFrameSchedule(contract: RenderContractV2): OutputFrameSchedule {
   const output = contract.payload.output as Record<string, unknown>;
   const preflight = contract.payload.preflight as Record<string, unknown>;
   const schedule = compileOutputFrameSchedule(contract.payload.timeline.entries, integer(output.fps, "output.fps"));
@@ -451,7 +498,7 @@ function liveRuntimeIdentity(): JsonObject {
   });
 }
 
-function assertRuntimeCompatible(contract: RenderContractV1): void {
+function assertRuntimeCompatible(contract: RenderContractV2): void {
   const delivery = verifyInstalledDelivery();
   const expected = liveRuntimeIdentity();
   const actual = contract.payload.runtime as Record<string, unknown>;

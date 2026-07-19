@@ -70,6 +70,13 @@ const closed = (required: string[], properties: Record<string, JsonSchema>): Jso
   additionalProperties: false,
 });
 
+const captionPlacement = { enum: ["auto", "center_lower", "bottom_safe"] } satisfies JsonSchema;
+const captionSize = { enum: ["small", "medium", "large"] } satisfies JsonSchema;
+const captionLayout = closed(["placement", "size"], {
+  placement: captionPlacement,
+  size: captionSize,
+});
+
 const assetSlotProperties: Record<string, JsonSchema> = {
   slot_id: { type: "string", minLength: 1, pattern: "^[^/:\\\\]+$" },
   kind: { type: "string" },
@@ -137,6 +144,8 @@ export const productionProposalSchema: JsonSchema = {
         subtitles: closed(["enabled", "style", "conflict_notes"], {
           enabled: { type: "boolean" },
           style: { enum: ["none", "plain", "anchor"] },
+          placement: captionPlacement,
+          size: captionSize,
           conflict_notes: stringArray,
         }),
         visuals: closed(["direction", "viewer_job", "requires_grounding", "notes"], {
@@ -243,7 +252,7 @@ const optionTemplate = (id: string) => ({
   label: "",
   reason: "",
   cleanup: { cut_candidate_ids: [], keep_strategy: "", risks: [] },
-  subtitles: { enabled: true, style: "plain", conflict_notes: [] },
+  subtitles: { enabled: true, style: "plain", placement: "auto", size: "medium", conflict_notes: [] },
   visuals: { direction: "", viewer_job: "", requires_grounding: false, notes: [] },
   images: { needed: false, reason: "", missing_assets: [] },
   music: { source: "none", ducking: true, notes: [] },
@@ -277,7 +286,7 @@ const exampleOption = (id: string, label: string, cutCandidateIds: string[], enh
   label,
   reason: enhanced ? "Retains the proof while adding restrained visual guidance." : "Provides the fastest clean delivery with minimal visual change.",
   cleanup: { cut_candidate_ids: cutCandidateIds, keep_strategy: "Keep all complete claims and product proof.", risks: [] },
-  subtitles: { enabled: true, style: enhanced ? "anchor" : "plain", conflict_notes: [] },
+  subtitles: { enabled: true, style: enhanced ? "anchor" : "plain", placement: "auto", size: "medium", conflict_notes: [] },
   visuals: {
     direction: enhanced ? "Transparent focus cues and concise callouts." : "No decorative overlays.",
     viewer_job: enhanced ? "Follow the product payoff." : "Focus on the cleaned explanation.",
@@ -386,6 +395,7 @@ export const enrichmentPlanSchema: JsonSchema = {
       source_mode: sourceMode, aspect_ratio: { enum: ["source", "16:9", "9:16", "4:5"] },
       caption_identity: { const: "anchor" }, layout: { enum: ["stack", "overlay", "split", "pip"] },
       style: { enum: ["whiteboard", "audit", "swiss", "terminal", "xhs", "editorial", "minimal"] }, frame: { enum: ["clean", "hairline", "polaroid"] },
+      caption_layout: captionLayout,
     }),
     elements: { type: "array", items: closed(["id", "source", "element_id", "element_type", "start", "end", "reason"], {
       id, source: { type: "string", minLength: 1 }, element_id: text,
@@ -500,7 +510,7 @@ const evidenceEntrySchema = closed(["id", "relative_path", "sha256", "size_bytes
 const sourceManifestExample = { contract_version: "2.0", sources: [{ source_id: "src-001", order: 0, original_filename: "raw.mp4", local_media_ref: "opaque-reference", identity: { sha256: `sha256:${"0".repeat(64)}`, size_bytes: 1, duration_seconds: 1, video: { codec_name: "h264", width: 1920, height: 1080, display_width: 1920, display_height: 1080, rotation: 0, avg_frame_rate: "30/1", pixel_format: "yuv420p" } } }] };
 const transcriptExample = { timing_granularity: "segment", segments: [{ source_id: "src-001", start: 0, end: 1, text: "Example transcript" }] };
 const editPlanExample = { contract_version: "1.0", confirmed_option_id: "option-001", proposal_selection_fingerprint: `sha256:${"0".repeat(64)}`, decisions: [] };
-const enrichmentExample = { version: "2.0", profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor", layout: "stack", style: "minimal", frame: "clean" }, elements: [], audio: { music: [], sfx: [] } };
+const enrichmentExample = { version: "2.0", profile: { source_mode: "talking_head_avatar", aspect_ratio: "source", caption_identity: "anchor", layout: "stack", style: "minimal", frame: "clean", caption_layout: { placement: "auto", size: "medium" } }, elements: [], audio: { music: [], sfx: [] } };
 const assetUsageExample = { music: [], sfx: [], visual_assets: [] };
 const focusCandidatesExample = { version: "1.0", source_mode: "talking_head_avatar", presentation_intent: "knowledge_explainer", candidates: [{ id: "focus-001", start: 0, end: 1, transcript_quote: "Example transcript", semantic_intent: "summarize_payoff", element_id: "anchor", element_type: "caption_identity", requires_grounding: false, reason: "Emphasize the key point" }] };
 const focusGroundingExample = { version: "1.0", groundings: [{ candidate_id: "focus-001", frame_id: "frame-001", confidence: 1, evidence_note: "The target is visible" }] };
@@ -534,7 +544,7 @@ const discoveredContracts: ArtifactContract[] = [
     ["visual-acquisition", "visual-acquisition.json", "1.0", "project visual-acquire"],
     ["visual-review", "visual-review.json", "1.0", "project visual-review"], ["asset-manifest", "asset-manifest.json", "1.0", "project enrich-plan"],
     ["storyboard", "storyboard.json", "1.1", "project render"], ["render-result", "render-result.json", "1.0", "project render"],
-    ["inspection", "inspection.json", "1.0", "project inspect"], ["render-contract", "render-contract.json", "1.0", "render-contract export"],
+    ["inspection", "inspection.json", "1.0", "project inspect"], ["render-contract", "render-contract.json", "2.0", "render-contract export"],
     ["source-binding", "bindings.json", "1.0", "render-contract bind"], ["render-contract-result", "render-contract-result.json", "1.0", "render-contract render"],
     ["render-contract-inspection", "render-contract-inspection.json", "1.0", "render-contract inspect"], ["delivery-manifest", "delivery-manifest.json", "3.0", "release packaging"],
   ].map(([artifactId, filename, version, producer]) => readonly(artifactId!, filename!, version!, producer!, artifactId === "render-result" || artifactId === "inspection" ? "execution_result" : "derived")),

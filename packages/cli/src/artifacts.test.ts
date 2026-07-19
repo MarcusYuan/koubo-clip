@@ -218,6 +218,8 @@ test("production proposal validates options and forbids premature asset refs", (
   const proposal = parseProductionProposal(productionProposalExample);
   expect(proposal.recommended_option_id).toBe("restrained-enhancement");
   expect(proposal.options[0]?.music.source).toBe("none");
+  expect(proposal.options[0]?.subtitles.placement).toBe("auto");
+  expect(proposal.options[0]?.subtitles.size).toBe("medium");
 
   expect(() =>
     parseProductionProposal({
@@ -252,6 +254,53 @@ test("production proposal validates options and forbids premature asset refs", (
       options: [{ ...proposal.options[0], images: { ...proposal.options[0]!.images, path: "assets/images/a.png" } }, proposal.options[1]],
     }),
   ).toThrow("path is not allowed");
+});
+
+test("caption layout defaults and enums are normalized in proposal and enrichment artifacts", () => {
+  const proposal = structuredClone(productionProposalExample);
+  delete (proposal.options[0]!.subtitles as Record<string, unknown>).placement;
+  delete (proposal.options[0]!.subtitles as Record<string, unknown>).size;
+  const subtitles = parseProductionProposal(proposal).options[0]!.subtitles;
+  expect({ placement: subtitles.placement, size: subtitles.size }).toEqual({ placement: "auto", size: "medium" });
+
+  const enrichment = parseEnrichmentPlan({
+    version: "2.0",
+    profile: {
+      source_mode: "screen_recording",
+      aspect_ratio: "source",
+      caption_identity: "anchor",
+      layout: "overlay",
+      style: "minimal",
+      frame: "clean",
+    },
+    elements: [],
+    audio: { music: [], sfx: [] },
+  });
+  expect(enrichment.profile.caption_layout).toEqual({ placement: "auto", size: "medium" });
+
+  expect(parseEnrichmentPlan({
+    ...enrichment,
+    profile: { ...enrichment.profile, caption_layout: { placement: "bottom_safe", size: "large" } },
+  }).profile.caption_layout).toEqual({ placement: "bottom_safe", size: "large" });
+
+  expect(() =>
+    parseProductionProposal({
+      ...proposal,
+      options: [{ ...proposal.options[0], subtitles: { ...proposal.options[0]!.subtitles, placement: "top" } }, proposal.options[1]],
+    }),
+  ).toThrow("placement");
+  expect(() =>
+    parseEnrichmentPlan({
+      ...enrichment,
+      profile: { ...enrichment.profile, caption_layout: { placement: "auto", size: "huge" } },
+    }),
+  ).toThrow("size");
+  expect(() =>
+    parseEnrichmentPlan({
+      ...enrichment,
+      profile: { ...enrichment.profile, caption_layout: { placement: "auto", size: "medium", extra: true } },
+    }),
+  ).toThrow("extra is not allowed");
 });
 
 test("project metadata only accepts the current contract", () => {

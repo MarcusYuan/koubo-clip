@@ -73,8 +73,11 @@ test("capabilities reports stable software contracts without probing or loading 
     expect(json.error_codes).toContain("PROPOSAL_EXECUTION_MISMATCH");
     expect(json.error_codes).toContain("PROPOSAL_SELECTION_MISMATCH");
     expect(json.artifact_schema_versions["production-proposal.json"]).toBe("3.0");
+    expect(json.artifact_schema_versions["render-contract.json"]).toBe("2.0");
     expect(json.artifact_contracts["production-proposal"].schema_version).toBe("3.0");
     expect(json.capability_ids).toContain("artifact_contract.discovery.v1");
+    expect(json.capability_ids).toContain("caption_layout.safe_area.v1");
+    expect(json.render_contract.schema_version).toBe("2.0");
   } finally {
     process.chdir(previousCwd);
     if (old === undefined) delete process.env.LORDICON_API_KEY;

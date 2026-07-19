@@ -1,5 +1,13 @@
 import { assertKnownVendoredElement, type VendoredElementType } from "./hyperframes-registry";
 import { assertArtifactContract, assertProductionProposalContract } from "./artifact-contracts";
+import {
+  defaultCaptionLayoutIntent,
+  isCaptionPlacementPreset,
+  isCaptionSizePreset,
+  type CaptionLayoutIntent,
+  type CaptionPlacementPreset,
+  type CaptionSizePreset,
+} from "./caption-layout";
 
 export type TimingGranularity = "word" | "segment" | "text-only";
 
@@ -116,6 +124,9 @@ export type EnrichmentLayout = "stack" | "overlay" | "split" | "pip";
 export type EnrichmentStyle = "whiteboard" | "audit" | "swiss" | "terminal" | "xhs" | "editorial" | "minimal";
 export type EnrichmentFrame = "clean" | "hairline" | "polaroid";
 export type EnrichmentCardKind = "title" | "key_point" | "quote" | "flowchart" | "image" | "screenshot_focus" | "lower_third";
+export type CaptionPlacement = CaptionPlacementPreset;
+export type CaptionSize = CaptionSizePreset;
+export type CaptionLayout = CaptionLayoutIntent;
 export type EnrichmentPoint = { x: number; y: number };
 export type EnrichmentRect = { x: number; y: number; width: number; height: number };
 export type EnrichmentElementType = Exclude<VendoredElementType, "sfx"> | "visual_asset";
@@ -186,6 +197,7 @@ export type EnrichmentProfile = {
   layout: EnrichmentLayout;
   style: EnrichmentStyle;
   frame: EnrichmentFrame;
+  caption_layout?: CaptionLayout;
 };
 
 export type CaptionEmphasis = {
@@ -537,6 +549,8 @@ export type ProductionProposalCleanup = {
 export type ProductionProposalSubtitles = {
   enabled: boolean;
   style: "none" | "plain" | "anchor";
+  placement?: CaptionPlacement;
+  size?: CaptionSize;
   conflict_notes: string[];
 };
 
@@ -1819,7 +1833,7 @@ function productionProposalCleanup(value: unknown, name: string): ProductionProp
 }
 
 function productionProposalSubtitles(value: unknown, name: string): ProductionProposalSubtitles {
-  const obj = strictRecord(value, name, ["enabled", "style", "conflict_notes"]);
+  const obj = strictRecord(value, name, ["enabled", "style", "placement", "size", "conflict_notes"]);
   const style = obj.style;
   if (style !== "none" && style !== "plain" && style !== "anchor") {
     throw new Error(`${name}.style must be none, plain, or anchor`);
@@ -1827,6 +1841,8 @@ function productionProposalSubtitles(value: unknown, name: string): ProductionPr
   return {
     enabled: boolean(obj.enabled, `${name}.enabled`),
     style,
+    placement: obj.placement === undefined ? "auto" : captionPlacement(obj.placement, `${name}.placement`),
+    size: obj.size === undefined ? "medium" : captionSize(obj.size, `${name}.size`),
     conflict_notes: optionalStringArray(obj.conflict_notes, `${name}.conflict_notes`),
   };
 }
@@ -1886,11 +1902,12 @@ export function defaultEnrichmentProfile(sourceMode: EnrichmentSourceMode = "tal
     layout: screenSafe ? "overlay" : "stack",
     style: screenSafe ? "minimal" : "whiteboard",
     frame: "clean",
+    caption_layout: defaultCaptionLayoutIntent(),
   };
 }
 
 function enrichmentProfile(value: unknown, name: string): EnrichmentProfile {
-  const obj = strictRecord(value, name, ["source_mode", "aspect_ratio", "caption_identity", "layout", "style", "frame"]);
+  const obj = strictRecord(value, name, ["source_mode", "aspect_ratio", "caption_identity", "layout", "style", "frame", "caption_layout"]);
   const source_mode = sourceMode(obj.source_mode, `${name}.source_mode`);
   return {
     source_mode,
@@ -1899,7 +1916,30 @@ function enrichmentProfile(value: unknown, name: string): EnrichmentProfile {
     layout: enrichmentLayout(obj.layout, `${name}.layout`),
     style: enrichmentStyle(obj.style, `${name}.style`),
     frame: enrichmentFrame(obj.frame, `${name}.frame`),
+    caption_layout: obj.caption_layout === undefined ? defaultCaptionLayoutIntent() : captionLayout(obj.caption_layout, `${name}.caption_layout`),
   };
+}
+
+export function defaultCaptionLayout(): CaptionLayout {
+  return defaultCaptionLayoutIntent();
+}
+
+function captionLayout(value: unknown, name: string): CaptionLayout {
+  const obj = strictRecord(value, name, ["placement", "size"]);
+  return {
+    placement: captionPlacement(obj.placement, `${name}.placement`),
+    size: captionSize(obj.size, `${name}.size`),
+  };
+}
+
+function captionPlacement(value: unknown, name: string): CaptionPlacement {
+  if (isCaptionPlacementPreset(value)) return value;
+  throw new Error(`${name} must be a supported caption placement`);
+}
+
+function captionSize(value: unknown, name: string): CaptionSize {
+  if (isCaptionSizePreset(value)) return value;
+  throw new Error(`${name} must be a supported caption size`);
 }
 
 function enrichmentMusic(value: unknown, name: string): EnrichmentMusic {

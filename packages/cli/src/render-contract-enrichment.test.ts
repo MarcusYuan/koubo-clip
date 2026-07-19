@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bindRenderContract, exportRenderContract, inspectBoundContract, renderBoundContract, verifyRenderContractBundle } from "./render-contract-commands";
+import { createRenderContractV2 } from "./render-contract";
 import { compileEdlProject, createProject, enrichPlanProject, exploreProject, proposalProject } from "./project";
 import { confirmProposalAndWriteEditPlan } from "./test-fixtures";
 import type { ProductionProposalArtifact } from "./artifacts";
@@ -52,6 +53,22 @@ test("enrichment elements export through one JSON-safe render-contract boundary"
     for (const absent of ["asset_id", "anchor_point", "target_rect"]) expect(Object.hasOwn(element, absent)).toBe(false);
   }
   expect(plan.elements[3]?.params).toEqual({ title: "Koubo Clip" });
+});
+
+test("enrichment caption layout must match the confirmed proposal preset", async () => {
+  if (!hasFfmpeg()) return;
+  const { project } = await projectFixture("caption-layout-mismatch");
+  writeFileSync(join(project, "enrichment-plan.json"), JSON.stringify({
+    version: "2.0",
+    profile: { ...profile, caption_layout: { placement: "bottom_safe", size: "medium" } },
+    elements: [{ id: "identity", source: "agent", element_id: "anchor", element_type: "caption_identity", start: 0.1, end: 0.6, reason: "keep captions readable", caption_identity: "anchor" }],
+    audio: { music: [], sfx: [] },
+  }));
+  const enriched = enrichPlanProject(project);
+  expect(enriched.ok).toBe(false);
+  if (enriched.ok) throw new Error("expected caption layout mismatch");
+  expect(enriched.error.code).toBe("PROPOSAL_EXECUTION_MISMATCH");
+  expect(enriched.error.message).toContain("caption layout");
 });
 
 test("built-in and external SFX keep only their selected source and export deterministically", async () => {
@@ -197,7 +214,7 @@ test("combined enrichment render contract stages only referenced assets and rend
 
 test("confirmed strong-hook reorder and source-local overlay survive the complete strict contract chain", async () => {
   if (!hasFfmpeg()) return;
-  const { root, project, source } = await projectFixture("strong-hook");
+  const { root, project, source } = await projectFixture("strong-hook", true);
   const proposal = JSON.parse(readFileSync(join(project, "production-proposal.json"), "utf8")) as ProductionProposalArtifact;
   const option = proposal.options.find((item) => item.id === proposal.recommended_option_id)!;
   option.label = "Strong hook";
@@ -238,6 +255,15 @@ test("confirmed strong-hook reorder and source-local overlay survive the complet
   const exported = exportRenderContract(project, bundle);
   if (!exported.ok) throw new Error(`${exported.error.code}: ${exported.error.message}`);
   const contract = readContract(bundle);
+  expect(contract.schema_version).toBe("2.0");
+  expect(contract.payload.captions.layout).toEqual({
+    placement: "center_lower",
+    size: "medium",
+    anchor_x_ratio: 0.5,
+    anchor_y_ratio: 0.7,
+    font_size_px: 24,
+  });
+  expect(contract.payload.composition.storyboard.captions.layout).toEqual(contract.payload.captions.layout);
   expect(contract.payload.timeline.entries.map((entry: { source_id: string; start: number; end: number }) => ({
     source_id: entry.source_id,
     start: entry.start,
@@ -291,13 +317,31 @@ test("confirmed strong-hook reorder and source-local overlay survive the complet
   expect(inspected.data.proposal_conformance_status).toBe("passed");
   expect(inspected.data.business_acceptance_status).toBe("passed");
   expect(inspected.data.overall_status).toBe("completed");
+  const strictInspection = JSON.parse(readFileSync(join(root, "run", "render-contract-inspection.json"), "utf8")) as { frames: string[] };
+  expect(strictInspection.frames.some((path) => path.includes("caption-layout"))).toBe(true);
+
+  const drifted = structuredClone(contract);
+  drifted.payload.composition.storyboard.captions.layout.anchor_y_ratio = 0.76;
+  writeFileSync(join(bundle, "render-contract.json"), `${JSON.stringify(createRenderContractV2(drifted.payload), null, 2)}\n`);
+  const rejected = verifyRenderContractBundle(bundle);
+  expect(rejected.ok).toBe(false);
+  if (rejected.ok) throw new Error("expected frozen caption layout drift rejection");
+  expect(rejected.error.code).toBe("CONTRACT_INVALID");
+
+  const cueDrifted = structuredClone(contract);
+  cueDrifted.payload.composition.storyboard.captions.cues[0].text = "different frozen caption";
+  writeFileSync(join(bundle, "render-contract.json"), `${JSON.stringify(createRenderContractV2(cueDrifted.payload), null, 2)}\n`);
+  const cueRejected = verifyRenderContractBundle(bundle);
+  expect(cueRejected.ok).toBe(false);
+  if (cueRejected.ok) throw new Error("expected frozen caption cue drift rejection");
+  expect(cueRejected.error.code).toBe("CONTRACT_INVALID");
 }, 240_000);
 
-async function projectFixture(name: string): Promise<{ root: string; project: string; source: string }> {
+async function projectFixture(name: string, portrait = false): Promise<{ root: string; project: string; source: string }> {
   const root = mkdtempSync(join(tmpdir(), `koubo-enrichment-contract-${name}-`));
   const source = join(root, "raw.mp4");
   const project = join(root, "project");
-  makeVideo(source);
+  makeVideo(source, portrait ? "180x320" : "160x90");
   const created = createProject([source], { projectPath: project });
   if (!created.ok) throw new Error(created.error.message);
   writeFileSync(join(project, "transcript.json"), JSON.stringify({ timing_granularity: "segment", segments: [{ source_id: "src-001", start: 0.1, end: 1, text: "Core point" }] }));
@@ -348,8 +392,8 @@ function hasFfmpeg(): boolean {
   return spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;
 }
 
-function makeVideo(path: string): void {
-  runFfmpeg(["-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=30", "-t", "1.2", "-pix_fmt", "yuv420p", path]);
+function makeVideo(path: string, size = "160x90"): void {
+  runFfmpeg(["-y", "-f", "lavfi", "-i", `testsrc=size=${size}:rate=30`, "-t", "1.2", "-pix_fmt", "yuv420p", path]);
 }
 
 function makeAudio(path: string, duration: number, frequency: number): void {

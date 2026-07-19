@@ -30,6 +30,9 @@ try {
   expect(delivery.artifact_contracts_digest === manifest.artifact_contracts_digest, "delivery verify returned a different artifact contracts digest");
   expect(delivery.cli_version === version, "delivery CLI version does not match package version");
   expect(delivery.distribution_kind === "npm", "installed package distribution_kind must be npm");
+  expect(capabilities.artifact_schema_versions["render-contract.json"] === "2.0", "installed CLI did not expose render contract 2.0");
+  expect(capabilities.render_contract?.schema_version === "2.0", "installed render contract capability is not version 2.0");
+  expect(capabilities.capability_ids.includes("caption_layout.safe_area.v1"), "installed CLI is missing caption safe-area capability");
   if (process.env.EXPECTED_SOURCE_REVISION) {
     expect(delivery.source_revision === process.env.EXPECTED_SOURCE_REVISION, "delivery source_revision does not match release commit");
   }
@@ -45,6 +48,7 @@ try {
   expect(skillText.includes("source-manifest artifact contract") && skillText.includes("outside the project target"), "official Skill does not guide external source-manifest seeds");
   expect(skillText.includes("missing target -> create") && skillText.includes("existing valid project -> run") && skillText.includes("existing invalid target -> blocker"), "official Skill does not guide three-way project recovery");
   expect(skillText.includes("do not delete recursively, overwrite, migrate, or retry as a `-v2`/`-v3` parallel project"), "official Skill does not forbid parallel project retries");
+  expect(skillText.includes("safe-layout presets") && skillText.includes("Never write CSS"), "official Skill does not enforce preset-only caption layout authoring");
 
   const catalog = runCliJson(cli, ["project", "element-catalog", packageRoot], packageRoot);
   expect(catalog.ok === true, "installed renderer resource catalog is unreadable");
@@ -154,6 +158,12 @@ try {
   expect(exported.ok === true, "installed CLI render contract export failed");
   expect(runCliJson(cli, ["render-contract", "verify", bundle], packageRoot).ok === true, "installed CLI render contract verification failed");
   const contract = readJson(join(bundle, "render-contract.json"));
+  expect(contract.schema_version === "2.0", "installed package exported a non-current render contract");
+  const expectedCaptionFont = proposal.source_mode === "talking_head_avatar" ? 24 : 22;
+  const contractCaptionLayout = contract.payload.captions.layout;
+  expect(contractCaptionLayout?.placement === "center_lower" && contractCaptionLayout?.size === "medium" && contractCaptionLayout?.anchor_x_ratio === 0.5 && contractCaptionLayout?.anchor_y_ratio === 0.7 && contractCaptionLayout?.font_size_px === expectedCaptionFont, "installed package did not freeze the portrait caption safe layout");
+  const storyboardCaptionLayout = contract.payload.composition.storyboard.captions.layout;
+  expect(["placement", "size", "anchor_x_ratio", "anchor_y_ratio", "font_size_px"].every((field) => storyboardCaptionLayout[field] === contractCaptionLayout[field]), "installed anchor storyboard layout drifted from the render contract");
   expect(contract.payload.runtime.cli_version === version, "render contract CLI version does not match delivery");
   expect(contract.payload.runtime.delivery_digest === manifest.delivery_digest, "render contract complete delivery digest does not match delivery");
   expect(contract.payload.runtime.renderer_resources_digest === manifest.renderer_resources_digest, "render contract renderer digest does not match delivery");
@@ -174,6 +184,11 @@ try {
   expect(inspected.ok === true, "installed CLI strict inspect failed");
   const inspection = readJson(join(runDir, "render-contract-inspection.json"));
   expect(inspection.accepted === true, "installed package output did not satisfy contract inspection");
+  expect(inspection.checks.some((check: Json) => check.id === "caption-layout" && check.status === "passed"), "installed strict inspect did not validate caption layout");
+  expect(inspection.frames.some((path: string) => path.includes("caption-layout")), "installed strict inspect did not emit the caption layout QA frame");
+  writeFileSync(join(bundle, "render-contract.json"), `${JSON.stringify({ ...contract, schema_version: "1.0" }, null, 2)}\n`);
+  const oldContractVerify = runCliJsonResult(cli, ["render-contract", "verify", bundle], packageRoot);
+  expect(oldContractVerify.status !== 0 && oldContractVerify.json.error?.code === "CONTRACT_SCHEMA_UNSUPPORTED", "installed package did not fail closed on render contract 1.0");
 
   const acceptance = {
     schema_version: "1.0",
@@ -233,7 +248,7 @@ function readJson(path: string): Json {
 
 function makeVideo(path: string): void {
   run("ffmpeg", [
-    "-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=30",
+    "-y", "-f", "lavfi", "-i", "testsrc=size=180x320:rate=30",
     "-t", "1.2", "-pix_fmt", "yuv420p", path,
   ], root);
 }

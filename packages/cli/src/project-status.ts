@@ -68,7 +68,7 @@ import {
   visualAcquisitionFingerprintProjection,
 } from "./project-lineage";
 import { sourceIdentityFingerprintProjection } from "./source-identity";
-import { parseRenderContractV1 } from "./render-contract";
+import { parseRenderContractV2 } from "./render-contract";
 import {
   applyConfirmedTextOverlays,
   evaluateProposalExecution,
@@ -461,9 +461,9 @@ const artifactDefinitions: readonly ArtifactDefinition[] = [
     key: "render-contract",
     path: projectArtifacts.renderContract,
     role: "derived",
-    schemaVersion: "1.0",
+    schemaVersion: "2.0",
     format: "json",
-    parse: (value) => parseRenderContractV1(value),
+    parse: (value) => parseRenderContractV2(value),
   },
   {
     key: "render-output:clean",

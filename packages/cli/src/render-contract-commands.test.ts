@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createProject, exploreProject, probePortableSourceIdentity, probeStrictOutputTiming } from "./project";
 import { bindRenderContract, exportRenderContract, inspectBoundContract, renderBoundContract, verifyRenderContractBundle } from "./render-contract-commands";
-import { compileOutputFrameSchedule, createRenderContractV1, type RenderContractV1 } from "./render-contract";
+import { compileOutputFrameSchedule, createRenderContractV2, type RenderContractV2 } from "./render-contract";
 import { confirmProposalAndWriteEditPlan } from "./test-fixtures";
 
 test("strict render contract binds source and renders without authoring artifacts", async () => {
@@ -59,6 +59,74 @@ test("strict render contract binds source and renders without authoring artifact
     expect(inspection.blockers).toContain("output-hash");
   });
 
+test("portrait strict captions stay in the center-lower safe area", async () => {
+  if (spawnSync("ffmpeg", ["-version"]).status !== 0) return;
+  const root = mkdtempSync(join(tmpdir(), "koubo-contract-portrait-caption-"));
+  const source = join(root, "raw.mp4");
+  const project = join(root, "authoring");
+  makeBlackVideo(source, 1.2, "180x320");
+  expect(createProject([source], { projectPath: project }).ok).toBe(true);
+  writeFileSync(join(project, "transcript.json"), JSON.stringify({
+    timing_granularity: "segment",
+    segments: [{ source_id: "src-001", start: 0.1, end: 1, text: "SAFE CAPTION" }],
+  }));
+  expect((await exploreProject(project, { asr: "external" })).ok).toBe(true);
+  confirmProposalAndWriteEditPlan(project, [], undefined, { sourceMode: "talking_head_avatar" });
+
+  const bundle = join(root, "bundle");
+  const exported = exportRenderContract(project, bundle);
+  if (!exported.ok) throw new Error(`${exported.error.code}: ${exported.error.message}`);
+  const contract = JSON.parse(readFileSync(join(bundle, "render-contract.json"), "utf8")) as RenderContractV2;
+  expect(contract.schema_version).toBe("2.0");
+  expect(contract.payload.captions.layout).toEqual({
+    placement: "center_lower",
+    size: "medium",
+    anchor_x_ratio: 0.5,
+    anchor_y_ratio: 0.7,
+    font_size_px: 24,
+  });
+
+  const sourceMap = join(root, "source-map.json");
+  const bindings = join(root, "bindings.json");
+  writeFileSync(sourceMap, JSON.stringify({ "src-001": source }));
+  expect(bindRenderContract(bundle, sourceMap, bindings).ok).toBe(true);
+  const rendered = renderBoundContract(bundle, bindings, join(root, "run"));
+  if (!rendered.ok) throw new Error(`${rendered.error.code}: ${rendered.error.message}`);
+  const inspected = inspectBoundContract(bundle, rendered.data.result_path);
+  if (!inspected.ok) throw new Error(`${inspected.error.code}: ${inspected.error.message}`);
+  expect(inspected.data.checks.some((check) => check.id === "caption-layout" && check.status === "passed")).toBe(true);
+  const inspection = JSON.parse(readFileSync(join(root, "run", "render-contract-inspection.json"), "utf8")) as { frames: string[] };
+  expect(inspection.frames.some((path) => path.includes("caption-layout"))).toBe(true);
+
+  const frame = spawnSync("ffmpeg", [
+    "-hide_banner", "-loglevel", "error", "-ss", "0.5", "-i", rendered.data.output_path,
+    "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+  ], { maxBuffer: 1024 * 1024 });
+  if (frame.status !== 0) throw new Error(frame.stderr.toString());
+  const pixels = Buffer.from(frame.stdout);
+  const brightRows: number[] = [];
+  for (let y = 0; y < 320; y += 1) {
+    for (let x = 0; x < 180; x += 1) {
+      const offset = (y * 180 + x) * 3;
+      if (pixels[offset]! > 180 && pixels[offset + 1]! > 180 && pixels[offset + 2]! > 180) {
+        brightRows.push(y);
+        break;
+      }
+    }
+  }
+  expect(brightRows.length > 0).toBe(true);
+  const center = (brightRows[0]! + brightRows.at(-1)!) / 2;
+  expect(center >= 320 * 0.6 && center <= 320 * 0.8).toBe(true);
+  expect(brightRows.at(-1)! < 320 * 0.9).toBe(true);
+
+  const oldContract = { ...contract, schema_version: "1.0" };
+  writeFileSync(join(bundle, "render-contract.json"), `${JSON.stringify(oldContract, null, 2)}\n`);
+  const oldVerified = verifyRenderContractBundle(bundle);
+  expect(oldVerified.ok).toBe(false);
+  if (oldVerified.ok) throw new Error("expected render contract 1.0 rejection");
+  expect(oldVerified.error.code).toBe("CONTRACT_SCHEMA_UNSUPPORTED");
+});
+
 test("strict render contract fails closed after source replacement", async () => {
     if (spawnSync("ffmpeg", ["-version"]).status !== 0) return;
     const root = mkdtempSync(join(tmpdir(), "koubo-contract-tamper-"));
@@ -95,11 +163,11 @@ test("strict consumer rejects a continuous-seconds duration that disagrees with 
   const bundle = join(root, "bundle");
   expect(exportRenderContract(project, bundle).ok).toBe(true);
   const contractPath = join(bundle, "render-contract.json");
-  const contract = JSON.parse(readFileSync(contractPath, "utf8")) as RenderContractV1;
+  const contract = JSON.parse(readFileSync(contractPath, "utf8")) as RenderContractV2;
   const expectedDuration = contract.payload.preflight.expected_duration_seconds;
   if (typeof expectedDuration !== "number") throw new Error("expected numeric contract duration");
   contract.payload.preflight.expected_duration_seconds = expectedDuration + 1 / 30;
-  writeFileSync(contractPath, `${JSON.stringify(createRenderContractV1(contract.payload), null, 2)}\n`);
+  writeFileSync(contractPath, `${JSON.stringify(createRenderContractV2(contract.payload), null, 2)}\n`);
   const verified = verifyRenderContractBundle(bundle);
   expect(verified.ok).toBe(false);
   if (verified.ok) throw new Error("expected duration contract rejection");
@@ -150,7 +218,7 @@ test("strict render keeps nine non-integral segments on the contract frame timel
   expect(exportRenderContract(project, bundle).ok).toBe(true);
 
   const contractPath = join(bundle, "render-contract.json");
-  const original = JSON.parse(readFileSync(contractPath, "utf8")) as RenderContractV1;
+  const original = JSON.parse(readFileSync(contractPath, "utf8")) as RenderContractV2;
   const durations = [0.95, 0.72, 1.18, 0.85, 0.98, 0.74, 1.21, 0.81, 0.726667];
   let sourceCursor = 0;
   let outputCursor = 0;
@@ -162,9 +230,10 @@ test("strict render keeps nine non-integral segments on the contract frame timel
   });
   const schedule = compileOutputFrameSchedule(entries, 30);
   original.payload.timeline = { entries };
-  original.payload.captions = { cues: [] };
+  original.payload.captions = { cues: [], layout: null };
   original.payload.preflight.expected_duration_seconds = schedule.expected_duration_seconds;
-  writeFileSync(contractPath, `${JSON.stringify(createRenderContractV1(original.payload), null, 2)}\n`);
+  original.payload.inspection.checks = [];
+  writeFileSync(contractPath, `${JSON.stringify(createRenderContractV2(original.payload), null, 2)}\n`);
 
   const sourceMap = join(root, "source-map.json");
   const bindings = join(root, "bindings.json");
@@ -175,7 +244,12 @@ test("strict render keeps nine non-integral segments on the contract frame timel
   const timing = probeStrictOutputTiming(rendered.data.output_path);
   expect(timing.video_frame_count).toBe(245);
   expect(timing.avg_frame_rate).toBe("30/1");
-  expect(inspectBoundContract(bundle, rendered.data.result_path).ok).toBe(true);
+  const accepted = inspectBoundContract(bundle, rendered.data.result_path);
+  expect(accepted.ok).toBe(true);
+  if (!accepted.ok) throw new Error(accepted.error.message);
+  expect(accepted.data.checks.some((check) => check.id === "caption-layout")).toBe(false);
+  const acceptedInspection = JSON.parse(readFileSync(join(root, "run", "render-contract-inspection.json"), "utf8")) as { frames: string[] };
+  expect(acceptedInspection.frames).toEqual([]);
 
   makeVideo(rendered.data.output_path, 9.2);
   const identity = probePortableSourceIdentity(rendered.data.output_path);
@@ -195,6 +269,15 @@ test("strict render keeps nine non-integral segments on the contract frame timel
 function makeVideo(path: string, duration: number): void {
   const result = spawnSync("ffmpeg", [
     "-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10",
+    "-f", "lavfi", "-i", `sine=frequency=440:duration=${duration}`,
+    "-t", String(duration), "-pix_fmt", "yuv420p", path,
+  ], { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+}
+
+function makeBlackVideo(path: string, duration: number, size: string): void {
+  const result = spawnSync("ffmpeg", [
+    "-y", "-f", "lavfi", "-i", `color=c=black:size=${size}:rate=30`,
     "-f", "lavfi", "-i", `sine=frequency=440:duration=${duration}`,
     "-t", String(duration), "-pix_fmt", "yuv420p", path,
   ], { encoding: "utf8" });

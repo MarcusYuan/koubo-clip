@@ -11,7 +11,7 @@ type FsRuntime = {
 
 const fsRuntime = nodeFs as unknown as FsRuntime;
 
-export const RENDER_CONTRACT_SCHEMA_VERSION = "1.0" as const;
+export const RENDER_CONTRACT_SCHEMA_VERSION = "2.0" as const;
 export const RENDER_BINDING_SCHEMA_VERSION = "1.0" as const;
 export const STRICT_RENDER_RESULT_SCHEMA_VERSION = "1.0" as const;
 export const STRICT_INSPECTION_SCHEMA_VERSION = "1.0" as const;
@@ -128,6 +128,14 @@ export type RenderCaptionCueV1 = {
   text: string;
 };
 
+export type RenderCaptionLayoutV2 = {
+  placement: "center_lower" | "bottom_safe";
+  size: "small" | "medium" | "large";
+  anchor_x_ratio: number;
+  anchor_y_ratio: number;
+  font_size_px: number;
+};
+
 export type RenderContractAssetV1 = {
   asset_id: string;
   bundle_path: string;
@@ -136,11 +144,11 @@ export type RenderContractAssetV1 = {
   media_type?: string;
 };
 
-export type RenderContractPayloadV1 = {
+export type RenderContractPayloadV2 = {
   runtime: JsonObject;
   sources: RenderContractSourceV1[];
   timeline: { entries: RenderTimelineEntryV1[] };
-  captions: { cues: RenderCaptionCueV1[] };
+  captions: { cues: RenderCaptionCueV1[]; layout: RenderCaptionLayoutV2 | null };
   composition: JsonObject;
   assets: RenderContractAssetV1[];
   audio: JsonObject;
@@ -150,10 +158,10 @@ export type RenderContractPayloadV1 = {
   authoring_lineage: JsonObject;
 };
 
-export type RenderContractV1 = {
+export type RenderContractV2 = {
   schema_version: typeof RENDER_CONTRACT_SCHEMA_VERSION;
   contract_digest: Sha256Digest;
-  payload: RenderContractPayloadV1;
+  payload: RenderContractPayloadV2;
 };
 
 export type RenderBindingSourceV1 = {
@@ -232,7 +240,7 @@ export function sha256Digest(value: string | Uint8Array): Sha256Digest {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
-export function renderContractDigest(payload: RenderContractPayloadV1 | unknown): Sha256Digest {
+export function renderContractDigest(payload: RenderContractPayloadV2 | unknown): Sha256Digest {
   return sha256Digest(canonicalJson(payload));
 }
 
@@ -283,8 +291,8 @@ export function compileOutputFrameSchedule(
   };
 }
 
-export function createRenderContractV1(payload: RenderContractPayloadV1 | unknown): RenderContractV1 {
-  const parsedPayload = parseRenderContractPayloadV1(payload);
+export function createRenderContractV2(payload: RenderContractPayloadV2 | unknown): RenderContractV2 {
+  const parsedPayload = parseRenderContractPayloadV2(payload);
   return {
     schema_version: RENDER_CONTRACT_SCHEMA_VERSION,
     contract_digest: renderContractDigest(parsedPayload),
@@ -292,20 +300,20 @@ export function createRenderContractV1(payload: RenderContractPayloadV1 | unknow
   };
 }
 
-export function parseRenderContractV1(value: unknown): RenderContractV1 {
+export function parseRenderContractV2(value: unknown): RenderContractV2 {
   const obj = strictRecord(value, "render contract", ["schema_version", "contract_digest", "payload"], renderContractErrorCodes.INVALID_RENDER_CONTRACT);
-  const contract: RenderContractV1 = {
+  const contract: RenderContractV2 = {
     schema_version: literalVersion(obj.schema_version, "render contract.schema_version", RENDER_CONTRACT_SCHEMA_VERSION, renderContractErrorCodes.INVALID_RENDER_CONTRACT),
     contract_digest: digest(obj.contract_digest, "render contract.contract_digest", renderContractErrorCodes.INVALID_CONTRACT_DIGEST),
-    payload: parseRenderContractPayloadV1(obj.payload),
+    payload: parseRenderContractPayloadV2(obj.payload),
   };
   verifyRenderContractDigest(contract);
   return contract;
 }
 
-export const parseRenderContract = parseRenderContractV1;
+export const parseRenderContract = parseRenderContractV2;
 
-export function parseRenderContractPayloadV1(value: unknown): RenderContractPayloadV1 {
+export function parseRenderContractPayloadV2(value: unknown): RenderContractPayloadV2 {
   const code = renderContractErrorCodes.INVALID_RENDER_CONTRACT;
   const obj = strictRecord(value, "render contract.payload", [
     "runtime",
@@ -341,32 +349,35 @@ export function parseRenderContractPayloadV1(value: unknown): RenderContractPayl
     if (Math.abs(entry.output_start - expectedStart) > 0.000001) fail(code, `render contract.payload.timeline.entries[${index}].output_start must form a continuous output timeline`, `payload.timeline.entries[${index}].output_start`);
   }
 
-  const captionsObject = strictRecord(obj.captions, "render contract.payload.captions", ["cues"], code);
+  const captionsObject = strictRecord(obj.captions, "render contract.payload.captions", ["cues", "layout"], code);
   const cues = array(captionsObject.cues, "render contract.payload.captions.cues", code).map((cue, index) =>
     parseCaptionCue(cue, `render contract.payload.captions.cues[${index}]`),
   );
+  const layout = parseCaptionLayout(captionsObject.layout, "render contract.payload.captions.layout", cues.length);
   const assets = array(obj.assets, "render contract.payload.assets", code).map((asset, index) =>
     parseRenderContractAssetV1(asset, `render contract.payload.assets[${index}]`),
   );
   unique(assets.map((asset) => asset.asset_id), "asset_id", code);
   unique(assets.map((asset) => asset.bundle_path), "asset bundle_path", code);
+  const output = jsonObject(obj.output, "render contract.payload.output");
+  validateCaptionLayoutForOutput(layout, output, code);
 
   return {
     runtime: jsonObject(obj.runtime, "render contract.payload.runtime"),
     sources,
     timeline: { entries },
-    captions: { cues },
+    captions: { cues, layout },
     composition: jsonObject(obj.composition, "render contract.payload.composition"),
     assets,
     audio: jsonObject(obj.audio, "render contract.payload.audio"),
-    output: jsonObject(obj.output, "render contract.payload.output"),
+    output,
     preflight: jsonObject(obj.preflight, "render contract.payload.preflight"),
     inspection: jsonObject(obj.inspection, "render contract.payload.inspection"),
     authoring_lineage: jsonObject(obj.authoring_lineage, "render contract.payload.authoring_lineage"),
   };
 }
 
-export function verifyRenderContractDigest(contract: Pick<RenderContractV1, "contract_digest" | "payload">): Sha256Digest {
+export function verifyRenderContractDigest(contract: { contract_digest: Sha256Digest; payload: unknown }): Sha256Digest {
   const actual = renderContractDigest(contract.payload);
   if (actual !== contract.contract_digest) {
     fail(renderContractErrorCodes.CONTRACT_DIGEST_MISMATCH, `contract_digest mismatch: expected ${contract.contract_digest}, computed ${actual}`, "contract_digest");
@@ -395,7 +406,7 @@ export function parseRenderBindingV1(value: unknown): RenderBindingV1 {
 
 export const parseRenderBinding = parseRenderBindingV1;
 
-export function verifyRenderBinding(contract: RenderContractV1, binding: RenderBindingV1): RenderBindingV1 {
+export function verifyRenderBinding(contract: RenderContractV2, binding: RenderBindingV1): RenderBindingV1 {
   verifyRenderContractDigest(contract);
   const actualBindingDigest = renderBindingDigest(binding);
   if (actualBindingDigest !== binding.binding_digest) {
@@ -723,6 +734,36 @@ function parseCaptionCue(value: unknown, name: string): RenderCaptionCueV1 {
   return { start, end, text: nonBlankString(obj.text, `${name}.text`, code) };
 }
 
+function parseCaptionLayout(value: unknown, name: string, cueCount: number): RenderCaptionLayoutV2 | null {
+  const code = renderContractErrorCodes.INVALID_RENDER_CONTRACT;
+  if (value === null) {
+    if (cueCount > 0) fail(code, `${name} may be null only when captions.cues is empty`, name);
+    return null;
+  }
+  const obj = strictRecord(value, name, ["placement", "size", "anchor_x_ratio", "anchor_y_ratio", "font_size_px"], code);
+  const placement = choice(obj.placement, `${name}.placement`, ["center_lower", "bottom_safe"] as const, code);
+  const anchorX = boundedRatio(obj.anchor_x_ratio, `${name}.anchor_x_ratio`, code);
+  const anchorY = boundedRatio(obj.anchor_y_ratio, `${name}.anchor_y_ratio`, code);
+  const maxY = placement === "center_lower" ? 0.82 : 0.90;
+  if (anchorY > maxY) fail(code, `${name}.anchor_y_ratio exceeds ${placement} safe area`, `${name}.anchor_y_ratio`);
+  return {
+    placement,
+    size: choice(obj.size, `${name}.size`, ["small", "medium", "large"] as const, code),
+    anchor_x_ratio: anchorX,
+    anchor_y_ratio: anchorY,
+    font_size_px: positiveInteger(obj.font_size_px, `${name}.font_size_px`, code),
+  };
+}
+
+function validateCaptionLayoutForOutput(layout: RenderCaptionLayoutV2 | null, output: JsonObject, code: RenderContractErrorCode): void {
+  if (!layout) return;
+  const width = positiveInteger(output.width, "render contract.payload.output.width", code);
+  const height = positiveInteger(output.height, "render contract.payload.output.height", code);
+  if (height > width && layout.placement === "bottom_safe" && layout.anchor_y_ratio > 0.82) {
+    fail(code, "render contract.payload.captions.layout.anchor_y_ratio exceeds the portrait bottom-safe area", "payload.captions.layout.anchor_y_ratio");
+  }
+}
+
 function parseBindingSource(value: unknown, name: string): RenderBindingSourceV1 {
   const code = renderContractErrorCodes.INVALID_RENDER_BINDING;
   const obj = strictRecord(value, name, ["source_id", "resolved_path", "verified_identity"], code);
@@ -872,6 +913,12 @@ function positiveInteger(value: unknown, name: string, code: RenderContractError
   return number;
 }
 
+function boundedRatio(value: unknown, name: string, code: RenderContractErrorCode): number {
+  const number = finiteNumber(value, name, code);
+  if (number < 0 || number > 1) fail(code, `${name} must be between 0 and 1`, name);
+  return number;
+}
+
 function sourceRotation(value: unknown, name: string, code: RenderContractErrorCode): 0 | 90 | 180 | 270 {
   if (value === 0 || value === 90 || value === 180 || value === 270) return value;
   fail(code, `${name} must be 0, 90, 180, or 270`, name);
@@ -891,6 +938,16 @@ function timestamp(value: unknown, name: string, code: RenderContractErrorCode):
 function literalVersion<TVersion extends string>(value: unknown, name: string, expected: TVersion, code: RenderContractErrorCode): TVersion {
   if (value !== expected) fail(code, `${name} must be "${expected}"`, name);
   return expected;
+}
+
+function choice<const TValues extends readonly string[]>(
+  value: unknown,
+  name: string,
+  choices: TValues,
+  code: RenderContractErrorCode,
+): TValues[number] {
+  if (typeof value !== "string" || !choices.includes(value)) fail(code, `${name} must be one of ${choices.join(", ")}`, name);
+  return value as TValues[number];
 }
 
 function optionalChoice<const TValues extends readonly string[]>(

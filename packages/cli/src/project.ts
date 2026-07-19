@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import * as nodeFs from "node:fs";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import * as nodePath from "node:path";
@@ -115,6 +116,7 @@ import {
 import { resolveExistingProjectPath, resolveProjectOutputPath } from "./project-paths";
 import { cliVersion, resolveHyperframesBinary } from "./bundle-paths";
 import { compileOutputFrameSchedule, type OutputFrameSchedule } from "./render-contract";
+import { assertResolvedCaptionLayout, captionLayoutsEqual, defaultCaptionLayoutIntent, renderAssCaptionFile, resolveCaptionLayout, type ResolvedCaptionLayout } from "./caption-layout";
 import {
   assertRenderableHyperframesBlockForCard,
   defaultHyperframesBlockForCard,
@@ -197,6 +199,7 @@ export type EnrichmentStoryboard = {
   captions: {
     enabled: boolean;
     identity: "anchor";
+    layout: ResolvedCaptionLayout;
     cues: Array<{ start: number; end: number; text: string }>;
     emphasis: CaptionEmphasis[];
   };
@@ -3309,12 +3312,22 @@ export function renderProject(projectPath: string, options: ProviderModeOption =
       assets: enrichment.assets,
       bundlePaths: Object.fromEntries(enrichment.assets.assets.map((asset) => [asset.id, asset.path])),
     }) : undefined;
+    const captionLayout = captions.length === 0 ? undefined : storyboard?.captions.layout ?? resolveCaptionLayout({
+      width: outputDimensions.width,
+      height: outputDimensions.height,
+      source_mode: execution.source_mode ?? enrichment?.plan.profile.source_mode ?? "talking_head_avatar",
+      intent: {
+        placement: selectedOption?.subtitles.placement ?? "auto",
+        size: selectedOption?.subtitles.size ?? "medium",
+      },
+    });
     const executed = executeResolvedRenderPlan({
       runRoot: stagingRoot,
       assetRoot: projectPath,
       timeline: edl,
       sourcePaths,
       captions,
+      captionLayout,
       output: {
         filename: enrichment ? "final.mp4" : "clean.mp4",
         width: outputDimensions.width,
@@ -4349,13 +4362,13 @@ export function resolveConfirmedEnrichmentPlan(
   projectPath: string,
   edl: EdlArtifact,
   plan?: EnrichmentPlanArtifact,
-): { option?: ProductionProposalOption; plan?: EnrichmentPlanArtifact; conformance?: ProposalExecutionConformance } {
+): { option?: ProductionProposalOption; source_mode?: EnrichmentSourceMode; plan?: EnrichmentPlanArtifact; conformance?: ProposalExecutionConformance } {
   const context = selectedProposalContextForCurrentEditPlan(projectPath, undefined, "project.conformance");
   if (!context) return { plan };
   const effectivePlan = applyConfirmedTextOverlays(context.option, edl, plan, context.proposal.source_mode);
   validateProjectAuthoringConformance(projectPath, effectivePlan, edl);
   const conformance = assertResolvedProposalExecution(context.option, edl, effectivePlan, context.proposal.source_mode);
-  return { option: context.option, plan: effectivePlan, conformance };
+  return { option: context.option, source_mode: context.proposal.source_mode, plan: effectivePlan, conformance };
 }
 
 function commitCanonicalEnrichmentValidation(
@@ -4493,6 +4506,14 @@ function assertEnrichmentConformsToSelectedProposalOption(
     throw lifecycleCommandError("PROPOSAL_EXECUTION_MISMATCH", sourceModeCheck.message, "enrichment-plan", "Use the source_mode confirmed in production-proposal.json.", "project.enrich-plan");
   }
   const captions = compiledCaptionPlan(plan);
+  const confirmedCaptionLayout = {
+    placement: option.subtitles.placement ?? "auto",
+    size: option.subtitles.size ?? "medium",
+  };
+  const plannedCaptionLayout = plan.profile.caption_layout ?? defaultCaptionLayoutIntent();
+  if (option.subtitles.enabled && (confirmedCaptionLayout.placement !== plannedCaptionLayout.placement || confirmedCaptionLayout.size !== plannedCaptionLayout.size)) {
+    throw lifecycleCommandError("PROPOSAL_EXECUTION_MISMATCH", `enrichment-plan caption layout does not match proposal option ${option.id}`, "enrichment-plan", "Use the caption placement and size confirmed in production-proposal.json.", "project.enrich-plan");
+  }
   if (!option.subtitles.enabled && (captions.enabled || captions.emphasis.length > 0)) {
     throw lifecycleCommandError("PROPOSAL_EXECUTION_MISMATCH", `enrichment-plan enables captions, but proposal option ${option.id} disabled subtitles`, "enrichment-plan", "Remove caption elements or choose a subtitles-enabled proposal option.", "project.enrich-plan");
   }
@@ -4588,8 +4609,12 @@ function readEffectiveEnrichment(
   }
 
   const usage = usageSources[0]!.plan;
-  const sourceMode = selectedProposalContextForCurrentEditPlan(projectPath, editPlan, "project.enrich-plan")?.proposal.source_mode ?? "talking_head_avatar";
-  const usageEnrichment = assetUsagePlanToEnrichment(projectPath, usage, sourceMode);
+  const proposalContext = selectedProposalContextForCurrentEditPlan(projectPath, editPlan, "project.enrich-plan");
+  const sourceMode = proposalContext?.proposal.source_mode ?? "talking_head_avatar";
+  const usageEnrichment = assetUsagePlanToEnrichment(projectPath, usage, sourceMode, {
+    placement: proposalContext?.option.subtitles.placement ?? "auto",
+    size: proposalContext?.option.subtitles.size ?? "medium",
+  });
   const assets = mergeAssetManifests(baseAssets, usageEnrichment.assets);
   return { plan: usageEnrichment.plan, assets, normalization: usageSources[0] };
 }
@@ -4750,6 +4775,7 @@ function assetUsagePlanToEnrichment(
   projectPath: string,
   usage: AssetUsagePlanArtifact,
   sourceMode: EnrichmentSourceMode,
+  captionLayout = defaultCaptionLayoutIntent(),
 ): { plan: EnrichmentPlanArtifact; assets: AssetManifestArtifact } {
   const assets: AssetManifestArtifact["assets"] = [];
   const music: EnrichmentMusic[] = usage.music.map((item, index) => {
@@ -4834,7 +4860,7 @@ function assetUsagePlanToEnrichment(
 
   const plan = parseEnrichmentPlan({
     version: "2.0",
-    profile: { ...defaultEnrichmentProfile(sourceMode) },
+    profile: { ...defaultEnrichmentProfile(sourceMode), caption_layout: captionLayout },
     elements: [
       ...(visualAssets.length > 0 ? [{
         id: "captions-anchor",
@@ -6402,6 +6428,13 @@ function renderEnrichedVideo(
   mkdirSync(workDir, { recursive: true });
   let current = cleanRenderPath;
   const finalPath = output.finalPath;
+  const cleanSize = probeVideoSize(cleanRenderPath);
+  const captionLayout = resolvedStoryboard?.captions.layout ?? resolveCaptionLayout({
+    width: cleanSize.width,
+    height: cleanSize.height,
+    source_mode: plan.profile.source_mode,
+    intent: plan.profile.caption_layout,
+  });
 
   const needsRecut = requiresHyperframesRecut(plan);
   if (needsRecut) {
@@ -6432,7 +6465,7 @@ function renderEnrichedVideo(
   if (needsRecut) {
     ffmpeg(["-y", "-i", current, "-c", "copy", "-movflags", "+faststart", finalPath], "ffmpeg enriched final copy failed");
   } else {
-    burnSubtitles(current, subtitlesPath, finalPath, workDir);
+    burnSubtitles(current, subtitlesPath, finalPath, workDir, captionLayout);
   }
   return finalPath;
 }
@@ -6454,7 +6487,9 @@ function renderHyperframesRecut(
   if (existsSync(cardsDir)) for (const name of readdirSync(cardsDir)) unlinkSync(join(cardsDir, name));
   mkdirSync(cardsDir, { recursive: true });
   mkdirSync(join(publicDir, "assets"), { recursive: true });
+  mkdirSync(join(publicDir, "runtime"), { recursive: true });
   copyFileSync(cleanRenderPath, join(publicDir, "clean.mp4"));
+  copyFileSync(fileURLToPath(import.meta.resolve("gsap/dist/gsap.min.js")), join(publicDir, "runtime", "gsap.min.js"));
   if (resolvedStoryboard) {
     for (const asset of assets.assets) {
       const source = projectAssetPath(projectPath, asset.path);
@@ -6526,7 +6561,11 @@ export function buildEnrichmentStoryboard(
     element_usage: summarizeHyperframesElements(plan),
     captions: (() => {
       const captionPlan = compiledCaptionPlan(plan);
-      return { ...captionPlan, cues: captionPlan.enabled && existsSync(subtitlesPath) ? parseSrtCues(readFileSync(subtitlesPath, "utf8")) : [] };
+      return {
+        ...captionPlan,
+        layout: resolveCaptionLayout({ width: size.width, height: size.height, source_mode: plan.profile.source_mode, intent: plan.profile.caption_layout }),
+        cues: captionPlan.enabled && existsSync(subtitlesPath) ? parseSrtCues(readFileSync(subtitlesPath, "utf8")) : [],
+      };
     })(),
     qa_checks: buildQaChecks(projectPath, plan, assets),
     asset_summary: summarizeAssets(projectPath, {
@@ -6583,7 +6622,11 @@ export function resolveRenderContractStoryboard(input: {
     element_usage: summarizeHyperframesElements(plan),
     captions: (() => {
       const captionPlan = compiledCaptionPlan(plan);
-      return { ...captionPlan, cues: captionPlan.enabled ? captions : [] };
+      return {
+        ...captionPlan,
+        layout: resolveCaptionLayout({ width, height, source_mode: plan.profile.source_mode, intent: plan.profile.caption_layout }),
+        cues: captionPlan.enabled ? captions : [],
+      };
     })(),
     qa_checks: buildQaChecks(projectPath, plan, assets).map((check) => ({
       ...check,
@@ -6620,6 +6663,7 @@ export function executeResolvedRenderPlan(input: {
   timeline: EdlArtifact;
   sourcePaths: Record<string, string>;
   captions: Array<{ start: number; end: number; text: string }>;
+  captionLayout?: ResolvedCaptionLayout;
   output: { filename: string; width: number; height: number; fps: number };
   sourceHasAudio: Record<string, boolean>;
   durationToleranceSeconds: number;
@@ -6641,6 +6685,9 @@ export function executeResolvedRenderPlan(input: {
   let storyboardPath: string | undefined;
   if (input.plan) {
     if (!input.assets || !input.storyboard) throw commandError("CONTRACT_INVALID", "resolved enrichment requires frozen assets and storyboard");
+    if (input.captionLayout && !captionLayoutsEqual(input.captionLayout, input.storyboard.captions.layout)) {
+      throw commandError("CONTRACT_INVALID", "resolved storyboard caption layout does not match the render contract");
+    }
     storyboardPath = join(workDir, "storyboard.json");
     const postprocessedPath = join(workDir, "postprocessed.mp4");
     renderEnrichedVideo(input.assetRoot ?? runRoot, cleanPath, subtitlesPath, input.plan, input.assets, { workDir, finalPath: postprocessedPath, storyboardPath }, input.storyboard);
@@ -6648,8 +6695,9 @@ export function executeResolvedRenderPlan(input: {
   } else if (input.captions.length === 0) {
     copyFileSync(cleanPath, outputPath);
   } else {
+    if (!input.captionLayout) throw commandError("CONTRACT_INVALID", "caption layout is required when captions are present");
     const postprocessedPath = join(workDir, "postprocessed.mp4");
-    burnSubtitles(cleanPath, subtitlesPath, postprocessedPath, workDir);
+    burnSubtitles(cleanPath, subtitlesPath, postprocessedPath, workDir, input.captionLayout);
     conformPostProcessedOutputTiming(postprocessedPath, outputPath, frameSchedule, input.durationToleranceSeconds);
   }
   assertStrictOutputTiming(outputPath, frameSchedule, input.durationToleranceSeconds);
@@ -6907,6 +6955,9 @@ function isVisualAssetManifestType(value: unknown): boolean {
 
 function renderRecutHtml(storyboard: EnrichmentStoryboard): string {
   const duration = storyboard.clean_video.duration_seconds;
+  const captionLayout = storyboard.captions.layout;
+  assertResolvedCaptionLayout(captionLayout);
+  const emphasisY = Math.max(0.1, captionLayout.anchor_y_ratio - 0.1);
   const sourceClass = `source-${storyboard.profile.source_mode}`;
   const cards = storyboard.cards
     .map((card, index) => {
@@ -7030,7 +7081,7 @@ function renderRecutHtml(storyboard: EnrichmentStoryboard): string {
       .card-wrap { position: absolute; z-index: 4; opacity: 0; will-change: opacity, transform; color: #17201b; }
       .hf-registry-block { position: absolute; z-index: 5; opacity: 1; will-change: opacity, transform; }
       .hf-registry-component-host { position: absolute; z-index: 6; opacity: 0; will-change: opacity, transform; width: max-content; max-width: min(560px, 44vw); padding: 8px 12px; border-radius: 999px; color: #fff; font-size: clamp(15px, 1.8vw, 28px); line-height: 1.1; font-weight: 850; background: rgba(10, 14, 18, 0.46); border: 1px solid rgba(255,255,255,0.16); text-shadow: 0 2px 10px rgba(0,0,0,0.28); backdrop-filter: blur(2px); }
-      .caption-component-host { left:50%; right:auto; bottom:12%; translate:-50% 0; width:max-content; max-width:min(820px, calc(100% - 160px)); min-width:0; padding:10px 16px; border-radius:14px; background:rgba(12,16,20,0.28); color:#fff; border:1px solid rgba(255,255,255,0.14); text-align:center; white-space:normal; overflow-wrap:anywhere; }
+      .caption-component-host { left:${percent(captionLayout.anchor_x_ratio)}; right:auto; top:${percent(emphasisY)}; bottom:auto; translate:-50% -50%; width:max-content; max-width:min(820px, calc(100% - 160px)); min-width:0; padding:10px 16px; border-radius:14px; background:rgba(12,16,20,0.28); color:#fff; border:1px solid rgba(255,255,255,0.14); text-align:center; white-space:normal; overflow-wrap:anywhere; font-size:${Math.max(15, Math.round(captionLayout.font_size_px * 0.85))}px; }
       .caption-component-host span { position:relative; z-index:1; }
       .caption-component-host span::before { content:""; position:absolute; z-index:-1; left:-6px; right:-6px; bottom:0.08em; height:0.42em; border-radius:999px; background:rgba(250,204,21,0.72); transform:scaleX(var(--caption-sweep, 0)); transform-origin:left center; }
       .cli-overlay { position:absolute; z-index:7; opacity:0; will-change:opacity, transform; color:#fff; }
@@ -7074,13 +7125,12 @@ function renderRecutHtml(storyboard: EnrichmentStoryboard): string {
       .flow-arrow { stroke: #2b5c88; transform-box: fill-box; transform-origin: left center; }
       .flow-node { fill: #fffef7; stroke: #17201b; transform-box: fill-box; transform-origin: center; }
       .flow text { font: 700 16px system-ui, sans-serif; fill: #17201b; }
-      .caption-rail { position: absolute; left: 8%; right: 8%; bottom: 5%; z-index: 8; min-height: 58px; display: grid; place-items: center; padding: 12px 20px; border-radius: 999px; background: rgba(16, 20, 18, 0.74); color: #fff; box-shadow: 0 16px 40px rgba(0,0,0,0.18); opacity: 0; will-change: opacity, transform; }
-      #caption-text { max-width: 100%; font-size: clamp(18px, 2.7vw, 38px); line-height: 1.15; font-weight: 800; text-align: center; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .emphasis-chip { position: absolute; left: 50%; bottom: 15%; z-index: 7; opacity: 0; padding: 10px 18px; border-radius: 999px; color: #132017; background: rgba(255, 243, 176, 0.96); border: 1px solid rgba(76, 63, 14, 0.18); box-shadow: 0 12px 34px rgba(20,18,10,0.16); font-weight: 850; font-size: clamp(16px, 2vw, 30px); will-change: opacity, transform; }
+      .caption-rail { position: absolute; left: ${percent(captionLayout.anchor_x_ratio)}; right: auto; top: ${percent(captionLayout.anchor_y_ratio)}; bottom: auto; translate: -50% -50%; width: max-content; max-width: 84%; min-height: 58px; z-index: 8; display: grid; place-items: center; padding: 12px 20px; border-radius: 999px; background: rgba(16, 20, 18, 0.74); color: #fff; box-shadow: 0 16px 40px rgba(0,0,0,0.18); opacity: 0; will-change: opacity, transform; }
+      #caption-text { max-width: 100%; font-size: ${captionLayout.font_size_px}px; line-height: 1.15; font-weight: 800; text-align: center; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .emphasis-chip { position: absolute; left: ${percent(captionLayout.anchor_x_ratio)}; top: ${percent(emphasisY)}; bottom: auto; translate: -50% -50%; z-index: 7; opacity: 0; padding: 10px 18px; border-radius: 999px; color: #132017; background: rgba(255, 243, 176, 0.96); border: 1px solid rgba(76, 63, 14, 0.18); box-shadow: 0 12px 34px rgba(20,18,10,0.16); font-weight: 850; font-size: ${Math.max(15, Math.round(captionLayout.font_size_px * 0.85))}px; will-change: opacity, transform; }
       .source-screen_recording .card-wrap, .source-mixed .card-wrap { color: #fff; }
       .source-screen_recording .zone-left_panel, .source-screen_recording .zone-right_panel, .source-mixed .zone-left_panel, .source-mixed .zone-right_panel { display: flex; align-items: center; }
-      .source-screen_recording .caption-rail, .source-mixed .caption-rail { left: 50%; right: auto; bottom: 4.5%; width: max-content; min-width: min(360px, 42%); max-width: 72%; min-height: 44px; padding: 8px 16px; translate: -50% 0; background: rgba(12, 16, 20, 0.58); border: 1px solid rgba(255,255,255,0.12); box-shadow: 0 12px 30px rgba(0,0,0,0.16); }
-      .source-screen_recording #caption-text, .source-mixed #caption-text { font-size: clamp(16px, 2.05vw, 30px); }
+      .source-screen_recording .caption-rail, .source-mixed .caption-rail { min-width: min(360px, 42%); max-width: 72%; min-height: 44px; padding: 8px 16px; background: rgba(12, 16, 20, 0.58); border: 1px solid rgba(255,255,255,0.12); box-shadow: 0 12px 30px rgba(0,0,0,0.16); }
       .source-screen_recording .zone-lower_third, .source-mixed .zone-lower_third { left: 6%; right: auto; bottom: 18%; min-height: auto; width: max-content; max-width: min(440px, 42vw); }
       .source-screen_recording .screen-focus, .source-mixed .screen-focus { position: relative; width: 100%; height: 100%; color: #facc15; }
       .focus-corners { position: absolute; inset: 0; border: 2px solid rgba(250, 204, 21, 0.92); border-radius: 10px; background: rgba(250, 204, 21, 0.018); box-shadow: 0 0 0 1px rgba(12,14,18,0.18), 0 10px 28px rgba(250,204,21,0.10); transform-origin: center; }
@@ -7497,6 +7547,7 @@ function renderDependencyTags(dependencies: HyperframesDependencySummary[]): str
     ? '<link rel="preconnect" href="https://fonts.googleapis.com" />\n    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />'
     : "";
   const tags = dependencies
+    .filter((dependency) => dependency.package_name !== "gsap")
     .filter((dependency) => dependency.url && (dependency.kind === "script" || dependency.kind === "module" || dependency.kind === "style" || dependency.kind === "font"))
     .map((dependency) => {
       if (dependency.kind === "script") return `<script src="${escapeHtml(dependency.url!)}"></script>`;
@@ -7506,7 +7557,7 @@ function renderDependencyTags(dependencies: HyperframesDependencySummary[]): str
       if (dependency.kind === "module") return `<script type="module" src="${escapeHtml(dependency.url!)}"></script>`;
       return `<link href="${escapeHtml(dependency.url!)}" rel="stylesheet" />`;
     });
-  return [preconnects, ...tags].filter(Boolean).join("\n    ");
+  return ['<script src="runtime/gsap.min.js"></script>', preconnects, ...tags].filter(Boolean).join("\n    ");
 }
 
 function cardInlineStyle(card: StoryboardCard, sourceMode: EnrichmentSourceMode): string {
@@ -7641,18 +7692,14 @@ function mixSfx(basePath: string, sfxPath: string, element: EnrichmentSfx, outpu
   ffmpeg(["-y", "-i", basePath, "-i", sfxPath, "-filter_complex", mix, "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart", outputPath], "ffmpeg SFX mix failed");
 }
 
-function burnSubtitles(basePath: string, subtitlesPath: string, outputPath: string, workDir: string): boolean {
+function burnSubtitles(basePath: string, subtitlesPath: string, outputPath: string, workDir: string, layout: ResolvedCaptionLayout): boolean {
   const cues = parseSrtCues(readFileSync(subtitlesPath, "utf8"));
   if (cues.length === 0) {
     ffmpeg(["-y", "-i", basePath, "-c", "copy", "-movflags", "+faststart", outputPath], "ffmpeg final copy failed");
     return false;
   }
-  if (!ffmpegFilterExists("subtitles")) {
-    if (!ffmpegFilterExists("drawtext")) {
-      throw commandError("RENDER_PREFLIGHT_FAILED", "captions are required, but ffmpeg provides neither subtitles nor drawtext filter");
-    }
-    const { height } = probeVideoSize(basePath);
-    const fontSize = Math.max(18, Math.round(height * 0.045));
+  assertResolvedCaptionLayout(layout);
+  if (ffmpegFilterExists("drawtext")) {
     const font = subtitleFontOption();
     const filters = cues.map((cue, index) => {
       const textPath = join(workDir, `subtitle-${String(index + 1).padStart(4, "0")}.txt`);
@@ -7661,13 +7708,13 @@ function burnSubtitles(basePath: string, subtitlesPath: string, outputPath: stri
         font,
         `textfile='${escapeFfmpegFilterValue(textPath)}'`,
         `enable='between(t,${cue.start},${cue.end})'`,
-        `fontsize=${fontSize}`,
+        `fontsize=${layout.font_size_px}`,
         "fontcolor=white",
-        "x=(w-text_w)/2",
-        `y=h-text_h-${Math.round(fontSize * 1.4)}`,
+        `x=(w*${layout.anchor_x_ratio})-(text_w/2)`,
+        `y=(h*${layout.anchor_y_ratio})-(text_h/2)`,
         "box=1",
         "boxcolor=black@0.58",
-        `boxborderw=${Math.round(fontSize * 0.35)}`,
+        `boxborderw=${Math.round(layout.font_size_px * 0.35)}`,
       ]
         .filter(Boolean)
         .join(":");
@@ -7676,7 +7723,13 @@ function burnSubtitles(basePath: string, subtitlesPath: string, outputPath: stri
     ffmpeg(["-y", "-i", basePath, "-vf", filters.join(","), "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "copy", "-movflags", "+faststart", outputPath], "ffmpeg drawtext subtitle burn failed");
     return true;
   }
-  ffmpeg(["-y", "-i", basePath, "-vf", `subtitles='${subtitlesPath.replaceAll("'", "\\'")}'`, "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "copy", "-movflags", "+faststart", outputPath], "ffmpeg subtitle burn failed");
+  if (!ffmpegFilterExists("subtitles")) {
+    throw commandError("RENDER_PREFLIGHT_FAILED", "captions are required, but ffmpeg provides neither drawtext nor subtitles filter");
+  }
+  const { width, height } = probeVideoSize(basePath);
+  const assPath = join(workDir, "subtitles.ass");
+  writeFileSync(assPath, renderAssCaptionFile(cues, layout, width, height));
+  ffmpeg(["-y", "-i", basePath, "-vf", `subtitles='${escapeFfmpegFilterValue(assPath)}'`, "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "copy", "-movflags", "+faststart", outputPath], "ffmpeg ASS subtitle burn failed");
   return true;
 }
 
@@ -7714,7 +7767,7 @@ function subtitleFontOption(): string {
 }
 
 function escapeFfmpegFilterValue(value: string): string {
-  return value.replaceAll("\\", "\\\\").replaceAll("'", "\\'");
+  return value.replaceAll("\\", "\\\\").replaceAll(":", "\\:").replaceAll("'", "\\'");
 }
 
 function ffmpeg(args: string[], message: string): void {

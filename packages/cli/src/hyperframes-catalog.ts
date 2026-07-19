@@ -56,10 +56,10 @@ export const HYPERFRAMES_DEPENDENCIES = [
   {
     id: "gsap_3_14_2",
     kind: "script",
-    url: "https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js",
+    url: "https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js",
     domain: "cdn.jsdelivr.net",
     package_name: "gsap",
-    version: "3.14.2",
+    version: "3.15.0",
     reason: "seekable HyperFrames-compatible timelines",
   },
   {

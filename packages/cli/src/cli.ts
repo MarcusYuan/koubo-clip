@@ -316,7 +316,7 @@ function softwareCapabilities(): CapabilitiesArtifact {
       "sources.json": "2.0",
       "source-materialization.json": "1.0",
       "edl.json": "2.0",
-      "render-contract.json": "1.0",
+      "render-contract.json": "2.0",
       "production-proposal.json": "3.0",
       "edit-plan.json": "1.0",
       "asset-usage-plan.json": "1.0",
@@ -392,9 +392,9 @@ function softwareCapabilities(): CapabilitiesArtifact {
       "EVIDENCE_HASH_MISMATCH",
       "EVIDENCE_BINDING_MISMATCH",
     ],
-    capability_ids: ["detached_source.v1", "external_frame_evidence.v1", "portable_edl.v1", "render_contract.export.v1", "render_contract.consume_strict.v1", "source_binding.v1", "artifact_contract.discovery.v1", "artifact_validation.aggregate.v1"],
+    capability_ids: ["detached_source.v1", "external_frame_evidence.v1", "portable_edl.v1", "render_contract.export.v1", "render_contract.consume_strict.v1", "source_binding.v1", "artifact_contract.discovery.v1", "artifact_validation.aggregate.v1", "caption_layout.safe_area.v1"],
     delivery: { manifest_schema_version: "3.0", aggregate_delivery_digest: true, cli_version: cliVersion(), runtime_dependencies: ["gsap@3.15.0", "hyperframes@0.7.36"] },
-    render_contract: { schema_version: "1.0", exact_runtime_compatibility: true, immutable_directory_bundle: true },
+    render_contract: { schema_version: "2.0", exact_runtime_compatibility: true, immutable_directory_bundle: true },
     artifact_contracts: artifactContractIndex(),
   };
 }

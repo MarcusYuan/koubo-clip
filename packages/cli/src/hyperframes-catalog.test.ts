@@ -81,7 +81,7 @@ test("HyperFrames default card blocks are renderable for every source mode and c
 
 test("HyperFrames catalog validates allowlisted CDN dependencies", () => {
   const summaries = validateHyperframesCatalogDependencies();
-  expect(summaries.some((item) => item.package_name === "gsap" && item.version === "3.14.2")).toBe(true);
+  expect(summaries.some((item) => item.package_name === "gsap" && item.version === "3.15.0")).toBe(true);
   expect(summaries.some((item) => item.package_name === "google-fonts" && item.versionless_exception === "google-fonts-family-css")).toBe(true);
   expect(summaries.some((item) => item.package_name === "bodymovin" && item.version === "5.12.2")).toBe(false);
   const lottie = validateHyperframesCdnDependency({
