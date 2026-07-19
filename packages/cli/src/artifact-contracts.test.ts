@@ -271,6 +271,19 @@ test("CLI-owned contracts are discoverable but never authorable", () => {
   }
 });
 
+test("strict render protocol exposes all four current output contracts as 2.0", () => {
+  for (const artifactId of ["render-contract", "source-binding", "render-contract-result", "render-contract-inspection"]) {
+    const contract = getArtifactContract(artifactId);
+    expect(contract === undefined).toBe(false);
+    expect(contract?.schema_version).toBe("2.0");
+    expect(contract?.ownership).toBe("cli_owned");
+    expect(contract?.external_writes_allowed).toBe(false);
+    expect(contract?.schema.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
+    expect(contract?.schema.type).toBe("object");
+    expect(contract?.schema.properties === undefined).toBe(false);
+  }
+});
+
 function hasBareObjectArrayItem(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   if (Array.isArray(value)) return value.some(hasBareObjectArrayItem);

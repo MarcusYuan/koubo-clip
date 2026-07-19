@@ -9,23 +9,28 @@ import {
   compileOutputFrameSchedule,
   createRenderContractV2,
   materializeJsonObject,
-  parseRenderBindingV1,
+  parseRenderBinding,
   parseRenderContractV2,
+  parseRenderContract,
   parseSourceMapV1,
-  parseStrictInspectionV1,
-  parseStrictRenderResultV1,
+  parseStrictInspection,
+  parseStrictRenderResult,
   renderBindingDigest,
   renderContractDigest,
   renderContractErrorCode,
   renderContractErrorCodes,
+  RENDER_BINDING_SCHEMA_VERSION,
+  RENDER_CONTRACT_SCHEMA_VERSION,
+  STRICT_INSPECTION_SCHEMA_VERSION,
+  STRICT_RENDER_RESULT_SCHEMA_VERSION,
   sha256Digest,
   strictRenderResultDigest,
   verifyRenderAssetBytes,
   verifyRenderAssets,
   verifyRenderBinding,
-  type RenderBindingV1,
+  type RenderBindingV2,
   type RenderContractPayloadV2,
-  type StrictRenderResultV1,
+  type StrictRenderResultV2,
 } from "./render-contract";
 
 const SOURCE_DIGEST = `sha256:${"a".repeat(64)}` as const;
@@ -91,6 +96,64 @@ function expectCode(action: () => unknown, code: string): void {
     expect((error as { code?: unknown }).code).toBe(code);
   }
 }
+
+test("unified strict render protocol exposes all output schemas as 2.0 and rejects v1", () => {
+  expect(RENDER_CONTRACT_SCHEMA_VERSION).toBe("2.0");
+  expect(RENDER_BINDING_SCHEMA_VERSION).toBe("2.0");
+  expect(STRICT_RENDER_RESULT_SCHEMA_VERSION).toBe("2.0");
+  expect(STRICT_INSPECTION_SCHEMA_VERSION).toBe("2.0");
+
+  const contract = createRenderContractV2(payload());
+  expect(parseRenderContract(clone(contract))).toEqual(contract);
+  expectCode(() => parseRenderContract({ ...contract, schema_version: "1.0" }), renderContractErrorCodes.PROTOCOL_SCHEMA_UNSUPPORTED);
+
+  const bindingBase = {
+    schema_version: RENDER_BINDING_SCHEMA_VERSION,
+    contract_digest: contract.contract_digest,
+    sources: [{ source_id: "source-1", resolved_path: "/media/source.mp4", verified_identity: contract.payload.sources[0].identity }],
+  };
+  const binding = { ...bindingBase, binding_digest: renderBindingDigest(bindingBase) };
+  expect(parseRenderBinding(clone(binding))).toEqual(binding);
+  expectCode(() => parseRenderBinding({ ...binding, schema_version: "1.0" }), renderContractErrorCodes.PROTOCOL_SCHEMA_UNSUPPORTED);
+
+  const result = strictRenderResult(contract.contract_digest, binding.binding_digest);
+  expect(parseStrictRenderResult(clone(result))).toEqual(result);
+  expectCode(() => parseStrictRenderResult({ ...result, schema_version: "1.0" }), renderContractErrorCodes.PROTOCOL_SCHEMA_UNSUPPORTED);
+
+  const inspection = strictInspection(result);
+  expect(parseStrictInspection(clone(inspection))).toEqual(inspection);
+  expectCode(() => parseStrictInspection({ ...inspection, schema_version: "1.0" }), renderContractErrorCodes.PROTOCOL_SCHEMA_UNSUPPORTED);
+});
+
+test("binding digest includes the binding schema version", () => {
+  const contract = createRenderContractV2(payload());
+  const bindingBase = {
+    schema_version: RENDER_BINDING_SCHEMA_VERSION,
+    contract_digest: contract.contract_digest,
+    sources: [{ source_id: "source-1", resolved_path: "/media/source.mp4", verified_identity: contract.payload.sources[0].identity }],
+  };
+
+  expect(renderBindingDigest(bindingBase)).toBe(sha256Digest(canonicalJson(bindingBase)));
+  expect(renderBindingDigest(bindingBase) === sha256Digest(canonicalJson({ contract_digest: bindingBase.contract_digest, sources: bindingBase.sources }))).toBe(false);
+});
+
+test("accepted strict inspection requires final acceptance statuses", () => {
+  const result = strictRenderResult(`sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`);
+  const accepted = strictInspection(result);
+  expect(parseStrictInspection(accepted)).toEqual(accepted);
+
+  for (const field of [
+    "render_status",
+    "technical_inspection_status",
+    "proposal_conformance_status",
+    "business_acceptance_status",
+    "overall_status",
+  ]) {
+    const missing = clone(accepted) as Record<string, unknown>;
+    delete missing[field];
+    expectCode(() => parseStrictInspection(missing), renderContractErrorCodes.INVALID_STRICT_INSPECTION);
+  }
+});
 
 test("canonical JSON sorts object keys recursively and preserves array order", () => {
   expect(canonicalJson({ z: 1, a: { y: true, x: [3, 2, 1] } })).toBe('{"a":{"x":[3,2,1],"y":true},"z":1}');
@@ -178,7 +241,7 @@ test("render contract v2 requires typed caption layout in parsed contracts", () 
   expect(parseRenderContractV2(clone(empty)).payload.captions.layout).toBe(null);
 
   const old = { ...contract, schema_version: "1.0" };
-  expectCode(() => parseRenderContractV2(old), renderContractErrorCodes.INVALID_RENDER_CONTRACT);
+  expectCode(() => parseRenderContractV2(old), renderContractErrorCodes.PROTOCOL_SCHEMA_UNSUPPORTED);
 
   const missingLayout = clone(contract) as unknown as { payload: { captions: Record<string, unknown> } };
   delete missingLayout.payload.captions.layout;
@@ -289,17 +352,17 @@ test("source map and binding parsers reject fallback metadata and bind exact ide
 
   const contract = createRenderContractV2(payload());
   const bindingBase = {
-    schema_version: "1.0" as const,
+    schema_version: RENDER_BINDING_SCHEMA_VERSION,
     contract_digest: contract.contract_digest,
     sources: [{ source_id: "source-1", resolved_path: "/media/source.mp4", verified_identity: contract.payload.sources[0].identity }],
   };
-  const binding: RenderBindingV1 = { ...bindingBase, binding_digest: renderBindingDigest(bindingBase) };
-  expect(parseRenderBindingV1(clone(binding))).toEqual(binding);
+  const binding: RenderBindingV2 = { ...bindingBase, binding_digest: renderBindingDigest(bindingBase) };
+  expect(parseRenderBinding(clone(binding))).toEqual(binding);
   expect(verifyRenderBinding(contract, binding)).toEqual(binding);
 
   const changedBinding = clone(binding);
   changedBinding.sources[0].resolved_path = "/media/other.mp4";
-  expectCode(() => parseRenderBindingV1(changedBinding), renderContractErrorCodes.BINDING_DIGEST_MISMATCH);
+  expectCode(() => parseRenderBinding(changedBinding), renderContractErrorCodes.BINDING_DIGEST_MISMATCH);
   expectCode(() => verifyRenderBinding(contract, changedBinding), renderContractErrorCodes.BINDING_DIGEST_MISMATCH);
 
   const otherContract = { ...contract, contract_digest: `sha256:${"f".repeat(64)}` as const };
@@ -307,8 +370,8 @@ test("source map and binding parsers reject fallback metadata and bind exact ide
 });
 
 test("strict result and inspection parsers require digest-bound receipts", () => {
-  const result: StrictRenderResultV1 = {
-    schema_version: "1.0",
+  const result: StrictRenderResultV2 = {
+    schema_version: STRICT_RENDER_RESULT_SCHEMA_VERSION,
     contract_digest: `sha256:${"a".repeat(64)}`,
     binding_digest: `sha256:${"b".repeat(64)}`,
     output: {
@@ -322,22 +385,27 @@ test("strict result and inspection parsers require digest-bound receipts", () =>
     warnings: [],
     completed_at: "2026-07-15T08:00:00.000Z",
   };
-  expect(parseStrictRenderResultV1(result)).toEqual(result);
+  expect(parseStrictRenderResult(result)).toEqual(result);
 
   const inspection = {
-    schema_version: "1.0",
+    schema_version: STRICT_INSPECTION_SCHEMA_VERSION,
     contract_digest: result.contract_digest,
     binding_digest: result.binding_digest,
     render_result_digest: strictRenderResultDigest(result),
     output_sha256: result.output.sha256,
     accepted: true,
+    render_status: "success",
+    technical_inspection_status: "passed",
+    proposal_conformance_status: "passed",
+    business_acceptance_status: "passed",
+    overall_status: "completed",
     checks: [{ id: "duration", status: "passed", message: "duration matches" }],
     frames: [],
     warnings: [],
     blockers: [],
     inspected_at: "2026-07-15T08:01:00.000Z",
   };
-  expect(parseStrictInspectionV1(inspection)).toEqual(inspection);
+  expect(parseStrictInspection(inspection)).toEqual(inspection);
 
   const partial = {
     ...inspection,
@@ -350,18 +418,57 @@ test("strict result and inspection parsers require digest-bound receipts", () =>
     checks: [{ id: "proposal-conformance", status: "blocker", message: "confirmed option was not realized" }],
     blockers: ["proposal-conformance"],
   } as const;
-  expect(parseStrictInspectionV1(partial)).toEqual(partial);
+  expect(parseStrictInspection(partial)).toEqual(partial);
   expectCode(
-    () => parseStrictInspectionV1({ ...partial, accepted: true, checks: [], blockers: [] }),
+    () => parseStrictInspection({ ...partial, accepted: true, checks: [], blockers: [] }),
     renderContractErrorCodes.INVALID_STRICT_INSPECTION,
   );
 
   expectCode(
-    () => parseStrictInspectionV1({ ...inspection, blockers: ["duration mismatch"] }),
+    () => parseStrictInspection({ ...inspection, blockers: ["duration mismatch"] }),
     renderContractErrorCodes.INVALID_STRICT_INSPECTION,
   );
   expectCode(
-    () => parseStrictRenderResultV1({ ...result, project_path: "/authoring/project" }),
+    () => parseStrictRenderResult({ ...result, project_path: "/authoring/project" }),
     renderContractErrorCodes.INVALID_STRICT_RENDER_RESULT,
   );
 });
+
+function strictRenderResult(contract_digest: string, binding_digest: string) {
+  return {
+    schema_version: "2.0",
+    contract_digest,
+    binding_digest,
+    output: {
+      output_path: "koubo-final.mp4",
+      sha256: `sha256:${"c".repeat(64)}`,
+      size_bytes: 1024,
+      duration_seconds: 3,
+      probe: { format: "mp4" },
+    },
+    renderer: { cli_version: "0.0.14", runtime_compatibility_digest: `sha256:${"d".repeat(64)}` },
+    warnings: [],
+    completed_at: "2026-07-15T08:00:00.000Z",
+  };
+}
+
+function strictInspection(result: ReturnType<typeof strictRenderResult>) {
+  return {
+    schema_version: "2.0",
+    contract_digest: result.contract_digest,
+    binding_digest: result.binding_digest,
+    render_result_digest: strictRenderResultDigest(result),
+    output_sha256: result.output.sha256,
+    accepted: true,
+    render_status: "success",
+    technical_inspection_status: "passed",
+    proposal_conformance_status: "passed",
+    business_acceptance_status: "passed",
+    overall_status: "completed",
+    checks: [{ id: "duration", status: "passed", message: "duration matches" }],
+    frames: [],
+    warnings: [],
+    blockers: [],
+    inspected_at: "2026-07-15T08:01:00.000Z",
+  };
+}

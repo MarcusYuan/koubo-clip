@@ -448,6 +448,7 @@ koubo-clips/<slug>/
 - 宿主可以通过稳定 capability discovery 和只读 project status JSON 恢复流程、获得精确 render inputs、当前 deliverable、blockers、next commands 和最后成功 checkpoint。
 - 不了解仓库源码的 Agent 可以只依赖正式发布包中的 CLI artifact contract 和官方 Skill，生成合法 `production-proposal.json` 3.0；首次校验通过，或最多根据一次聚合 issues 整体修正后通过。
 - 所有 Agent/Host authored artifact 的 required、optional、enum、unknown-field policy 和合法 example 都能从正式 CLI 发现；Skill、validator、example 和发布包由 contract/schema digest 防止漂移。
+- 只有当 technical、proposal、business 三个检查都通过且整体状态为 completed 时，才算完成；单独的 `render_status: success` 不是完成证明。
 
 ## Detached source 与分布式执行合同
 
@@ -456,6 +457,7 @@ koubo-clips/<slug>/
 - Detached project 不要求原片存在，不创建 `source/`，并允许 external transcript、source/focus evidence、proposal、edit plan、portable EDL、captions、resolved storyboard 和 contract export 完成。
 - `edl.json` v2 只含 `source_id` 与 source-local ranges。CLI 在 materialized render 或 strict binding 时才解析真实路径。
 - `render-contract export` 生成不可覆盖的目录合同包。合同 digest 仅覆盖 canonical payload；bundle 只含实际引用的 content-addressed 非源素材。
+- `render-contract.json`、`bindings.json`、`render-contract-result.json` 和 `render-contract-inspection.json` 构成同一个 render-contract 2.0 generation；如果链路仍是 0.0.13 mixed chain，必须整条 re-export / re-execute，不能手写迁移、补字段或 fallback。strict consumer 顺序固定为 `verify -> bind -> render -> inspect`。
 - Strict consumer 只读取合同、bundle assets 和显式 source binding。它不得读取 authoring transcript、analysis、edit-plan 或 enrichment-plan，不得重规划、补默认值或修复项目。
 - Hash/size 必须 exact；source probe duration tolerance 为 0.05 秒。Strict output 的 expected duration 必须由累计 EDL 边界量化后的 exact target frame count 除以 fps 得到，视频帧数必须 exact；容器 duration tolerance 仍为 `max(0.05, 2/fps)`，不得按片段数量扩大。Mismatch 一律 fail closed，并报告 expected、actual、delta 和 tolerance。
 - CLI delivery 必须公开 CLI version、payload/resources/Skill digest、`artifact_contracts_digest`、schema versions、capability IDs 和 exact GSAP/HyperFrames versions，并能在 export、verify、bind、render 前验证兼容性。`delivery-manifest.json` 唯一当前版本是 3.0，旧 manifest 不读取或迁移。正式 npm delivery 的 manifest 必须从 npm packlist 物化后的最终文件树生成；CI 验收、npm publish 和 GitHub Release 必须复用同一个 canonical tarball，不能从源码 checkout 再次打包。正式版本只有在空目录安装该 tarball 后独立通过 Skill、delivery、contract export、strict render 和 inspect 验收才可发布。

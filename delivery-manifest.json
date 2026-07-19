@@ -1,13 +1,13 @@
 {
   "schema_version": "3.0",
-  "cli_version": "0.0.13",
+  "cli_version": "0.0.14",
   "source_revision": "unknown",
   "distribution_kind": "source",
-  "cli_payload_digest": "sha256:d04e08b0261ba7f84d8a2ff438d161529c8fad897f7a4df087cbf536af586a0e",
+  "cli_payload_digest": "sha256:73847c48e85d41f48ef4054ebce05ef6b29543513497358a3ec86caf606dbd85",
   "renderer_resources_digest": "sha256:51d07c4346916bba3cad591e0ad99c8adf04377bd4f8ee6c23e796a33da7e346",
-  "official_skill_digest": "sha256:23e1c5c9fbf98684342a5b1f840dfd08e7c264e2194c3b73ab665704eb63b78a",
-  "artifact_contracts_digest": "sha256:4f861016abaf139f750d05190d62dfbd1cac701fb94c28885eb135cc8e703783",
-  "runtime_compatibility_digest": "sha256:88f0c3101703dcd503b0ab470d5d5aa8645b774692305806da50723e1c6b440f",
+  "official_skill_digest": "sha256:344cb1b782f9ce2bc3cede6903a2e418ea6f574ae46b96d38090f2ab9827ca8d",
+  "artifact_contracts_digest": "sha256:756033907fa59bdd2d4c255cf237af2acb8b8f30212b588181fd3497744a62d5",
+  "runtime_compatibility_digest": "sha256:a462d7bacb597f422613cdd22562b227261482cdff98bdc5728a30d929b7918c",
   "schema_versions": {
     "sources.json": "2.0",
     "source-materialization.json": "1.0",
@@ -15,6 +15,9 @@
     "production-proposal.json": "3.0",
     "enrichment-plan.json": "2.0",
     "render-contract.json": "2.0",
+    "bindings.json": "2.0",
+    "render-contract-result.json": "2.0",
+    "render-contract-inspection.json": "2.0",
     "delivery-manifest.json": "3.0"
   },
   "capability_ids": [
@@ -32,5 +35,5 @@
     "gsap@3.15.0",
     "hyperframes@0.7.36"
   ],
-  "delivery_digest": "sha256:be91f1fc1e61c6d94959439b1e7a3ac2f349b6e179c6f3daa8082acd3d5b85b4"
+  "delivery_digest": "sha256:813eaba863a971dae19a303c4989d2fefe43aa7319eece1f1262b4254ca49069"
 }

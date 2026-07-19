@@ -197,7 +197,7 @@ CLI failures 应使用稳定 code。Provider mode 相关 blocker 至少包含 `c
 
 ## Render contract
 
-- `render-contract.json`、binding、strict result 和 strict inspection 是 CLI-owned。Skill、host 和 user 不得手写或改写。
+- `render-contract.json`、`bindings.json`、`render-contract-result.json` 和 `render-contract-inspection.json` 是同一个 render-contract 2.0 generation；strict consumer 顺序固定为 `verify -> bind -> render -> inspect`。Skill、host 和 user 不得手写或改写；如果链路仍是 0.0.13 mixed chain，必须整条 re-export / re-execute，不能手写迁移、修补或 fallback。
 - Export 只接受 sources v2 与 EDL v2；合同 payload 不得含 source path、project path、absolute path、export timestamp 或 `local_media_ref`。
 - Contract bundle、binding output 和 run directory 均不可覆盖。公共合同/result 必须 commit-last。
 - Strict render 只能调用冻结执行内核；禁止调用 authoring EDL compiler、transcript-to-SRT、enrichment validator、storyboard builder 或 provider。Local authoring render 和 strict render 共享同一个 execution kernel / frame schedule，只在冻结执行计划之后分叉。

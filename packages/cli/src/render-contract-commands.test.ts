@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -7,6 +7,30 @@ import { createProject, exploreProject, probePortableSourceIdentity, probeStrict
 import { bindRenderContract, exportRenderContract, inspectBoundContract, renderBoundContract, verifyRenderContractBundle } from "./render-contract-commands";
 import { compileOutputFrameSchedule, createRenderContractV2, type RenderContractV2 } from "./render-contract";
 import { confirmProposalAndWriteEditPlan } from "./test-fixtures";
+
+test("mixed strict protocol versions fail before binding render or inspection side effects", () => {
+  const root = mkdtempSync(join(tmpdir(), "koubo-contract-mixed-version-"));
+  const bundle = join(root, "bundle");
+  mkdirSync(bundle);
+  writeFileSync(join(bundle, "render-contract.json"), JSON.stringify({ schema_version: "1.0" }));
+
+  const sourceMap = join(root, "source-map.json");
+  const bindings = join(root, "bindings.json");
+  const run = join(root, "run");
+  const resultDir = join(root, "result");
+  mkdirSync(resultDir);
+  const result = join(resultDir, "render-contract-result.json");
+  writeFileSync(sourceMap, JSON.stringify({ "src-001": "/tmp/raw.mp4" }));
+  writeFileSync(result, JSON.stringify({ schema_version: "2.0" }));
+
+  expect(verifyRenderContractBundle(bundle).ok).toBe(false);
+  expect(bindRenderContract(bundle, sourceMap, bindings).ok).toBe(false);
+  expect(existsSync(bindings)).toBe(false);
+  expect(renderBoundContract(bundle, bindings, run).ok).toBe(false);
+  expect(existsSync(run)).toBe(false);
+  expect(inspectBoundContract(bundle, result).ok).toBe(false);
+  expect(existsSync(join(resultDir, "render-contract-inspection.json"))).toBe(false);
+});
 
 test("strict render contract binds source and renders without authoring artifacts", async () => {
     if (spawnSync("ffmpeg", ["-version"]).status !== 0) return;
@@ -35,14 +59,32 @@ test("strict render contract binds source and renders without authoring artifact
     writeFileSync(sourceMap, JSON.stringify({ "src-001": source }));
     const bound = bindRenderContract(bundle, sourceMap, bindings);
     expect(bound.ok).toBe(true);
+    const binding = JSON.parse(readFileSync(bindings, "utf8")) as Record<string, unknown>;
+    const oldBinding = join(root, "bindings-v1.json");
+    const oldBindingRun = join(root, "strict-run-v1-binding");
+    writeFileSync(oldBinding, `${JSON.stringify({ ...binding, schema_version: "1.0" }, null, 2)}\n`);
+    const rejectedBinding = renderBoundContract(bundle, oldBinding, oldBindingRun);
+    expect(rejectedBinding.ok).toBe(false);
+    if (rejectedBinding.ok) throw new Error("expected binding 1.0 rejection");
+    expect(rejectedBinding.error.code).toBe("CONTRACT_SCHEMA_UNSUPPORTED");
+    expect(existsSync(oldBindingRun)).toBe(false);
 
     const run = join(root, "strict-run");
     const rendered = renderBoundContract(bundle, bindings, run);
     expect(rendered.ok).toBe(true);
     if (!rendered.ok) throw new Error(rendered.error.message);
-    const result = JSON.parse(readFileSync(rendered.data.result_path, "utf8")) as { contract_digest: string; output: { output_path: string } };
+    const result = JSON.parse(readFileSync(rendered.data.result_path, "utf8")) as { schema_version: string; contract_digest: string; output: { output_path: string } };
     expect(result.contract_digest).toBe(exported.ok ? exported.data.contract_digest : "");
     expect(result.output.output_path).toBe("koubo-final.mp4");
+    const oldResultDir = join(root, "strict-result-v1");
+    mkdirSync(oldResultDir);
+    const oldResult = join(oldResultDir, "render-contract-result.json");
+    writeFileSync(oldResult, `${JSON.stringify({ ...result, schema_version: "1.0" }, null, 2)}\n`);
+    const rejectedResult = inspectBoundContract(bundle, oldResult);
+    expect(rejectedResult.ok).toBe(false);
+    if (rejectedResult.ok) throw new Error("expected strict result 1.0 rejection");
+    expect(rejectedResult.error.code).toBe("CONTRACT_SCHEMA_UNSUPPORTED");
+    expect(existsSync(join(oldResultDir, "render-contract-inspection.json"))).toBe(false);
     const inspected = inspectBoundContract(bundle, rendered.data.result_path);
     expect(inspected.ok).toBe(true);
     const outputPath = join(run, result.output.output_path);
@@ -119,12 +161,55 @@ test("portrait strict captions stay in the center-lower safe area", async () => 
   expect(center >= 320 * 0.6 && center <= 320 * 0.8).toBe(true);
   expect(brightRows.at(-1)! < 320 * 0.9).toBe(true);
 
+  const oldRuntimeContract = createRenderContractV2({
+    ...contract.payload,
+    runtime: { ...contract.payload.runtime, runtime_compatibility_digest: `sha256:${"0".repeat(64)}` },
+  });
+  writeFileSync(join(bundle, "render-contract.json"), `${JSON.stringify(oldRuntimeContract, null, 2)}\n`);
+  const oldRuntimeVerified = verifyRenderContractBundle(bundle);
+  expect(oldRuntimeVerified.ok).toBe(false);
+  if (oldRuntimeVerified.ok) throw new Error("expected old runtime identity rejection");
+  expect(oldRuntimeVerified.error.code).toBe("CONTRACT_RUNTIME_MISMATCH");
+
   const oldContract = { ...contract, schema_version: "1.0" };
   writeFileSync(join(bundle, "render-contract.json"), `${JSON.stringify(oldContract, null, 2)}\n`);
   const oldVerified = verifyRenderContractBundle(bundle);
   expect(oldVerified.ok).toBe(false);
   if (oldVerified.ok) throw new Error("expected render contract 1.0 rejection");
   expect(oldVerified.error.code).toBe("CONTRACT_SCHEMA_UNSUPPORTED");
+});
+
+test("strict inspection rejects renderer identity drift", async () => {
+  if (spawnSync("ffmpeg", ["-version"]).status !== 0) return;
+  const root = mkdtempSync(join(tmpdir(), "koubo-contract-renderer-mismatch-"));
+  const source = join(root, "raw.mp4");
+  const project = join(root, "authoring");
+  makeVideo(source, 1.2);
+  expect(createProject([source], { projectPath: project }).ok).toBe(true);
+  writeFileSync(join(project, "transcript.json"), JSON.stringify({
+    timing_granularity: "segment",
+    segments: [{ source_id: "src-001", start: 0.1, end: 1.0, text: "renderer identity" }],
+  }));
+  expect((await exploreProject(project, { asr: "external" })).ok).toBe(true);
+  confirmProposalAndWriteEditPlan(project);
+
+  const bundle = join(root, "bundle");
+  expect(exportRenderContract(project, bundle).ok).toBe(true);
+  const sourceMap = join(root, "source-map.json");
+  const bindings = join(root, "bindings.json");
+  writeFileSync(sourceMap, JSON.stringify({ "src-001": source }));
+  expect(bindRenderContract(bundle, sourceMap, bindings).ok).toBe(true);
+  const rendered = renderBoundContract(bundle, bindings, join(root, "run"));
+  if (!rendered.ok) throw new Error(`${rendered.error.code}: ${rendered.error.message}`);
+
+  const result = JSON.parse(readFileSync(rendered.data.result_path, "utf8")) as { renderer: Record<string, unknown> };
+  result.renderer.runtime_compatibility_digest = `sha256:${"0".repeat(64)}`;
+  writeFileSync(rendered.data.result_path, `${JSON.stringify(result, null, 2)}\n`);
+  const inspected = inspectBoundContract(bundle, rendered.data.result_path);
+  expect(inspected.ok).toBe(false);
+  if (inspected.ok) throw new Error("expected renderer identity mismatch rejection");
+  expect(inspected.error.code).toBe("CONTRACT_RUNTIME_MISMATCH");
+  expect(existsSync(join(root, "run", "render-contract-inspection.json"))).toBe(false);
 });
 
 test("strict render contract fails closed after source replacement", async () => {

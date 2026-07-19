@@ -18,10 +18,10 @@ import {
   compileOutputFrameSchedule,
   createRenderContractV2,
   materializeJsonObject,
-  parseRenderBindingV1,
+  parseRenderBindingV2,
   parseRenderContractV2,
   parseSourceMapV1,
-  parseStrictRenderResultV1,
+  parseStrictRenderResultV2,
   renderBindingDigest,
   renderContractErrorCode,
   sha256Digest,
@@ -29,13 +29,14 @@ import {
   verifyRenderAssets,
   verifyRenderBinding,
   type JsonObject,
-  type RenderBindingV1,
+  STRICT_RENDER_PROTOCOL_VERSION,
+  type RenderBindingV2,
   type RenderContractAssetV1,
   type RenderContractPayloadV2,
   type RenderContractV2,
-  type StrictInspectionCheckV1,
-  type StrictInspectionV1,
-  type StrictRenderResultV1,
+  type StrictInspectionCheckV2,
+  type StrictInspectionV2,
+  type StrictRenderResultV2,
   type Sha256Digest,
   type RenderSourceIdentityV1,
   type OutputFrameSchedule,
@@ -271,8 +272,8 @@ export function bindRenderContract(bundleDir: string, sourceMapPath: string, out
       assertSourceIdentity(source.identity, identity);
       return { source_id: source.source_id, resolved_path: resolved, verified_identity: identity as RenderSourceIdentityV1 };
     });
-    const base = { schema_version: "1.0" as const, contract_digest: contract.contract_digest, sources };
-    const binding: RenderBindingV1 = { ...base, binding_digest: renderBindingDigest(base) };
+    const base = { schema_version: STRICT_RENDER_PROTOCOL_VERSION, contract_digest: contract.contract_digest, sources };
+    const binding: RenderBindingV2 = { ...base, binding_digest: renderBindingDigest(base) };
     writeJson(outputPath, binding);
     return { ok: true, command: "render-contract.bind", data: { binding_path: outputPath, binding_digest: binding.binding_digest } };
   } catch (error) {
@@ -287,7 +288,7 @@ export function renderBoundContract(bundleDir: string, bindingsPath: string, run
     const contract = readContract(bundleDir);
     verifyRenderAssets(bundleDir, contract.payload.assets);
     assertRuntimeCompatible(contract);
-    const binding = parseRenderBindingV1(readJson(bindingsPath));
+    const binding = parseRenderBindingV2(readJson(bindingsPath));
     verifyRenderBinding(contract, binding);
     for (const bound of binding.sources) {
       const real = verifiedRegularFile(bound.resolved_path, "SOURCE_BINDING_MISSING");
@@ -321,8 +322,8 @@ export function renderBoundContract(bundleDir: string, bindingsPath: string, run
       storyboard,
     });
     const outputIdentity = probePortableSourceIdentity(executed.outputPath);
-    const result: StrictRenderResultV1 = {
-      schema_version: "1.0",
+    const result: StrictRenderResultV2 = {
+      schema_version: STRICT_RENDER_PROTOCOL_VERSION,
       contract_digest: contract.contract_digest,
       binding_digest: binding.binding_digest,
       output: { output_path: basename(executed.outputPath), sha256: outputIdentity.sha256 as Sha256Digest, size_bytes: outputIdentity.size_bytes, duration_seconds: outputIdentity.duration_seconds, probe: json(outputIdentity) },
@@ -348,18 +349,21 @@ export function inspectBoundContract(bundleDir: string, resultPath: string): Com
   proposal_conformance_status: "passed" | "failed";
   business_acceptance_status: "passed" | "failed";
   overall_status: "completed" | "partial" | "failed";
-  checks: StrictInspectionCheckV1[];
+  checks: StrictInspectionCheckV2[];
 }> {
   try {
     const contract = readContract(bundleDir);
     verifyRenderAssets(bundleDir, contract.payload.assets);
     assertRuntimeCompatible(contract);
-    const result = parseStrictRenderResultV1(readJson(resultPath));
+    const result = parseStrictRenderResultV2(readJson(resultPath));
     if (result.contract_digest !== contract.contract_digest) throw coded("CONTRACT_DIGEST_MISMATCH", "strict result belongs to another contract");
+    if (canonicalJson(result.renderer) !== canonicalJson(contract.payload.runtime)) {
+      throw coded("CONTRACT_RUNTIME_MISMATCH", "strict result renderer identity does not match the render contract runtime");
+    }
     const outputPath = resolveContained(dirname(resultPath), result.output.output_path);
     const identity = probePortableSourceIdentity(outputPath);
     const timing = probeStrictOutputTiming(outputPath);
-    const checks: StrictInspectionCheckV1[] = [];
+    const checks: StrictInspectionCheckV2[] = [];
     checks.push(check("output-hash", identity.sha256 === result.output.sha256, "canonical output sha256 matches strict result"));
     checks.push(check("output-size", identity.size_bytes === result.output.size_bytes, "canonical output byte size matches strict result"));
     const expected = number((contract.payload.preflight as Record<string, unknown>).expected_duration_seconds, "preflight.expected_duration_seconds");
@@ -398,8 +402,8 @@ export function inspectBoundContract(bundleDir: string, resultPath: string): Com
     const businessPassed = technicalPassed && proposalPassed;
     const overallStatus = businessPassed ? "completed" as const : technicalPassed ? "partial" as const : "failed" as const;
     const blockers = checks.filter((item) => item.status === "blocker").map((item) => item.id);
-    const inspection: StrictInspectionV1 = {
-      schema_version: "1.0",
+    const inspection: StrictInspectionV2 = {
+      schema_version: STRICT_RENDER_PROTOCOL_VERSION,
       contract_digest: contract.contract_digest,
       binding_digest: result.binding_digest,
       render_result_digest: resultDigest,
@@ -442,9 +446,6 @@ function readContract(bundleDir: string): RenderContractV2 {
   const root = verifiedDirectory(bundleDir);
   const contractPath = resolveContained(root, "render-contract.json");
   const value = readJson(contractPath);
-  if (value && typeof value === "object" && "schema_version" in value && (value as { schema_version?: unknown }).schema_version !== "2.0") {
-    throw coded("CONTRACT_SCHEMA_UNSUPPORTED", `unsupported render contract schema: ${String((value as { schema_version?: unknown }).schema_version)}`);
-  }
   const contract = parseRenderContractV2(value);
   assertContractCaptionConsistency(contract);
   contractFrameSchedule(contract);
@@ -574,7 +575,7 @@ function verifiedDirectory(path: string): string {
   return fsRuntime.realpathSync(path);
 }
 
-function check(id: string, passed: boolean, message: string): StrictInspectionCheckV1 {
+function check(id: string, passed: boolean, message: string): StrictInspectionCheckV2 {
   return { id, status: passed ? "passed" : "blocker", message };
 }
 
@@ -584,7 +585,7 @@ function frameRate(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function frozenAcceptanceChecks(value: unknown): StrictInspectionCheckV1[] {
+function frozenAcceptanceChecks(value: unknown): StrictInspectionCheckV2[] {
   if (!Array.isArray(value)) return [];
   return value.map((entry, index) => {
     const record = entry && typeof entry === "object" ? entry as Record<string, unknown> : {};
@@ -690,6 +691,8 @@ function failure<T extends string>(command: T, error: unknown, fallback: string)
 
 function publicErrorCode(code: string): string {
   switch (code) {
+    case "STRICT_RENDER_PROTOCOL_SCHEMA_UNSUPPORTED":
+      return "CONTRACT_SCHEMA_UNSUPPORTED";
     case "RENDER_CONTRACT_DIGEST_MISMATCH":
     case "RENDER_BINDING_CONTRACT_MISMATCH":
       return "CONTRACT_DIGEST_MISMATCH";

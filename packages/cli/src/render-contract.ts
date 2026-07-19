@@ -11,13 +11,15 @@ type FsRuntime = {
 
 const fsRuntime = nodeFs as unknown as FsRuntime;
 
-export const RENDER_CONTRACT_SCHEMA_VERSION = "2.0" as const;
-export const RENDER_BINDING_SCHEMA_VERSION = "1.0" as const;
-export const STRICT_RENDER_RESULT_SCHEMA_VERSION = "1.0" as const;
-export const STRICT_INSPECTION_SCHEMA_VERSION = "1.0" as const;
+export const STRICT_RENDER_PROTOCOL_VERSION = "2.0" as const;
+export const RENDER_CONTRACT_SCHEMA_VERSION = STRICT_RENDER_PROTOCOL_VERSION;
+export const RENDER_BINDING_SCHEMA_VERSION = STRICT_RENDER_PROTOCOL_VERSION;
+export const STRICT_RENDER_RESULT_SCHEMA_VERSION = STRICT_RENDER_PROTOCOL_VERSION;
+export const STRICT_INSPECTION_SCHEMA_VERSION = STRICT_RENDER_PROTOCOL_VERSION;
 
 export const renderContractErrorCodes = {
   INVALID_JSON_VALUE: "RENDER_CONTRACT_INVALID_JSON_VALUE",
+  PROTOCOL_SCHEMA_UNSUPPORTED: "STRICT_RENDER_PROTOCOL_SCHEMA_UNSUPPORTED",
   INVALID_RENDER_CONTRACT: "RENDER_CONTRACT_INVALID",
   INVALID_CONTRACT_DIGEST: "RENDER_CONTRACT_DIGEST_INVALID",
   CONTRACT_DIGEST_MISMATCH: "RENDER_CONTRACT_DIGEST_MISMATCH",
@@ -170,7 +172,7 @@ export type RenderBindingSourceV1 = {
   verified_identity: RenderSourceIdentityV1;
 };
 
-export type RenderBindingV1 = {
+export type RenderBindingV2 = {
   schema_version: typeof RENDER_BINDING_SCHEMA_VERSION;
   contract_digest: Sha256Digest;
   sources: RenderBindingSourceV1[];
@@ -179,7 +181,7 @@ export type RenderBindingV1 = {
 
 export type SourceMapV1 = Record<string, string>;
 
-export type StrictRenderOutputV1 = {
+export type StrictRenderOutputV2 = {
   output_path: string;
   sha256: Sha256Digest;
   size_bytes: number;
@@ -187,35 +189,35 @@ export type StrictRenderOutputV1 = {
   probe: JsonObject;
 };
 
-export type StrictRenderResultV1 = {
+export type StrictRenderResultV2 = {
   schema_version: typeof STRICT_RENDER_RESULT_SCHEMA_VERSION;
   contract_digest: Sha256Digest;
   binding_digest: Sha256Digest;
-  output: StrictRenderOutputV1;
+  output: StrictRenderOutputV2;
   renderer: JsonObject;
   warnings: string[];
   completed_at: string;
 };
 
-export type StrictInspectionCheckV1 = {
+export type StrictInspectionCheckV2 = {
   id: string;
   status: "passed" | "warning" | "blocker";
   message: string;
 };
 
-export type StrictInspectionV1 = {
+export type StrictInspectionV2 = {
   schema_version: typeof STRICT_INSPECTION_SCHEMA_VERSION;
   contract_digest: Sha256Digest;
   binding_digest: Sha256Digest;
   render_result_digest: Sha256Digest;
   output_sha256: Sha256Digest;
   accepted: boolean;
-  render_status?: "success";
-  technical_inspection_status?: "passed" | "failed";
-  proposal_conformance_status?: "passed" | "failed";
-  business_acceptance_status?: "passed" | "failed";
-  overall_status?: "completed" | "partial" | "failed";
-  checks: StrictInspectionCheckV1[];
+  render_status: "success";
+  technical_inspection_status: "passed" | "failed";
+  proposal_conformance_status: "passed" | "failed";
+  business_acceptance_status: "passed" | "failed";
+  overall_status: "completed" | "partial" | "failed";
+  checks: StrictInspectionCheckV2[];
   frames: string[];
   warnings: string[];
   blockers: string[];
@@ -244,11 +246,11 @@ export function renderContractDigest(payload: RenderContractPayloadV2 | unknown)
   return sha256Digest(canonicalJson(payload));
 }
 
-export function renderBindingDigest(binding: Pick<RenderBindingV1, "contract_digest" | "sources">): Sha256Digest {
-  return sha256Digest(canonicalJson({ contract_digest: binding.contract_digest, sources: binding.sources }));
+export function renderBindingDigest(binding: Pick<RenderBindingV2, "schema_version" | "contract_digest" | "sources">): Sha256Digest {
+  return sha256Digest(canonicalJson({ schema_version: binding.schema_version, contract_digest: binding.contract_digest, sources: binding.sources }));
 }
 
-export function strictRenderResultDigest(result: StrictRenderResultV1 | unknown): Sha256Digest {
+export function strictRenderResultDigest(result: StrictRenderResultV2 | unknown): Sha256Digest {
   return sha256Digest(canonicalJson(result));
 }
 
@@ -301,9 +303,11 @@ export function createRenderContractV2(payload: RenderContractPayloadV2 | unknow
 }
 
 export function parseRenderContractV2(value: unknown): RenderContractV2 {
+  const raw = record(value, "render contract", renderContractErrorCodes.INVALID_RENDER_CONTRACT);
+  const schemaVersion = strictProtocolVersion(raw.schema_version, "render-contract.json");
   const obj = strictRecord(value, "render contract", ["schema_version", "contract_digest", "payload"], renderContractErrorCodes.INVALID_RENDER_CONTRACT);
   const contract: RenderContractV2 = {
-    schema_version: literalVersion(obj.schema_version, "render contract.schema_version", RENDER_CONTRACT_SCHEMA_VERSION, renderContractErrorCodes.INVALID_RENDER_CONTRACT),
+    schema_version: schemaVersion,
     contract_digest: digest(obj.contract_digest, "render contract.contract_digest", renderContractErrorCodes.INVALID_CONTRACT_DIGEST),
     payload: parseRenderContractPayloadV2(obj.payload),
   };
@@ -385,14 +389,16 @@ export function verifyRenderContractDigest(contract: { contract_digest: Sha256Di
   return actual;
 }
 
-export function parseRenderBindingV1(value: unknown): RenderBindingV1 {
+export function parseRenderBindingV2(value: unknown): RenderBindingV2 {
   const code = renderContractErrorCodes.INVALID_RENDER_BINDING;
+  const raw = record(value, "render binding", code);
+  const schemaVersion = strictProtocolVersion(raw.schema_version, "bindings.json");
   const obj = strictRecord(value, "render binding", ["schema_version", "contract_digest", "sources", "binding_digest"], code);
   const sources = array(obj.sources, "render binding.sources", code).map((source, index) => parseBindingSource(source, `render binding.sources[${index}]`));
   if (sources.length === 0) fail(code, "render binding.sources must not be empty", "sources");
   unique(sources.map((source) => source.source_id), "binding source_id", code);
-  const binding: RenderBindingV1 = {
-    schema_version: literalVersion(obj.schema_version, "render binding.schema_version", RENDER_BINDING_SCHEMA_VERSION, code),
+  const binding: RenderBindingV2 = {
+    schema_version: schemaVersion,
     contract_digest: digest(obj.contract_digest, "render binding.contract_digest", renderContractErrorCodes.INVALID_CONTRACT_DIGEST),
     sources,
     binding_digest: digest(obj.binding_digest, "render binding.binding_digest", renderContractErrorCodes.INVALID_BINDING_DIGEST),
@@ -404,9 +410,9 @@ export function parseRenderBindingV1(value: unknown): RenderBindingV1 {
   return binding;
 }
 
-export const parseRenderBinding = parseRenderBindingV1;
+export const parseRenderBinding = parseRenderBindingV2;
 
-export function verifyRenderBinding(contract: RenderContractV2, binding: RenderBindingV1): RenderBindingV1 {
+export function verifyRenderBinding(contract: RenderContractV2, binding: RenderBindingV2): RenderBindingV2 {
   verifyRenderContractDigest(contract);
   const actualBindingDigest = renderBindingDigest(binding);
   if (actualBindingDigest !== binding.binding_digest) {
@@ -442,12 +448,14 @@ export function parseSourceMapV1(value: unknown): SourceMapV1 {
 
 export const parseSourceMap = parseSourceMapV1;
 
-export function parseStrictRenderResultV1(value: unknown): StrictRenderResultV1 {
+export function parseStrictRenderResultV2(value: unknown): StrictRenderResultV2 {
   const code = renderContractErrorCodes.INVALID_STRICT_RENDER_RESULT;
+  const raw = record(value, "strict render result", code);
+  const schemaVersion = strictProtocolVersion(raw.schema_version, "render-contract-result.json");
   const obj = strictRecord(value, "strict render result", ["schema_version", "contract_digest", "binding_digest", "output", "renderer", "warnings", "completed_at"], code);
   const output = strictRecord(obj.output, "strict render result.output", ["output_path", "sha256", "size_bytes", "duration_seconds", "probe"], code);
   return {
-    schema_version: literalVersion(obj.schema_version, "strict render result.schema_version", STRICT_RENDER_RESULT_SCHEMA_VERSION, code),
+    schema_version: schemaVersion,
     contract_digest: digest(obj.contract_digest, "strict render result.contract_digest", code),
     binding_digest: digest(obj.binding_digest, "strict render result.binding_digest", code),
     output: {
@@ -463,10 +471,12 @@ export function parseStrictRenderResultV1(value: unknown): StrictRenderResultV1 
   };
 }
 
-export const parseStrictRenderResult = parseStrictRenderResultV1;
+export const parseStrictRenderResult = parseStrictRenderResultV2;
 
-export function parseStrictInspectionV1(value: unknown): StrictInspectionV1 {
+export function parseStrictInspectionV2(value: unknown): StrictInspectionV2 {
   const code = renderContractErrorCodes.INVALID_STRICT_INSPECTION;
+  const raw = record(value, "strict inspection", code);
+  const schemaVersion = strictProtocolVersion(raw.schema_version, "render-contract-inspection.json");
   const obj = strictRecord(value, "strict inspection", [
     "schema_version",
     "contract_digest",
@@ -484,14 +494,8 @@ export function parseStrictInspectionV1(value: unknown): StrictInspectionV1 {
     "warnings",
     "blockers",
     "inspected_at",
-  ], code, [
-    "render_status",
-    "technical_inspection_status",
-    "proposal_conformance_status",
-    "business_acceptance_status",
-    "overall_status",
-  ]);
-  const checks = array(obj.checks, "strict inspection.checks", code).map((check, index): StrictInspectionCheckV1 => {
+  ], code);
+  const checks = array(obj.checks, "strict inspection.checks", code).map((check, index): StrictInspectionCheckV2 => {
     const item = strictRecord(check, `strict inspection.checks[${index}]`, ["id", "status", "message"], code);
     const status = item.status;
     if (status !== "passed" && status !== "warning" && status !== "blocker") {
@@ -509,11 +513,11 @@ export function parseStrictInspectionV1(value: unknown): StrictInspectionV1 {
   if (accepted && (blockers.length > 0 || checks.some((check) => check.status === "blocker"))) {
     fail(code, "strict inspection cannot be accepted with blockers", "accepted");
   }
-  const renderStatus = optionalChoice(obj.render_status, "strict inspection.render_status", ["success"] as const, code);
-  const technicalStatus = optionalChoice(obj.technical_inspection_status, "strict inspection.technical_inspection_status", ["passed", "failed"] as const, code);
-  const proposalStatus = optionalChoice(obj.proposal_conformance_status, "strict inspection.proposal_conformance_status", ["passed", "failed"] as const, code);
-  const businessStatus = optionalChoice(obj.business_acceptance_status, "strict inspection.business_acceptance_status", ["passed", "failed"] as const, code);
-  const overallStatus = optionalChoice(obj.overall_status, "strict inspection.overall_status", ["completed", "partial", "failed"] as const, code);
+  const renderStatus = choice(obj.render_status, "strict inspection.render_status", ["success"] as const, code);
+  const technicalStatus = choice(obj.technical_inspection_status, "strict inspection.technical_inspection_status", ["passed", "failed"] as const, code);
+  const proposalStatus = choice(obj.proposal_conformance_status, "strict inspection.proposal_conformance_status", ["passed", "failed"] as const, code);
+  const businessStatus = choice(obj.business_acceptance_status, "strict inspection.business_acceptance_status", ["passed", "failed"] as const, code);
+  const overallStatus = choice(obj.overall_status, "strict inspection.overall_status", ["completed", "partial", "failed"] as const, code);
   if (businessStatus === "passed" && (technicalStatus !== "passed" || proposalStatus !== "passed")) {
     fail(code, "business acceptance cannot pass unless technical inspection and proposal conformance pass", "business_acceptance_status");
   }
@@ -527,17 +531,17 @@ export function parseStrictInspectionV1(value: unknown): StrictInspectionV1 {
     fail(code, "partial overall status requires technical pass and failed proposal/business acceptance", "overall_status");
   }
   return {
-    schema_version: literalVersion(obj.schema_version, "strict inspection.schema_version", STRICT_INSPECTION_SCHEMA_VERSION, code),
+    schema_version: schemaVersion,
     contract_digest: digest(obj.contract_digest, "strict inspection.contract_digest", code),
     binding_digest: digest(obj.binding_digest, "strict inspection.binding_digest", code),
     render_result_digest: digest(obj.render_result_digest, "strict inspection.render_result_digest", code),
     output_sha256: digest(obj.output_sha256, "strict inspection.output_sha256", code),
     accepted,
-    ...(renderStatus ? { render_status: renderStatus } : {}),
-    ...(technicalStatus ? { technical_inspection_status: technicalStatus } : {}),
-    ...(proposalStatus ? { proposal_conformance_status: proposalStatus } : {}),
-    ...(businessStatus ? { business_acceptance_status: businessStatus } : {}),
-    ...(overallStatus ? { overall_status: overallStatus } : {}),
+    render_status: renderStatus,
+    technical_inspection_status: technicalStatus,
+    proposal_conformance_status: proposalStatus,
+    business_acceptance_status: businessStatus,
+    overall_status: overallStatus,
     checks,
     frames: stringArray(obj.frames, "strict inspection.frames", code).map((path, index) => localPath(path, `strict inspection.frames[${index}]`, code)),
     warnings: stringArray(obj.warnings, "strict inspection.warnings", code),
@@ -546,7 +550,7 @@ export function parseStrictInspectionV1(value: unknown): StrictInspectionV1 {
   };
 }
 
-export const parseStrictInspection = parseStrictInspectionV1;
+export const parseStrictInspection = parseStrictInspectionV2;
 
 export function assertBundleRelativeAssetPath(path: unknown, expectedDigest?: Sha256Digest): string {
   const code = renderContractErrorCodes.INVALID_BUNDLE_ASSET_PATH;
@@ -935,9 +939,15 @@ function timestamp(value: unknown, name: string, code: RenderContractErrorCode):
   return text;
 }
 
-function literalVersion<TVersion extends string>(value: unknown, name: string, expected: TVersion, code: RenderContractErrorCode): TVersion {
-  if (value !== expected) fail(code, `${name} must be "${expected}"`, name);
-  return expected;
+function strictProtocolVersion(value: unknown, artifact: string): typeof STRICT_RENDER_PROTOCOL_VERSION {
+  if (value !== STRICT_RENDER_PROTOCOL_VERSION) {
+    fail(
+      renderContractErrorCodes.PROTOCOL_SCHEMA_UNSUPPORTED,
+      `${artifact} strict render protocol version ${JSON.stringify(value)} is unsupported; expected "${STRICT_RENDER_PROTOCOL_VERSION}". Re-export or re-run this stage with the current Koubo Clip release; retrying the same artifact cannot succeed.`,
+      "schema_version",
+    );
+  }
+  return STRICT_RENDER_PROTOCOL_VERSION;
 }
 
 function choice<const TValues extends readonly string[]>(
@@ -946,17 +956,6 @@ function choice<const TValues extends readonly string[]>(
   choices: TValues,
   code: RenderContractErrorCode,
 ): TValues[number] {
-  if (typeof value !== "string" || !choices.includes(value)) fail(code, `${name} must be one of ${choices.join(", ")}`, name);
-  return value as TValues[number];
-}
-
-function optionalChoice<const TValues extends readonly string[]>(
-  value: unknown,
-  name: string,
-  choices: TValues,
-  code: RenderContractErrorCode,
-): TValues[number] | undefined {
-  if (value === undefined) return undefined;
   if (typeof value !== "string" || !choices.includes(value)) fail(code, `${name} must be one of ${choices.join(", ")}`, name);
   return value as TValues[number];
 }

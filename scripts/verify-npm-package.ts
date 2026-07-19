@@ -31,8 +31,18 @@ try {
   expect(delivery.cli_version === version, "delivery CLI version does not match package version");
   expect(delivery.distribution_kind === "npm", "installed package distribution_kind must be npm");
   expect(capabilities.artifact_schema_versions["render-contract.json"] === "2.0", "installed CLI did not expose render contract 2.0");
+  expect(capabilities.artifact_schema_versions["bindings.json"] === "2.0", "installed CLI did not expose source binding 2.0");
+  expect(capabilities.artifact_schema_versions["render-contract-result.json"] === "2.0", "installed CLI did not expose strict render result 2.0");
+  expect(capabilities.artifact_schema_versions["render-contract-inspection.json"] === "2.0", "installed CLI did not expose strict inspection 2.0");
   expect(capabilities.render_contract?.schema_version === "2.0", "installed render contract capability is not version 2.0");
   expect(capabilities.capability_ids.includes("caption_layout.safe_area.v1"), "installed CLI is missing caption safe-area capability");
+  for (const artifactId of ["render-contract", "source-binding", "render-contract-result", "render-contract-inspection"]) {
+    const contract = runCliJson(cli, ["artifact", "contract", artifactId, "--json"], packageRoot).data;
+    expect(contract.schema_version === "2.0", `installed ${artifactId} contract is not schema 2.0`);
+    expect(contract.external_writes_allowed === false, `installed ${artifactId} contract is externally writable`);
+    expect(capabilities.artifact_contracts[artifactId]?.schema_version === "2.0", `installed capabilities do not expose ${artifactId} 2.0`);
+    expect(capabilities.artifact_contracts[artifactId]?.contract_digest === contract.contract_digest, `installed capabilities ${artifactId} digest differs from artifact contract`);
+  }
   if (process.env.EXPECTED_SOURCE_REVISION) {
     expect(delivery.source_revision === process.env.EXPECTED_SOURCE_REVISION, "delivery source_revision does not match release commit");
   }
@@ -177,12 +187,26 @@ try {
   const bindings = join(root, "bindings.json");
   writeFileSync(sourceMap, `${JSON.stringify({ "src-001": source })}\n`);
   expect(runCliJson(cli, ["render-contract", "bind", bundle, "--source-map", sourceMap, "--output", bindings], packageRoot).ok === true, "installed CLI source binding failed");
+  const binding = readJson(bindings);
+  expect(binding.schema_version === "2.0", "installed strict binding is not schema 2.0");
+  writeFileSync(bindings, `${JSON.stringify({ ...binding, schema_version: "1.0" }, null, 2)}\n`);
+  const oldBindingRender = runCliJsonResult(cli, ["render-contract", "render", bundle, "--bindings", bindings, "--output", join(root, "old-binding-run")], packageRoot);
+  expect(oldBindingRender.status !== 0 && oldBindingRender.json.error?.code === "CONTRACT_SCHEMA_UNSUPPORTED", "installed package did not fail closed on binding 1.0");
+  writeFileSync(bindings, `${JSON.stringify(binding, null, 2)}\n`);
   const runDir = join(root, "run");
   const rendered = runCliJson(cli, ["render-contract", "render", bundle, "--bindings", bindings, "--output", runDir], packageRoot);
   expect(rendered.ok === true, "installed CLI strict render failed");
+  const resultPath = join(runDir, "render-contract-result.json");
+  const result = readJson(resultPath);
+  expect(result.schema_version === "2.0", "installed strict render result is not schema 2.0");
+  writeFileSync(resultPath, `${JSON.stringify({ ...result, schema_version: "1.0" }, null, 2)}\n`);
+  const oldResultInspect = runCliJsonResult(cli, ["render-contract", "inspect", bundle, "--result", resultPath], packageRoot);
+  expect(oldResultInspect.status !== 0 && oldResultInspect.json.error?.code === "CONTRACT_SCHEMA_UNSUPPORTED", "installed package did not fail closed on strict render result 1.0");
+  writeFileSync(resultPath, `${JSON.stringify(result, null, 2)}\n`);
   const inspected = runCliJson(cli, ["render-contract", "inspect", bundle, "--result", join(runDir, "render-contract-result.json")], packageRoot);
   expect(inspected.ok === true, "installed CLI strict inspect failed");
   const inspection = readJson(join(runDir, "render-contract-inspection.json"));
+  expect(inspection.schema_version === "2.0", "installed strict inspection is not schema 2.0");
   expect(inspection.accepted === true, "installed package output did not satisfy contract inspection");
   expect(inspection.checks.some((check: Json) => check.id === "caption-layout" && check.status === "passed"), "installed strict inspect did not validate caption layout");
   expect(inspection.frames.some((path: string) => path.includes("caption-layout")), "installed strict inspect did not emit the caption layout QA frame");

@@ -74,7 +74,14 @@ test("capabilities reports stable software contracts without probing or loading 
     expect(json.error_codes).toContain("PROPOSAL_SELECTION_MISMATCH");
     expect(json.artifact_schema_versions["production-proposal.json"]).toBe("3.0");
     expect(json.artifact_schema_versions["render-contract.json"]).toBe("2.0");
+    expect(json.artifact_schema_versions["bindings.json"]).toBe("2.0");
+    expect(json.artifact_schema_versions["render-contract-result.json"]).toBe("2.0");
+    expect(json.artifact_schema_versions["render-contract-inspection.json"]).toBe("2.0");
     expect(json.artifact_contracts["production-proposal"].schema_version).toBe("3.0");
+    for (const artifactId of ["render-contract", "source-binding", "render-contract-result", "render-contract-inspection"]) {
+      expect(json.artifact_contracts[artifactId].schema_version).toBe("2.0");
+      expect(json.artifact_contracts[artifactId].external_writes_allowed).toBe(false);
+    }
     expect(json.capability_ids).toContain("artifact_contract.discovery.v1");
     expect(json.capability_ids).toContain("caption_layout.safe_area.v1");
     expect(json.render_contract.schema_version).toBe("2.0");

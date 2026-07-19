@@ -57,6 +57,7 @@
 - 不保留旧 parser、legacy normalization、运行时 migration、兼容 union 或多版本测试矩阵。
 - 开发阶段的 fixtures、示例和内部项目直接迁移到当前格式；旧外部项目不自动恢复，使用当前 CLI 重新创建。
 - 当前 `production-proposal.json` 只接受 `3.0`，`enrichment-plan.json` 仍只接受 `2.0`。
+- `render-contract.json`、`bindings.json`、`render-contract-result.json` 和 `render-contract-inspection.json` 作为同一个 render-contract 2.0 generation 处理；0.0.13 mixed chain 不允许手写迁移或 fallback，必须由 CLI 重新导出并重新执行 strict consumer 链路。
 
 ## 禁止行为
 

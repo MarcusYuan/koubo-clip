@@ -430,9 +430,16 @@ const writable = (
   artifact_id, filename, schema_version, ownership, role, external_writes_allowed: true,
   validator, prerequisites, schema, template, template_requires_filling: true, example,
 });
-const readonly = (artifact_id: string, filename: string, schema_version: string, producer: string, role: ArtifactContract["role"] = "derived"): ArtifactContract => finalize({
+const readonly = (
+  artifact_id: string,
+  filename: string,
+  schema_version: string,
+  producer: string,
+  role: ArtifactContract["role"] = "derived",
+  schema: JsonSchema = { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object" },
+): ArtifactContract => finalize({
   artifact_id, filename, schema_version, ownership: "cli_owned", role, external_writes_allowed: false, producer, prerequisites: [],
-  schema: { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object" },
+  schema,
 });
 
 const sourceManifestSchema = { $schema: "https://json-schema.org/draft/2020-12/schema", ...closed(["contract_version", "sources"], {
@@ -520,6 +527,89 @@ const visualCandidatesExample = { version: "1.0", candidates: [{ id: "candidate-
 const evidenceManifestExample = { version: "1.0", entries: [{ id: "frame-001", relative_path: "frame-001.jpg", sha256: "0".repeat(64), size_bytes: 1, width: 224, height: 480, source_id: "src-001", source_time_seconds: 1.25, request_id: "frame-001" }] };
 const sourceMapExample = { "src-001": "/authorized/raw.mp4" };
 
+const strictDigest = { type: "string", pattern: "^sha256:[a-f0-9]{64}$" } satisfies JsonSchema;
+const strictProtocolVersion = { const: "2.0" } satisfies JsonSchema;
+const strictJsonObject = { type: "object" } satisfies JsonSchema;
+const strictBindingSourceSchema = closed(["source_id", "resolved_path", "verified_identity"], {
+  source_id: id,
+  resolved_path: text,
+  verified_identity: sourceIdentity,
+});
+const strictRenderContractSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  ...closed(["schema_version", "contract_digest", "payload"], {
+    schema_version: strictProtocolVersion,
+    contract_digest: strictDigest,
+    payload: closed([
+      "runtime", "sources", "timeline", "captions", "composition", "assets", "audio", "output", "preflight", "inspection", "authoring_lineage",
+    ], {
+      runtime: strictJsonObject,
+      sources: { type: "array", minItems: 1, items: { type: "object" } },
+      timeline: strictJsonObject,
+      captions: strictJsonObject,
+      composition: strictJsonObject,
+      assets: { type: "array", items: { type: "object" } },
+      audio: strictJsonObject,
+      output: strictJsonObject,
+      preflight: strictJsonObject,
+      inspection: strictJsonObject,
+      authoring_lineage: strictJsonObject,
+    }),
+  }),
+};
+const strictBindingSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  ...closed(["schema_version", "contract_digest", "sources", "binding_digest"], {
+    schema_version: strictProtocolVersion,
+    contract_digest: strictDigest,
+    sources: { type: "array", minItems: 1, items: strictBindingSourceSchema },
+    binding_digest: strictDigest,
+  }),
+};
+const strictRenderResultSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  ...closed(["schema_version", "contract_digest", "binding_digest", "output", "renderer", "warnings", "completed_at"], {
+    schema_version: strictProtocolVersion,
+    contract_digest: strictDigest,
+    binding_digest: strictDigest,
+    output: closed(["output_path", "sha256", "size_bytes", "duration_seconds", "probe"], {
+      output_path: text,
+      sha256: strictDigest,
+      size_bytes: number,
+      duration_seconds: number,
+      probe: strictJsonObject,
+    }),
+    renderer: strictJsonObject,
+    warnings: stringArray,
+    completed_at: text,
+  }),
+};
+const strictInspectionSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  ...closed([
+    "schema_version", "contract_digest", "binding_digest", "render_result_digest", "output_sha256", "accepted", "render_status",
+    "technical_inspection_status", "proposal_conformance_status", "business_acceptance_status", "overall_status", "checks", "frames",
+    "warnings", "blockers", "inspected_at",
+  ], {
+    schema_version: strictProtocolVersion,
+    contract_digest: strictDigest,
+    binding_digest: strictDigest,
+    render_result_digest: strictDigest,
+    output_sha256: strictDigest,
+    accepted: { type: "boolean" },
+    render_status: { const: "success" },
+    technical_inspection_status: { enum: ["passed", "failed"] },
+    proposal_conformance_status: { enum: ["passed", "failed"] },
+    business_acceptance_status: { enum: ["passed", "failed"] },
+    overall_status: { enum: ["completed", "partial", "failed"] },
+    checks: { type: "array", items: closed(["id", "status", "message"], { id, status: { enum: ["passed", "warning", "blocker"] }, message: text }) },
+    frames: stringArray,
+    warnings: stringArray,
+    blockers: stringArray,
+    inspected_at: text,
+  }),
+};
+
 const discoveredContracts: ArtifactContract[] = [
   productionProposalContract,
   writable("source-manifest", "sources.json", "2.0", sourceManifestSchema, sourceManifestExample, sourceManifestExample, "project create --source-manifest", [], "host_authored", "command_request"),
@@ -544,10 +634,12 @@ const discoveredContracts: ArtifactContract[] = [
     ["visual-acquisition", "visual-acquisition.json", "1.0", "project visual-acquire"],
     ["visual-review", "visual-review.json", "1.0", "project visual-review"], ["asset-manifest", "asset-manifest.json", "1.0", "project enrich-plan"],
     ["storyboard", "storyboard.json", "1.1", "project render"], ["render-result", "render-result.json", "1.0", "project render"],
-    ["inspection", "inspection.json", "1.0", "project inspect"], ["render-contract", "render-contract.json", "2.0", "render-contract export"],
-    ["source-binding", "bindings.json", "1.0", "render-contract bind"], ["render-contract-result", "render-contract-result.json", "1.0", "render-contract render"],
-    ["render-contract-inspection", "render-contract-inspection.json", "1.0", "render-contract inspect"], ["delivery-manifest", "delivery-manifest.json", "3.0", "release packaging"],
+    ["inspection", "inspection.json", "1.0", "project inspect"], ["delivery-manifest", "delivery-manifest.json", "3.0", "release packaging"],
   ].map(([artifactId, filename, version, producer]) => readonly(artifactId!, filename!, version!, producer!, artifactId === "render-result" || artifactId === "inspection" ? "execution_result" : "derived")),
+  readonly("render-contract", "render-contract.json", "2.0", "render-contract export", "derived", strictRenderContractSchema),
+  readonly("source-binding", "bindings.json", "2.0", "render-contract bind", "derived", strictBindingSchema),
+  readonly("render-contract-result", "render-contract-result.json", "2.0", "render-contract render", "execution_result", strictRenderResultSchema),
+  readonly("render-contract-inspection", "render-contract-inspection.json", "2.0", "render-contract inspect", "execution_result", strictInspectionSchema),
 ];
 
 const contracts = new Map(discoveredContracts.map((contract) => [contract.artifact_id, contract]));

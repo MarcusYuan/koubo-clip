@@ -304,6 +304,7 @@ strict machine: bundle + explicit source map -> verified binding -> executeResol
 ```
 
 Skill 只存在于 authoring 段。CLI compiler 把 agent decisions 解析成冻结后的执行闭包；strict runtime 与 authoring runtime 只在 `executeResolvedRenderPlan` 汇合。Strict runtime 不读取 transcript、analysis、edit-plan 或 enrichment-plan，也没有 fallback。
+Strict consumer 顺序固定为 `verify -> bind -> render -> inspect`；`render-contract.json`、`bindings.json`、`render-contract-result.json` 和 `render-contract-inspection.json` 是同一个 render-contract 2.0 generation，任何一个成员 stale 都必须整条 re-export / re-execute，不能手写迁移或 fallback。
 
 Strict timeline 的权威时长属于 output frame domain：CLI 按累计 output time 对 `fps` 取整得到每个片段的帧边界，总帧数是最后一个累计边界，`preflight.expected_duration_seconds = total_frames / fps`。渲染器在同一个 FFmpeg filter graph 中把各片段归一化到精确帧数和音频采样数后 concat；inspect 同时校验 exact video frame count 和容器时长容差。禁止逐段独立取整、逐段封装 MP4 后 copy-concat，或按片段数量扩大 tolerance。
 

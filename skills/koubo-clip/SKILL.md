@@ -102,6 +102,8 @@ Read only the references needed for the current stage:
 - Asset slots come only from the confirmed option's `asset_requirements`. Capabilities fulfill slots; they do not decide the creative asset strategy by themselves.
 - Never treat text-only transcripts as precise cut timing.
 - Treat unvalidated Chinese word-level timing as segment timing; do not use it for frame-precise cuts.
+- Treat `render-contract.json`, `bindings.json`, `render-contract-result.json`, and `render-contract-inspection.json` as one render-contract 2.0 generation. The only strict consumer order is `verify -> bind -> render -> inspect`; if the chain is still the 0.0.13 mixed chain, re-export and re-execute the whole set, and do not hand-write migration or fallback.
+- `render_status: success` alone is not completion; require technical, proposal, and business checks to pass and the overall state to be completed.
 - `production-proposal.json` is the confirmation surface and the execution source of truth for the confirmed option.
 - Before user confirmation, `source-frame-request.json`, `source-frames.json`, and `.source-frames/*.jpg` are the only allowed media-evidence exception. They are read-only source-understanding artifacts and do not imply approval.
 - Before user confirmation, do not write `edit-plan.json`, `focus-candidates.json`, any `focus-*` execution artifacts, `visual-request.json`, `music-request.json`, `asset-manifest.json`, or `enrichment-plan.json`; do not acquire assets, generate media, or render.

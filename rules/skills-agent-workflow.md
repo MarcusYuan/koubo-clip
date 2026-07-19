@@ -139,4 +139,5 @@
 - Skill 可以解释 CLI 公开 authoring schema 的业务语义，但不复制结构事实；不计算 contract digest，不修改 bundle，不在 strict render machine 上运行。
 - Skill 不读取 `.virtual/*`。Proposal selection fingerprint 只取 `project proposal --json.option_selection_fingerprints` 或 `project status --json.fingerprints["proposal-selection:<option-id>"]`。local authoring render 和 strict render 共享同一个 execution kernel / frame schedule；`project inspect` 可以返回结构化失败结果，但 blockers 非零时必须视为未完成。
 - Current contract 导出后按照 status 的 distributed handoff 指引转交 bundle；不要求 detached authoring 机器 materialize source 或运行 `project render`。
+- Strict execution 只认 `verify -> bind -> render -> inspect`；`render-contract.json`、`bindings.json`、`render-contract-result.json` 和 `render-contract-inspection.json` 是同一个 render-contract 2.0 generation。若 bundle 仍是 0.0.13 mixed chain，必须整条 re-export / re-execute，不能手写迁移、补默认值或 fallback；`render_status: success` 不是完成。
 - Strict execution 出错时报告 mismatch/blocker；不得重新分析视频、补默认 edit plan、改 transcript、重选素材或“修复” authoring project。若 `project inspect` 返回 blocker，它仍然是结构化验收结果，不是成功。
