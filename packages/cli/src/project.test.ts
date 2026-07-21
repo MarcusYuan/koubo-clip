@@ -1480,7 +1480,7 @@ test("rejects unreviewed cleanup candidates before edit-plan execution", async (
   expect(() => confirmProposalAndWriteEditPlan(project, [{ action: "cut", candidate_id: "missing" }])).toThrow("unknown cleanup candidate_id");
 });
 
-test("rejects candidate ranges outside source duration", () => {
+test("rejects candidate ranges outside source duration before confirmation", () => {
   if (!commandExists("ffmpeg")) return;
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-bounds-"));
   const source = join(dir, "raw.mp4");
@@ -1501,14 +1501,10 @@ test("rejects candidate ranges outside source duration", () => {
       candidates: [{ id: "c-001-bad", source_id: "src-001", start: 0.5, end: 2, text: "bad", type: "manual", reason: "test", confidence: 0.9 }],
     },
   );
-  confirmProposalAndWriteEditPlan(project, [{ action: "cut", candidate_id: "c-001-bad" }]);
-  const rendered = renderProject(project);
-  expect(rendered.ok).toBe(false);
-  if (rendered.ok) throw new Error("expected bounds failure");
-  expect(rendered.error.message).toContain("exceeds source duration");
+  expect(() => confirmProposalAndWriteEditPlan(project, [{ action: "cut", candidate_id: "c-001-bad" }])).toThrow("exceeds source duration");
 });
 
-test("rejects overlapping selected cut candidates", () => {
+test("rejects overlapping selected cut candidates before confirmation", () => {
   if (!commandExists("ffmpeg")) return;
   const dir = mkdtempSync(join(tmpdir(), "koubo-clip-overlap-"));
   const source = join(dir, "raw.mp4");
@@ -1532,14 +1528,10 @@ test("rejects overlapping selected cut candidates", () => {
       ],
     },
   );
-  confirmProposalAndWriteEditPlan(project, [
+  expect(() => confirmProposalAndWriteEditPlan(project, [
     { action: "cut", candidate_id: "c-001-a" },
     { action: "cut", candidate_id: "c-002-b" },
-  ]);
-  const rendered = renderProject(project);
-  expect(rendered.ok).toBe(false);
-  if (rendered.ok) throw new Error("expected overlap failure");
-  expect(rendered.error.message).toContain("overlap");
+  ])).toThrow("overlap");
 });
 
 

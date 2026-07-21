@@ -199,7 +199,7 @@ Inventory JSON 不能代替它所引用文件的 bytes lineage。Manifest 为媒
 
 集合 fingerprint 由成员 key 和 semantic/bytes fingerprint 按稳定 ID 排序后组合。消费者只绑定实际使用的成员 key；未选 candidate 或未引用 asset 的变化不能让 render stale。
 
-这些动态 key 中一部分通过 `.virtual/*` 实现，但虚拟路径不是外部文件合同。`project status.artifacts[]` 只返回可读取的 managed artifacts；逻辑节点的 fingerprint 只有在对应 evaluation 为 current 时才通过 `fingerprints[dynamic-key]` 返回，pending、stale 或 invalid proposal selection 不能成为可确认值。
+这些动态 key 中一部分通过 `.virtual/*` 实现，但虚拟路径不是外部文件合同。`project status.artifacts[]` 只返回可读取的 managed artifacts；`proposal-selection:*` fingerprint 只有在对应 evaluation 为 current 时才通过 `fingerprints[dynamic-key]` 返回，pending、stale 或 invalid proposal selection 不能成为可确认值。
 
 ## 权威事实划分
 

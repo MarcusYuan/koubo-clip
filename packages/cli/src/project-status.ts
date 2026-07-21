@@ -623,7 +623,9 @@ export function projectStatus(projectPath: string): ProjectStatusArtifact {
 
   const fingerprints: Record<string, ArtifactFingerprint> = {};
   for (const [key, evaluation] of evaluations) {
-    if (evaluation.fingerprint) fingerprints[key] = evaluation.fingerprint;
+    if (evaluation.fingerprint && (!key.startsWith("proposal-selection:") || evaluation.state === "current")) {
+      fingerprints[key] = evaluation.fingerprint;
+    }
   }
 
   const acceptance = projectAcceptanceStatus(parsed, evaluations, stages, detachedExecution, proposalConformance);

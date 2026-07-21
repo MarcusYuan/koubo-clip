@@ -59,6 +59,8 @@ try {
   expect(skillText.includes("missing target -> create") && skillText.includes("existing valid project -> run") && skillText.includes("existing invalid target -> blocker"), "official Skill does not guide three-way project recovery");
   expect(skillText.includes("do not delete recursively, overwrite, migrate, or retry as a `-v2`/`-v3` parallel project"), "official Skill does not forbid parallel project retries");
   expect(skillText.includes("safe-layout presets") && skillText.includes("Never write CSS"), "official Skill does not enforce preset-only caption layout authoring");
+  expect(skillText.includes("one continuous range retained") && skillText.includes("repair the complete set together"), "official Skill does not require executable overlays before confirmation");
+  expect(skillText.includes("never assume workspace tools can read the hidden `.source-frames` directory") && skillText.includes("never hard-code a host-private evidence path"), "official Skill assumes direct access to hidden source-frame paths");
 
   const catalog = runCliJson(cli, ["project", "element-catalog", packageRoot], packageRoot);
   expect(catalog.ok === true, "installed renderer resource catalog is unreadable");
@@ -113,6 +115,36 @@ try {
   expect(capabilities.artifact_contracts["asset-manifest"]?.external_writes_allowed === false, "installed asset-manifest contract is externally writable");
   expect(capabilities.artifact_contracts["render-result"]?.external_writes_allowed === false, "installed render-result contract is externally writable");
   expect(capabilities.artifact_contracts["source-map"]?.ownership === "host_authored", "installed source-map contract is not host-authored");
+
+  const proposalGuardProject = join(root, "proposal-guard-project");
+  expect(runCliJson(cli, ["project", "create", "--source-manifest", join(identityProject, "sources.json"), "--project", proposalGuardProject, "--provider-mode", "platform"], packageRoot).ok === true, "installed CLI could not create proposal guard project");
+  writeFileSync(join(proposalGuardProject, "transcript.json"), `${JSON.stringify({
+    timing_granularity: "segment",
+    segments: [
+      { source_id: "src-001", start: 0.05, end: 0.3, text: "opening" },
+      { source_id: "src-001", start: 0.35, end: 0.7, text: "um" },
+      { source_id: "src-001", start: 0.75, end: 1.1, text: "closing" },
+    ],
+  })}\n`);
+  expect(runCliJson(cli, ["project", "explore", proposalGuardProject, "--asr", "external", "--provider-mode", "platform"], packageRoot).ok === true, "installed CLI proposal guard explore failed");
+  expect(runCliJson(cli, ["project", "review", proposalGuardProject, "--provider-mode", "platform"], packageRoot).ok === true, "installed CLI proposal guard review failed");
+  const guardReview = readJson(join(proposalGuardProject, "review-package.json"));
+  const guardCut = guardReview.proposed_cuts.find((candidate: Json) => candidate.type === "filler");
+  expect(Boolean(guardCut), "installed CLI proposal guard fixture has no cleanup candidate");
+  const invalidProposal = structuredClone(proposalContract.example);
+  for (const option of invalidProposal.options) {
+    option.cleanup.cut_candidate_ids = [];
+    option.edit_execution_plan.text_overlays = [];
+  }
+  invalidProposal.options[0].cleanup.cut_candidate_ids = [guardCut.id];
+  invalidProposal.options[0].subtitles = { ...invalidProposal.options[0].subtitles, enabled: true, style: "anchor" };
+  invalidProposal.options[0].edit_execution_plan.text_overlays = [{ id: "cross-cut", source_id: "src-001", start: 0.1, end: 0.9, element_id: "caption-highlight", text: "Cross cut", purpose: "Verify proposal executable preflight." }];
+  writeFileSync(join(proposalGuardProject, "production-proposal.json"), `${JSON.stringify(invalidProposal)}\n`);
+  const guardedProposal = runCliJsonResult(cli, ["project", "proposal", proposalGuardProject, "--provider-mode", "platform", "--json"], packageRoot);
+  expect(guardedProposal.status !== 0 && guardedProposal.json.error?.code === "ARTIFACT_VALIDATION_FAILED", "installed CLI accepted a proposal overlay that crosses a selected cut");
+  expect(guardedProposal.json.error?.issues?.some((issue: Json) => issue.keyword === "executableRange" && issue.message.includes(guardCut.id)), "installed CLI proposal error lacks executable cut details");
+  expect(!Object.keys(runCliJson(cli, ["project", "status", proposalGuardProject, "--json"], packageRoot).data.fingerprints).some((key) => key.startsWith("proposal-selection:")), "installed CLI exposed a fingerprint for an invalid proposal");
+
   const proposal = structuredClone(proposalContract.example);
   for (const option of proposal.options) {
     option.cleanup.cut_candidate_ids = [];

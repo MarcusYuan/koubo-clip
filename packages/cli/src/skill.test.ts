@@ -57,6 +57,20 @@ test("koubo-clip skill documents proposal confirmation gate", () => {
   expect(`${skill}\n${media}\n${qa}`).toContain("no assets");
 });
 
+test("koubo-clip skill requires executable overlays before confirmation", () => {
+  const skill = readFileSync("skills/koubo-clip/SKILL.md", "utf8");
+  const workflow = readFileSync("skills/koubo-clip/references/workflow.md", "utf8");
+  const planning = readFileSync("skills/koubo-clip/references/business-planning.md", "utf8");
+  const body = `${skill}\n${workflow}\n${planning}`;
+
+  expect(body).toContain("one continuous");
+  expect(body).toContain("retained subranges");
+  expect(body).toContain("repair the complete set together");
+  expect(body).toContain("After confirmation, do not modify executable proposal content");
+  expect(body).toContain("do not assume workspace tools can read `.source-frames/*`");
+  expect(body).toContain("do not hard-code a host-private evidence path");
+});
+
 test("koubo-clip skill collects source frames before business planning without opening the confirmation gate", () => {
   const skill = readFileSync("skills/koubo-clip/SKILL.md", "utf8");
   const workflow = readFileSync("skills/koubo-clip/references/workflow.md", "utf8");

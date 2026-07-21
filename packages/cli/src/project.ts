@@ -165,9 +165,11 @@ import { validateEvidenceDirectory } from "./evidence-import";
 import {
   applyConfirmedTextOverlays,
   assertConfirmedAssetSlots,
+  compileCandidateCleanupEdl,
   confirmedSourceModeCheck,
   assertProposalExecution,
   assertResolvedProposalExecution,
+  resolveRetainedSourceRange,
   type ProposalExecutionConformance,
 } from "./proposal-execution";
 
@@ -556,7 +558,6 @@ export type AsrMode = "auto" | "off" | "external";
 export type AsrProvider = "cloudflare-whisper" | "whisper-cli";
 export type ProviderModeOption = { providerMode?: ProviderExecutionMode };
 
-const CUT_PADDING_SECONDS = 0.05;
 const fsRuntime = nodeFs as unknown as {
   accessSync(path: string, mode?: number): void;
   constants: { R_OK: number };
@@ -5388,6 +5389,7 @@ function validateProductionProposalAgainstReview(
   manifest: SourcesManifest,
 ) {
   const candidateIds = new Set(review.proposed_cuts.map((candidate) => candidate.id));
+  const candidates = new Map(review.proposed_cuts.map((candidate) => [candidate.id, candidate]));
   const sources = new Map(manifest.sources.map((source) => [source.source_id, source]));
   const issues: ArtifactValidationIssue[] = [];
   proposal.options.forEach((option, optionIndex) => {
@@ -5412,11 +5414,55 @@ function validateProductionProposalAgainstReview(
       if (!source) issues.push({ path: `${path}/source_id`, keyword: "reference", message: `unknown source_id: ${overlay.source_id}` });
       else if (overlay.end > source.duration_seconds) issues.push({ path: `${path}/end`, keyword: "maximum", message: `must be <= source duration ${source.duration_seconds}` });
     });
+    if (option.edit_execution_plan.timeline.mode === "candidate_cleanup") {
+      try {
+        const selectedCuts = option.cleanup.cut_candidate_ids.flatMap((candidateId) => {
+          const candidate = candidates.get(candidateId);
+          return candidate ? [candidate] : [];
+        });
+        const compiled = compileCandidateCleanupEdl(manifest, selectedCuts);
+        option.edit_execution_plan.text_overlays.forEach((overlay, overlayIndex) => {
+          const source = sources.get(overlay.source_id);
+          if (!source || overlay.end > source.duration_seconds) return;
+          const resolution = resolveRetainedSourceRange(compiled.edl, overlay);
+          if (resolution.matches.length === 1) return;
+          const conflicts = compiled.cuts.filter((cut) =>
+            cut.source_id === overlay.source_id
+            && Math.min(overlay.end, cut.effective_end) > Math.max(overlay.start, cut.effective_start),
+          );
+          issues.push({
+            path: `/options/${optionIndex}/edit_execution_plan/text_overlays/${overlayIndex}`,
+            keyword: "executableRange",
+            message: overlayExecutionIssueMessage(option.id, overlay, conflicts, resolution.retained_subranges),
+          });
+        });
+      } catch (error) {
+        issues.push({
+          path: `/options/${optionIndex}/cleanup/cut_candidate_ids`,
+          keyword: "executableRange",
+          message: `option=${option.id} cannot compile selected cuts: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    }
   });
   if (issues.length) {
     const contract = productionProposalContractInfo();
     throw new ArtifactValidationError("production-proposal.json", contract.schema_version, contract.schema_digest, issues);
   }
+}
+
+function overlayExecutionIssueMessage(
+  optionId: string,
+  overlay: ProductionProposalOption["edit_execution_plan"]["text_overlays"][number],
+  conflicts: Array<{ candidate_id: string; start: number; end: number; effective_start: number; effective_end: number }>,
+  retainedSubranges: Array<{ start: number; end: number }>,
+): string {
+  const range = (start: number, end: number) => `${start.toFixed(3)}-${end.toFixed(3)}`;
+  const conflictText = conflicts.map((cut) =>
+    `${cut.candidate_id}@${range(cut.start, cut.end)} effective=${range(cut.effective_start, cut.effective_end)}`,
+  ).join(",");
+  const retainedText = retainedSubranges.map((item) => range(item.start, item.end)).join(",");
+  return `option=${optionId} overlay=${overlay.id} source_range=${overlay.source_id}@${range(overlay.start, overlay.end)} conflicts=[${conflictText}] retained_subranges=[${retainedText}]`;
 }
 
 function productionProposalWarnings(proposal: ProductionProposalArtifact): string[] {
@@ -6353,31 +6399,10 @@ function buildEdl(
     return parseEdl({ contract_version: "2.0", entries }, manifest);
   }
 
-  const entries: EdlEntry[] = [];
-  for (const source of manifest.sources) {
-    const duration = source.duration_seconds;
-    if (duration <= 0) throw new Error(`source duration is unavailable for ${source.source_id}`);
-    const cuts = analysis.candidates
-      .filter((candidate) => candidate.source_id === source.source_id && cutIds.has(candidate.id))
-      .sort((a, b) => a.start - b.start);
-    for (let index = 1; index < cuts.length; index += 1) {
-      const previous = cuts[index - 1]!;
-      const current = cuts[index]!;
-      if (current.start < previous.end) throw new Error(`selected cut candidates overlap for ${source.source_id}: ${current.id}`);
-    }
-    let cursor = 0;
-    for (const cut of cuts) {
-      if (cut.end > duration) throw new Error(`candidate ${cut.id} exceeds source duration`);
-      if (cut.end - cut.start <= CUT_PADDING_SECONDS * 2) throw new Error(`candidate ${cut.id} is too short for boundary padding`);
-      const cutStart = Math.min(duration, cut.start + CUT_PADDING_SECONDS);
-      const cutEnd = Math.max(cutStart, cut.end - CUT_PADDING_SECONDS);
-      if (cutStart > cursor) entries.push(edlEntry(source.source_id, cursor, cutStart, entries.length, `keep before ${cut.id}`));
-      cursor = Math.max(cursor, cutEnd);
-    }
-    if (duration > cursor) entries.push(edlEntry(source.source_id, cursor, duration, entries.length, "keep source range"));
-  }
-  if (entries.length === 0) throw new Error("EDL has no renderable entries");
-  return parseEdl({ contract_version: "2.0", entries }, manifest);
+  return compileCandidateCleanupEdl(
+    manifest,
+    analysis.candidates.filter((candidate) => cutIds.has(candidate.id)),
+  ).edl;
 }
 
 function assertEditPlanConformsToSelectedProposalOption(
@@ -6409,10 +6434,6 @@ function assertEditPlanConformsToSelectedProposalOption(
       stage,
     );
   }
-}
-
-function edlEntry(sourceId: string, start: number, end: number, outputOrder: number, reason: string): EdlEntry {
-  return { source_id: sourceId, start, end, output_order: outputOrder, reason };
 }
 
 function renderEnrichedVideo(

@@ -1,14 +1,45 @@
 import { expect, test } from "bun:test";
 import { productionProposalExample } from "./artifact-contracts";
-import type { EdlArtifact, EnrichmentPlanArtifact, ProductionProposalOption } from "./artifacts";
+import type { AnalysisCandidate, EdlArtifact, EnrichmentPlanArtifact, ProductionProposalOption, SourcesManifest } from "./artifacts";
 import {
   applyConfirmedTextOverlays,
   assertConfirmedAssetSlots,
+  compileCandidateCleanupEdl,
   evaluateProposalExecution,
   evaluateResolvedProposalExecution,
   ProposalExecutionError,
   assertProposalExecution,
+  resolveRetainedSourceRange,
 } from "./proposal-execution";
+
+test("candidate cleanup compiler and overlay resolver share exact padded boundaries", () => {
+  const manifest: SourcesManifest = {
+    contract_version: "2.0",
+    sources: [{
+      source_id: "src-001",
+      order: 0,
+      original_filename: "raw.mp4",
+      local_media_ref: "opaque",
+      duration_seconds: 5,
+      identity: {
+        sha256: `sha256:${"a".repeat(64)}`,
+        size_bytes: 1,
+        duration_seconds: 5,
+        video: { codec_name: "h264", width: 160, height: 90, display_width: 160, display_height: 90, rotation: 0, avg_frame_rate: "30/1", pixel_format: "yuv420p" },
+      },
+    }],
+  };
+  const cut: AnalysisCandidate = { id: "cut", source_id: "src-001", start: 1, end: 2, text: "um", type: "filler", reason: "filler", confidence: 0.7 };
+
+  const compiled = compileCandidateCleanupEdl(manifest, [cut]);
+
+  expect(compiled.edl.entries.map(({ start, end }) => ({ start, end }))).toEqual([{ start: 0, end: 1.05 }, { start: 1.95, end: 5 }]);
+  expect(resolveRetainedSourceRange(compiled.edl, { source_id: "src-001", start: 0.5, end: 1.05 }).matches.length).toBe(1);
+  expect(resolveRetainedSourceRange(compiled.edl, { source_id: "src-001", start: 1.95, end: 2.5 }).matches.length).toBe(1);
+  const crossing = resolveRetainedSourceRange(compiled.edl, { source_id: "src-001", start: 0.5, end: 2.5 });
+  expect(crossing.matches.length).toBe(0);
+  expect(crossing.retained_subranges).toEqual([{ start: 0.5, end: 1.05 }, { start: 1.95, end: 2.5 }]);
+});
 
 test("fails business duration target when EDL is 108.166667s but confirmed target is 45-65s", () => {
   const option = proposalOption({

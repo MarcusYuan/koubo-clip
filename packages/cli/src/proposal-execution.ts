@@ -1,13 +1,38 @@
 import type {
+  AnalysisCandidate,
   EdlArtifact,
+  EdlEntry,
   EnrichmentElement,
   EnrichmentPlanArtifact,
   EnrichmentSourceMode,
   ProductionDurationTarget,
   ProductionProposalOption,
   ProductionTextOverlay,
+  SourcesManifest,
 } from "./artifacts";
+import { parseEdl } from "./artifacts";
 import { compileOutputFrameSchedule } from "./render-contract";
+
+export const CUT_PADDING_SECONDS = 0.05;
+
+export type EffectiveCutRange = {
+  candidate_id: string;
+  source_id: string;
+  start: number;
+  end: number;
+  effective_start: number;
+  effective_end: number;
+};
+
+export type CandidateCleanupCompilation = {
+  edl: EdlArtifact;
+  cuts: EffectiveCutRange[];
+};
+
+export type RetainedRangeResolution = {
+  matches: Array<{ entry: EdlEntry; output_start: number }>;
+  retained_subranges: Array<{ start: number; end: number }>;
+};
 
 export type ProposalExecutionCheck = {
   id: string;
@@ -41,6 +66,90 @@ export class ProposalExecutionError extends Error {
     this.name = "ProposalExecutionError";
     this.conformance = conformance;
   }
+}
+
+export function compileCandidateCleanupEdl(
+  manifest: SourcesManifest,
+  selectedCuts: readonly AnalysisCandidate[],
+): CandidateCleanupCompilation {
+  const sourceIds = new Set(manifest.sources.map((source) => source.source_id));
+  for (const cut of selectedCuts) {
+    if (!sourceIds.has(cut.source_id)) throw new Error(`candidate ${cut.id} references unknown source_id: ${cut.source_id}`);
+  }
+  const entries: EdlEntry[] = [];
+  const cuts: EffectiveCutRange[] = [];
+  for (const source of manifest.sources) {
+    const duration = source.duration_seconds;
+    if (duration <= 0) throw new Error(`source duration is unavailable for ${source.source_id}`);
+    const sourceCuts = selectedCuts
+      .filter((candidate) => candidate.source_id === source.source_id)
+      .sort((left, right) => left.start - right.start);
+    for (let index = 1; index < sourceCuts.length; index += 1) {
+      const previous = sourceCuts[index - 1]!;
+      const current = sourceCuts[index]!;
+      if (current.start < previous.end) throw new Error(`selected cut candidates overlap for ${source.source_id}: ${current.id}`);
+    }
+    let cursor = 0;
+    for (const cut of sourceCuts) {
+      if (cut.end > duration) throw new Error(`candidate ${cut.id} exceeds source duration`);
+      if (cut.end - cut.start <= CUT_PADDING_SECONDS * 2) throw new Error(`candidate ${cut.id} is too short for boundary padding`);
+      const effectiveStart = Math.min(duration, cut.start + CUT_PADDING_SECONDS);
+      const effectiveEnd = Math.max(effectiveStart, cut.end - CUT_PADDING_SECONDS);
+      cuts.push({
+        candidate_id: cut.id,
+        source_id: cut.source_id,
+        start: cut.start,
+        end: cut.end,
+        effective_start: effectiveStart,
+        effective_end: effectiveEnd,
+      });
+      if (effectiveStart > cursor) {
+        entries.push({
+          source_id: source.source_id,
+          start: cursor,
+          end: effectiveStart,
+          output_order: entries.length,
+          reason: `keep before ${cut.id}`,
+        });
+      }
+      cursor = Math.max(cursor, effectiveEnd);
+    }
+    if (duration > cursor) {
+      entries.push({
+        source_id: source.source_id,
+        start: cursor,
+        end: duration,
+        output_order: entries.length,
+        reason: "keep source range",
+      });
+    }
+  }
+  if (entries.length === 0) throw new Error("EDL has no renderable entries");
+  return { edl: parseEdl({ contract_version: "2.0", entries }, manifest), cuts };
+}
+
+export function resolveRetainedSourceRange(
+  edl: EdlArtifact,
+  range: Pick<ProductionTextOverlay, "source_id" | "start" | "end" | "segment_id">,
+): RetainedRangeResolution {
+  const ordered = [...edl.entries].sort((left, right) => left.output_order - right.output_order);
+  let outputCursor = 0;
+  const entries = ordered.map((entry) => {
+    const output_start = outputCursor;
+    outputCursor += entry.end - entry.start;
+    return { entry, output_start };
+  });
+  const sameSource = entries.filter(({ entry }) => entry.source_id === range.source_id);
+  const matches = sameSource.filter(({ entry }) => {
+    const segmentMatches = range.segment_id ? entry.label === range.segment_id : true;
+    return segmentMatches && range.start >= entry.start && range.end <= entry.end;
+  });
+  const retained_subranges = sameSource.flatMap(({ entry }) => {
+    const start = Math.max(range.start, entry.start);
+    const end = Math.min(range.end, entry.end);
+    return end > start ? [{ start, end }] : [];
+  });
+  return { matches, retained_subranges };
 }
 
 export function evaluateProposalExecution(
@@ -270,24 +379,9 @@ function mapProposalOverlays(
   edl: EdlArtifact,
   checks: ProposalExecutionCheck[],
 ): MappedProposalOverlay[] {
-  const ordered = [...edl.entries].sort((left, right) => left.output_order - right.output_order);
-  const outputStarts: number[] = [];
-  let cursor = 0;
-  for (const entry of ordered) {
-    outputStarts.push(cursor);
-    cursor += entry.end - entry.start;
-  }
   const mapped: MappedProposalOverlay[] = [];
   for (const overlay of option.edit_execution_plan.text_overlays) {
-    const matches = ordered.flatMap((entry, index) => {
-      const segmentMatches = overlay.segment_id ? entry.label === overlay.segment_id : true;
-      return segmentMatches
-        && entry.source_id === overlay.source_id
-        && overlay.start >= entry.start
-        && overlay.end <= entry.end
-        ? [{ entry, index }]
-        : [];
-    });
+    const { matches } = resolveRetainedSourceRange(edl, overlay);
     if (matches.length !== 1) {
       checks.push({
         id: `text-overlay:${overlay.id}`,
@@ -296,11 +390,11 @@ function mapProposalOverlays(
       });
       continue;
     }
-    const { entry, index } = matches[0]!;
+    const { entry, output_start } = matches[0]!;
     mapped.push({
       ...overlay,
-      output_start: outputStarts[index]! + overlay.start - entry.start,
-      output_end: outputStarts[index]! + overlay.end - entry.start,
+      output_start: output_start + overlay.start - entry.start,
+      output_end: output_start + overlay.end - entry.start,
     });
     checks.push({ id: `text-overlay:${overlay.id}`, status: "passed", message: "overlay source range maps to one output range" });
   }
