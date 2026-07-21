@@ -199,7 +199,7 @@ Inventory JSON 不能代替它所引用文件的 bytes lineage。Manifest 为媒
 
 集合 fingerprint 由成员 key 和 semantic/bytes fingerprint 按稳定 ID 排序后组合。消费者只绑定实际使用的成员 key；未选 candidate 或未引用 asset 的变化不能让 render stale。
 
-这些动态 key 中一部分通过 `.virtual/*` 实现，但虚拟路径不是外部文件合同。`project status.artifacts[]` 只返回可读取的 managed artifacts；逻辑节点的 fingerprint 继续通过 `fingerprints[dynamic-key]` 返回。
+这些动态 key 中一部分通过 `.virtual/*` 实现，但虚拟路径不是外部文件合同。`project status.artifacts[]` 只返回可读取的 managed artifacts；逻辑节点的 fingerprint 只有在对应 evaluation 为 current 时才通过 `fingerprints[dynamic-key]` 返回，pending、stale 或 invalid proposal selection 不能成为可确认值。
 
 ## 权威事实划分
 
@@ -228,7 +228,7 @@ Inventory JSON 不能代替它所引用文件的 bytes lineage。Manifest 为媒
 
 用户确认事件发生在宿主或 agent 对话层。Koubo Clip 不伪造审批系统，也不要求方向和方案各确认一次。`production-proposal.json.options[]` 就是 2-4 个可选业务方向及其执行摘要；用户只选择一次。`proposal_selection_fingerprint` 只覆盖 goal summary、被选 option 的 business direction、execution plan 和 asset requirements，不覆盖未选 option 或 Markdown 文案，因此修改未选方案不会无意义地使 EDL stale。当前唯一 proposal 版本是 3.0。
 
-`project proposal` 在用户选择前登记并返回 `proposal_fingerprint` 和完整 `option_selection_fingerprints` map。每个 option projection 至少包含 proposal contract version、option id、goal summary 和该 option 的 semantic projection。用户确认后，agent 把 `confirmed_option_id` 与 map 中对应 fingerprint 写入 edit plan；EDL compiler 从 current proposal 重新计算并逐项比对。
+`project proposal` 在用户选择前先校验所有 candidate-cleanup options 的 overlays 是否可完整映射到 selected cuts 形成的单个连续 retained range。该门禁与 EDL compiler 共用同一区间语义，任何冲突都会在写 Markdown、登记 selection 或返回 fingerprint 前通过聚合 issues 失败；CLI 不自动截断或拆分 overlay。全部 options 通过后，命令才登记并返回 `proposal_fingerprint` 和完整 `option_selection_fingerprints` map。每个 option projection 至少包含 proposal contract version、option id、goal summary 和该 option 的 semantic projection。用户确认后，agent 把 `confirmed_option_id` 与 map 中对应 fingerprint 写入 edit plan；EDL compiler 从 current proposal 重新计算并逐项比对，继续保留独立 fail-closed 校验。
 
 缺少当前 proposal、确认绑定或 edit plan 时，staged workflow 必须 fail closed。快速草稿命令可以有独立、明确标记的简化合同，不能让 staged project render 静默猜测用户决定。
 

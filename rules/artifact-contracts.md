@@ -47,7 +47,7 @@
 
 - Canonical npm tarball 中必须包含 CLI artifact contract discovery、完整 examples 和匹配的官方 Skill。
 - 安装态验收必须在不读取仓库源码或 tests 的情况下，使用发布包合同生成并验证至少一个真实 Agent-authored artifact。
-- `production-proposal.json` 3.0 是首个强制场景：生成 2–4 个完整 options，首次 `project proposal --json` 通过，或最多依据一次聚合 issues 整体修正后通过；随后 option selection fingerprint 必须可绑定 edit plan 并继续 compile EDL。确认后的 option 不是“建议”，而是执行合同的一部分：被确认 option 的 `duration_target`、有序 `timeline`、`text_overlays` 和 `asset_requirements` 共同构成后续执行合同，edit-plan 的 cut set 和 enrichment 只能落在已确认 option 的语义内，越界必须 blocker。
+- `production-proposal.json` 3.0 是首个强制场景：生成 2–4 个完整 options，首次 `project proposal --json` 通过，或最多依据一次聚合 issues 整体修正后通过；随后 option selection fingerprint 必须可绑定 edit plan 并继续 compile EDL。确认后的 option 不是“建议”，而是执行合同的一部分：被确认 option 的 `duration_target`、有序 `timeline`、`text_overlays` 和 `asset_requirements` 共同构成后续执行合同，edit-plan 的 cut set 和 enrichment 只能落在已确认 option 的语义内，越界必须 blocker。Candidate-cleanup overlay 跨越 selected cut 时，proposal validation 必须在任何 fingerprint 生成前一次返回所有冲突 overlay、cut ranges 和 retained subranges；Agent 拆分并整体修正后才能请求确认。
 - Delivery identity 必须绑定 artifact contract registry/schema digests 和 official Skill digest，防止 CLI、Skill、template/example 与 validator 分属不同版本。
 
 ## 单一 Schema 政策

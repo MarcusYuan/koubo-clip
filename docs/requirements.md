@@ -193,7 +193,7 @@ CLI 的 artifact contract discovery 必须一次返回目标 artifact 的 owners
 
 CLI-owned derived/result artifacts 只公开只读 schema 和 producer/verify/inspect 能力，不提供 authoring template，也不得由 Skill、Agent 或宿主手写。完整 ownership、发现面、诊断与单一 schema 要求见 `docs/artifact-authoring-contracts.md`。
 
-`production-proposal.json` 3.0 是首个强制落地场景。正式发布包必须提供一份包含 2-4 个完整 option、能够被同版本 `project proposal --json` 直接接受的实例；不得继续用 `{}` 或“省略字段遵循 schema”作为 Agent 能获得的唯一结构说明。Option `id` 是唯一方向身份，`recommended_option_id` 是唯一推荐权威；`asset_requirements` 是 visual/image/music/SFX 槽位的唯一权威，`edit_execution_plan` 不接受重复 slots。`duration_target` 说明目标时长区间和容差，`timeline` 用顺序数组描述 candidate_cleanup 或 explicit_segments，`text_overlays` 记录 source-local 文本叠加意图，CLI 再把它们映射到执行层。
+`production-proposal.json` 3.0 是首个强制落地场景。正式发布包必须提供一份包含 2-4 个完整 option、能够被同版本 `project proposal --json` 直接接受的实例；不得继续用 `{}` 或“省略字段遵循 schema”作为 Agent 能获得的唯一结构说明。Option `id` 是唯一方向身份，`recommended_option_id` 是唯一推荐权威；`asset_requirements` 是 visual/image/music/SFX 槽位的唯一权威，`edit_execution_plan` 不接受重复 slots。`duration_target` 说明目标时长区间和容差，`timeline` 用顺序数组描述 candidate_cleanup 或 explicit_segments，`text_overlays` 记录 source-local 文本叠加意图。Candidate-cleanup option 的每个 overlay 必须完整落在删除后单个连续 retained range 内；跨越 selected cut 时，Agent 必须在确认前按 CLI 返回的 retained subranges 拆分并重新校验，CLI 不自动截断、拆分或删除。只有全部 options 通过该可执行一致性门禁后，`project proposal` 才能返回可供用户确认的 fingerprints。
 
 ## 增强
 
@@ -461,6 +461,6 @@ koubo-clips/<slug>/
 - Strict consumer 只读取合同、bundle assets 和显式 source binding。它不得读取 authoring transcript、analysis、edit-plan 或 enrichment-plan，不得重规划、补默认值或修复项目。
 - Hash/size 必须 exact；source probe duration tolerance 为 0.05 秒。Strict output 的 expected duration 必须由累计 EDL 边界量化后的 exact target frame count 除以 fps 得到，视频帧数必须 exact；容器 duration tolerance 仍为 `max(0.05, 2/fps)`，不得按片段数量扩大。Mismatch 一律 fail closed，并报告 expected、actual、delta 和 tolerance。
 - CLI delivery 必须公开 CLI version、payload/resources/Skill digest、`artifact_contracts_digest`、schema versions、capability IDs 和 exact GSAP/HyperFrames versions，并能在 export、verify、bind、render 前验证兼容性。`delivery-manifest.json` 唯一当前版本是 3.0，旧 manifest 不读取或迁移。正式 npm delivery 的 manifest 必须从 npm packlist 物化后的最终文件树生成；CI 验收、npm publish 和 GitHub Release 必须复用同一个 canonical tarball，不能从源码 checkout 再次打包。正式版本只有在空目录安装该 tarball 后独立通过 Skill、delivery、contract export、strict render 和 inspect 验收才可发布。
-- `.virtual/*` 只用于 CLI 内部 lineage，`project status` 不得把它作为外部可读取 artifact path。Proposal selection fingerprint 通过 `project proposal --json.option_selection_fingerprints` 或 `project status --json.fingerprints["proposal-selection:<option-id>"]` 获取。
+- `.virtual/*` 只用于 CLI 内部 lineage，`project status` 不得把它作为外部可读取 artifact path。Proposal selection fingerprint 通过成功的 `project proposal --json.option_selection_fingerprints` 获取，或在对应 selection 仍为 current 时通过 `project status --json.fingerprints["proposal-selection:<option-id>"]` 获取；pending、stale 和 invalid proposal 不公开可确认 fingerprint。
 - Evidence import 必须区分 probe 不可用、probe 进程失败、probe 输出无效、codec、尺寸、size、hash 和 binding mismatch，同时保持错误脱敏和批次 commit-last。
 - Detached project 的 current render contract 导出成功后进入 distributed handoff。Status 应把本地 render/inspect 标记为不适用，并指向远端 `render-contract verify -> bind -> render -> inspect`；不得要求 authoring agent 手写 source materialization 或在 Hermes 本机渲染。

@@ -48,11 +48,13 @@ Before confirmation, describe asset intent only: purpose, search/generation inte
 
 In `candidate_cleanup` mode, every confirmed cleanup candidate ID must become the matching `action:"cut"` decision in `edit-plan.json`, and no extra cut may appear. For arbitrary source-local keeps or reordering, author the complete ordered `edit_execution_plan.timeline.segments[]` in the proposal option; `edit-plan.source_order` is not supported as execution authority.
 
+Every `candidate_cleanup` text overlay must fit wholly inside one continuous source-local range retained after that option's selected cuts. If an overlay crosses one or more deletion boundaries, split it along the retained subranges reported by `project proposal`; do not truncate it, drop it, or wait until `compile-edl` to discover the conflict.
+
 If an option needs no assets, say why cleanup, source footage, or captions already serve the viewer job.
 
 ## Validate And Bind
 
-Run `project proposal --json` after writing the complete proposal. If it fails, address the complete bounded `issues[]` set together; do not enter a one-field guessing loop.
+Run `project proposal --json` after writing the complete proposal. If it fails, address the complete bounded `issues[]` set together, including all overlay/cut conflicts and retained subranges; do not enter a one-field guessing loop. Do not ask for confirmation until this command succeeds and returns the final fingerprints.
 
 The command returns:
 
@@ -62,7 +64,7 @@ The command returns:
 
 The user confirms exactly once. `OK` selects `recommended_option_id`; an explicit option ID selects that option. A material change requires updating and revalidating the proposal before the final selection.
 
-After confirmation, fetch the edit-plan contract, then copy the selected option ID and exact returned selection fingerprint into the cleanup plan. The CLI recomputes that projection before compiling the EDL. Changing the selected option makes downstream artifacts stale; changing an unselected option does not. The confirmed option's `duration_target`, ordered `timeline`, `text_overlays`, and `asset_requirements` are the executable parts of the proposal.
+After confirmation, fetch the edit-plan contract, then copy the selected option ID and exact returned selection fingerprint into the cleanup plan. The CLI recomputes that projection before compiling the EDL. Do not modify executable proposal content or substitute another fingerprint after confirmation; any material change requires proposal validation and user confirmation again. Changing the selected option makes downstream artifacts stale; changing an unselected option does not. The confirmed option's `duration_target`, ordered `timeline`, `text_overlays`, and `asset_requirements` are the executable parts of the proposal.
 
 ## Asset Fulfillment And Enrichment
 

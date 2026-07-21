@@ -17,7 +17,7 @@ Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabili
 2. Collect source-frame evidence before business planning.
    - Read `transcript.json`, `material-report.md`, and the CLI-owned project `sources.json`.
    - Select 1-20 source-local times that answer useful visual questions; prefer coverage over duplicates and do not pad the request to reach the limit.
-   - Write `source-frame-request.json`, run `project source-frames --provider-mode <mode>`, then read `source-frames.json` and its project-relative JPEGs.
+   - Write `source-frame-request.json` and run `project source-frames --provider-mode <mode>`. Read `source-frames.json`; access the corresponding JPEGs through a public evidence ref, authorized host staging, or the platform's file-reading interface. In platform mode, do not assume workspace tools can read `.source-frames/*` and do not hard-code a host-private evidence path.
    - The CLI extracts frames only. When host vision is available, combine visual observations with ASR facts. Without standalone vision, continue transcript-only but mark the visual check as not performed; without platform vision, report a host-workflow blocker.
 
 3. Review cleanup candidates.
@@ -31,13 +31,14 @@ Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabili
    - The option `id` is the only direction identity; do not add `business_direction.direction_id` or `option.recommended`.
    - `edit_execution_plan` contains execution intent and confirmation summary, never asset slots.
    - `asset_requirements` is the only authority for visual, image, music, and SFX slots; provider capabilities fulfill them only after confirmation.
+   - For every `candidate_cleanup` option, ensure each text overlay fits one continuous retained range after the selected cuts. Split an overlay along retained subranges before validation when it crosses a deletion boundary.
    - Do not ask the user to choose a direction and then ask again to confirm its execution plan.
 
 5. Validate the proposal and ask for one confirmation.
-   - Write `production-proposal.json` version `3.0` and run `project proposal --json`.
+   - Write `production-proposal.json` version `3.0` and run `project proposal --json`. If it returns multiple `issues[]`, repair the complete set together and rerun; do not fix one conflict at a time.
    - Show the recommended option and alternatives, including each option's direction, execution plan, asset slots, risks, and confirmation items.
-   - Preserve the returned `proposal_fingerprint` and `option_selection_fingerprints` map.
-   - `OK` confirms `recommended_option_id`; an explicit option id confirms that option. If the user changes the plan materially, update and validate the proposal before asking for the final choice.
+   - Only after success, preserve the returned `proposal_fingerprint` and `option_selection_fingerprints` map and ask for confirmation.
+   - `OK` confirms `recommended_option_id`; an explicit option id confirms that option. After confirmation, do not modify executable proposal content or replace the selection fingerprint. Any material change requires updating and validating the proposal, then asking for confirmation again.
    - The selected option fingerprint stays bound downstream: `edit-plan.json` must match the confirmed cleanup set, and `enrichment-plan.json` may only use the confirmed option's asset requirements and subtitles/visual/music/SFX choices. The confirmed option's `duration_target`, ordered `timeline`, and `text_overlays` are the executable parts of the proposal, not just display metadata.
    - Do not acquire assets, generate images, or render before the user confirms the proposal.
 
@@ -67,7 +68,7 @@ Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabili
 
 ## Confirmation Rule
 
-The proposal can describe desired images, music, UI motion, SFX, and visual assets, but it must not pretend those files already exist. All direction and execution alternatives live in the same proposal; the user confirms one option exactly once. Final asset ids and output timeline coordinates belong in the execution artifacts after confirmation. `source-frame-request.json`, `source-frames.json`, and `.source-frames/*.jpg` are the only pre-confirmation media-evidence exception: they describe the source, not an approved edit or render plan.
+The proposal can describe desired images, music, UI motion, SFX, and visual assets, but it must not pretend those files already exist. All direction and execution alternatives live in the same proposal; the user confirms one option exactly once. Final asset ids and output timeline coordinates belong in the execution artifacts after confirmation. `source-frame-request.json`, `source-frames.json`, and CLI-managed source-frame JPEGs are the only pre-confirmation media-evidence exception: they describe the source, not an approved edit or render plan. Platform hosts read those JPEGs only through an authorized public evidence surface.
 
 ## Direction And Slot Contract
 

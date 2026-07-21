@@ -24,7 +24,7 @@
 - ASR/explore 后，基于 transcript、material report 和 source metadata 选择最多 20 个有明确观察目的的 source-local 时间点，写 `source-frame-request.json` 并运行 `project source-frames`。不要为了凑数量选择重复画面；CLI 不负责语义选点。
 - 如果 host 有 vision capability，结合 source frames 和 ASR 事实描述原素材画面；不要把观察推断成用户已经确认的制作方案。Standalone 无 vision 时可以 transcript-only 继续，但必须标记未进行源画面语义检查；platform 缺 vision 时由 host workflow 报 blocker，不能把它误报为 CLI 抽帧失败。
 - 把用户的业务诉求转成 2-4 个完整 proposal options。每个 option 同时包含业务方向、剪辑执行方案和素材需求槽位；不要把“卖货/种草/朋友圈/高级感/专业讲解”直接解释成单一渲染计划。
-- 先运行 `koubo-clip artifact contract production-proposal --json` 获取 `production-proposal.json` 3.0 的完整 schema/template/example，再基于 material-report、review-package、用户目标和 element/music 能力填充 2-4 个完整 options；运行 `project proposal --json`，向用户展示 recommended option 和备选 option，并保留 proposal/selection fingerprints。
+- 先运行 `koubo-clip artifact contract production-proposal --json` 获取 `production-proposal.json` 3.0 的完整 schema/template/example，再基于 material-report、review-package、用户目标和 element/music 能力填充 2-4 个完整 options。Candidate-cleanup option 的 text overlay 不得跨越该 option 已选 cut；先按连续 retained ranges 拆分，再运行 `project proposal --json`。若返回多个 `issues[]`，一次处理完整集合。只有命令成功并返回最终 proposal/selection fingerprints 后，才向用户展示并请求一次确认。
 - 只要求用户确认一次：`OK` 选择 recommended option，或用户提供一个 option id。不要先确认方向再确认执行方案。
 - 决定哪些不确定的 repeats、false starts 和 filler segments 要删除。
 - 当 edit decision 会实质改变含义时，向用户确认。
@@ -84,10 +84,10 @@
 - 不得通过连续运行 validator 来逐字段猜 proposal schema。校验失败时读取同一次响应的聚合 `issues[]`，整体修正一次；若仍失败，报告真实的业务/上下文 blocker，不循环删除未知内容。
 - 用户确认前，proposal 只能写素材意图：intent、query、provider preference、license/cost/source risk 和 reason。不要写最终 `asset_id`、local path、provider URL、download URL、绝对路径或 raw MCP payload。
 - 被确认 option 的 fingerprint 继续约束执行层：`edit-plan.json` 的 cut set 必须与该 option 的 cleanup 决策逐项一致，`enrichment-plan.json` 只能使用该 option 的 asset_requirements 和确认项；如果后续执行语义要变，先回到 proposal 重新确认。
-- 用户回复 `OK` 时使用 `recommended_option_id`；用户回复 option id 时使用对应 option。用户自然语言实质修改时先更新并重新校验 proposal，再进行最终选择；不能把未重新 fingerprint 的改动只塞进后续 artifacts。
+- 用户回复 `OK` 时使用 `recommended_option_id`；用户回复 option id 时使用对应 option。确认后不得修改 cleanup、timeline、text overlays 或其他 executable proposal 内容，也不得替换 selection fingerprint；任何实质修改都必须先更新并重新校验 proposal，再请求重新确认，不能把未重新 fingerprint 的改动只塞进后续 artifacts。
 - render 前展示 review package：original subtitles、proposed cuts、timestamps、reasons 和 unresolved risks，并把这些信息纳入 production proposal。
 - 把确认选择转换成 `edit-plan.json`；它必须包含 `contract_version:"1.0"`、`confirmed_option_id` 和 `project proposal` 返回的对应 `proposal_selection_fingerprint`。除非用户愿意，不要要求用户编辑 JSON。
-- 用户确认 production proposal 前，`source-frame-request.json`、`source-frames.json` 和 `.source-frames/*.jpg` 是唯一允许生成的媒体证据例外；除此之外不要写 `edit-plan.json`、`focus-candidates.json`、`focus-*`、`music-request.json`、`asset-manifest.json` 或 `enrichment-plan.json`，也不要生图、获取音乐或 render。
+- 用户确认 production proposal 前，`source-frame-request.json`、`source-frames.json` 和 CLI 管理的 source-frame JPEG 是唯一允许生成的媒体证据例外；除此之外不要写 `edit-plan.json`、`focus-candidates.json`、`focus-*`、`music-request.json`、`asset-manifest.json` 或 `enrichment-plan.json`，也不要生图、获取音乐或 render。Platform host 不得假设 workspace 工具能直接读取 `.source-frames/*`；使用公开 evidence ref、host staging 或平台提供的文件解析接口，不硬编码任何宿主私有路径。
 - 用户确认 production proposal 前，也不要写 `visual-request.json`。确认后才把选中 option 转成 Agent-owned `edit-plan`、`focus-candidates`/`focus-grounding`、`visual-request`、`music-request` 和 `enrichment-plan`；CLI 命令负责生成 frame/review/acquisition artifacts 与 `asset-manifest`。确认前 source frames 只用于理解原素材，不表示用户批准。
 - 如果请求 enrichment，先推断一个主要 `presentation_intent`：`internal_tutorial`、`product_demo`、`course_lesson`、`knowledge_explainer` 或 `short_form`。然后运行或读取 `project element-catalog`，优先从 `purpose_recommendations.<source_mode>.<presentation_intent>` 展示元素候选；只有用途不清楚时才退回 `recommendations.<source_mode>`。用户的原始业务关键词只是线索，不是最终 selector。
 - 对每个候选增强点，先写 `business_role`、`viewer_job`、`visual_gap` 和 `recommended_treatment`。`source_mode` 只约束遮挡和安全区，不能单独决定是否生图。
@@ -137,7 +137,7 @@
 - Skill 可以写 agent-owned proposal、edit-plan、request、selection 和 enrichment intent，但只能调用 CLI compiler/export 生成 EDL、captions、resolved storyboard 和 render contract。
 - Detached flow 先读 capabilities/status，再写 authoring artifacts；external evidence 必须通过 CLI `--import` 摄入。
 - Skill 可以解释 CLI 公开 authoring schema 的业务语义，但不复制结构事实；不计算 contract digest，不修改 bundle，不在 strict render machine 上运行。
-- Skill 不读取 `.virtual/*`。Proposal selection fingerprint 只取 `project proposal --json.option_selection_fingerprints` 或 `project status --json.fingerprints["proposal-selection:<option-id>"]`。local authoring render 和 strict render 共享同一个 execution kernel / frame schedule；`project inspect` 可以返回结构化失败结果，但 blockers 非零时必须视为未完成。
+- Skill 不读取 `.virtual/*`。Proposal selection fingerprint 只取成功的 `project proposal --json.option_selection_fingerprints`，或对应 selection 仍为 current 时的 `project status --json.fingerprints["proposal-selection:<option-id>"]`；pending、stale 或 invalid proposal 没有可确认 fingerprint。local authoring render 和 strict render 共享同一个 execution kernel / frame schedule；`project inspect` 可以返回结构化失败结果，但 blockers 非零时必须视为未完成。
 - Current contract 导出后按照 status 的 distributed handoff 指引转交 bundle；不要求 detached authoring 机器 materialize source 或运行 `project render`。
 - Strict execution 只认 `verify -> bind -> render -> inspect`；`render-contract.json`、`bindings.json`、`render-contract-result.json` 和 `render-contract-inspection.json` 是同一个 render-contract 2.0 generation。若 bundle 仍是 0.0.13 mixed chain，必须整条 re-export / re-execute，不能手写迁移、补默认值或 fallback；`render_status: success` 不是完成。
 - Strict execution 出错时报告 mismatch/blocker；不得重新分析视频、补默认 edit plan、改 transcript、重选素材或“修复” authoring project。若 `project inspect` 返回 blocker，它仍然是结构化验收结果，不是成功。
