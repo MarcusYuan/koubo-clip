@@ -116,7 +116,19 @@ import {
 import { resolveExistingProjectPath, resolveProjectOutputPath } from "./project-paths";
 import { cliVersion, resolveHyperframesBinary } from "./bundle-paths";
 import { compileOutputFrameSchedule, type OutputFrameSchedule } from "./render-contract";
-import { assertResolvedCaptionLayout, captionLayoutsEqual, defaultCaptionLayoutIntent, renderAssCaptionFile, resolveCaptionLayout, type ResolvedCaptionLayout } from "./caption-layout";
+import {
+  CAPTION_MAX_LINES,
+  CAPTION_RAIL_MAX_WIDTH_RATIO,
+  assertCaptionCuesFitLayout,
+  assertResolvedCaptionLayout,
+  captionLayoutsEqual,
+  defaultCaptionLayoutIntent,
+  layoutCaptionCues,
+  renderAssCaptionFile,
+  resolveCaptionLayout,
+  type CaptionCue,
+  type ResolvedCaptionLayout,
+} from "./caption-layout";
 import {
   assertRenderableHyperframesBlockForCard,
   defaultHyperframesBlockForCard,
@@ -3295,14 +3307,26 @@ export function renderProject(projectPath: string, options: ProviderModeOption =
       firstSource.identity.video.display_height,
     );
     const frameSchedule = compileOutputFrameSchedule(edl.entries, 30);
-    const captions = captionsEnabled ? compileCaptionCuesForEdl(transcript, edl) : [];
-    if (captionsEnabled && captions.length === 0) throw lifecycleCommandError(
+    const rawCaptions = captionsEnabled ? compileCaptionCuesForEdl(transcript, edl) : [];
+    if (captionsEnabled && rawCaptions.length === 0) throw lifecycleCommandError(
       "PROPOSAL_EXECUTION_MISMATCH",
       "the confirmed proposal requires subtitles, but no transcript cues map to the retained EDL",
       "subtitles",
       "Align the confirmed timeline to timed transcript segments or confirm a subtitles-disabled option.",
       "project.render",
     );
+    const captionLayout = rawCaptions.length === 0 ? undefined : resolveCaptionLayout({
+      width: outputDimensions.width,
+      height: outputDimensions.height,
+      source_mode: execution.source_mode ?? enrichment?.plan.profile.source_mode ?? "talking_head_avatar",
+      intent: {
+        placement: selectedOption?.subtitles.placement ?? "auto",
+        size: selectedOption?.subtitles.size ?? "medium",
+      },
+    });
+    const captions = captionLayout
+      ? layoutCaptionCues(rawCaptions, captionLayout, outputDimensions.width, outputDimensions.height)
+      : [];
     const storyboard = enrichment ? resolveRenderContractStoryboard({
       projectPath,
       width: outputDimensions.width,
@@ -3313,15 +3337,9 @@ export function renderProject(projectPath: string, options: ProviderModeOption =
       assets: enrichment.assets,
       bundlePaths: Object.fromEntries(enrichment.assets.assets.map((asset) => [asset.id, asset.path])),
     }) : undefined;
-    const captionLayout = captions.length === 0 ? undefined : storyboard?.captions.layout ?? resolveCaptionLayout({
-      width: outputDimensions.width,
-      height: outputDimensions.height,
-      source_mode: execution.source_mode ?? enrichment?.plan.profile.source_mode ?? "talking_head_avatar",
-      intent: {
-        placement: selectedOption?.subtitles.placement ?? "auto",
-        size: selectedOption?.subtitles.size ?? "medium",
-      },
-    });
+    if (storyboard && captionLayout && !captionLayoutsEqual(storyboard.captions.layout, captionLayout)) {
+      throw commandError("CONTRACT_INVALID", "resolved storyboard caption layout does not match the authoring caption layout");
+    }
     const executed = executeResolvedRenderPlan({
       runRoot: stagingRoot,
       assetRoot: projectPath,
@@ -5862,12 +5880,10 @@ function compiledCaptionPlan(plan: EnrichmentPlanArtifact): { enabled: boolean; 
   return {
     enabled: captionElements.length > 0,
     identity: captionElements[0]?.caption_identity ?? plan.profile.caption_identity,
-    emphasis: captionElements.map((element) => ({
-      start: element.start,
-      end: element.end,
-      text: elementParamText(element, "text") ?? element.element_id,
-      reason: element.reason,
-    })),
+    emphasis: captionElements.flatMap((element) => {
+      const text = elementParamText(element, "text") ?? elementParamText(element, "label");
+      return text ? [{ start: element.start, end: element.end, text, reason: element.reason }] : [];
+    }),
   };
 }
 
@@ -6534,6 +6550,7 @@ function renderHyperframesRecut(
 
   runHyperframes(["lint", "."], publicDir, "hyperframes recut lint failed");
   runHyperframes(["validate", "."], publicDir, "hyperframes recut validate failed");
+  inspectCaptionTextFit(publicDir, storyboard.captions.cues);
   const visualPath = join(workDir, "recut-visual.mp4");
   runHyperframes(["render", ".", "--format", "mp4", "--output", visualPath, "--fps", "30", "--quality", "draft"], publicDir, "hyperframes recut render failed", 240);
   if (!existsSync(visualPath)) throw new Error(`hyperframes recut render did not create ${visualPath}`);
@@ -6700,6 +6717,7 @@ export function executeResolvedRenderPlan(input: {
   const frameSchedule = compileOutputFrameSchedule(input.timeline.entries, input.output.fps);
   renderResolvedEdl(input.timeline, input.sourcePaths, input.sourceHasAudio, cleanPath, input.output, frameSchedule);
   assertStrictOutputTiming(cleanPath, frameSchedule, input.durationToleranceSeconds);
+  if (input.captionLayout) assertCaptionCuesFitLayout(input.captions, input.captionLayout, input.output.width, input.output.height);
   const subtitlesPath = join(workDir, "subtitles.srt");
   atomicWriteText(subtitlesPath, renderCaptionCuesSrt(input.captions));
   const outputPath = join(runRoot, input.output.filename);
@@ -6978,7 +6996,8 @@ function renderRecutHtml(storyboard: EnrichmentStoryboard): string {
   const duration = storyboard.clean_video.duration_seconds;
   const captionLayout = storyboard.captions.layout;
   assertResolvedCaptionLayout(captionLayout);
-  const emphasisY = Math.max(0.1, captionLayout.anchor_y_ratio - 0.1);
+  const emphasisOffset = Math.max(0.18, (captionLayout.font_size_px * 4) / storyboard.canvas.height);
+  const emphasisY = Math.max(0.1, captionLayout.anchor_y_ratio - emphasisOffset);
   const sourceClass = `source-${storyboard.profile.source_mode}`;
   const cards = storyboard.cards
     .map((card, index) => {
@@ -7102,7 +7121,7 @@ function renderRecutHtml(storyboard: EnrichmentStoryboard): string {
       .card-wrap { position: absolute; z-index: 4; opacity: 0; will-change: opacity, transform; color: #17201b; }
       .hf-registry-block { position: absolute; z-index: 5; opacity: 1; will-change: opacity, transform; }
       .hf-registry-component-host { position: absolute; z-index: 6; opacity: 0; will-change: opacity, transform; width: max-content; max-width: min(560px, 44vw); padding: 8px 12px; border-radius: 999px; color: #fff; font-size: clamp(15px, 1.8vw, 28px); line-height: 1.1; font-weight: 850; background: rgba(10, 14, 18, 0.46); border: 1px solid rgba(255,255,255,0.16); text-shadow: 0 2px 10px rgba(0,0,0,0.28); backdrop-filter: blur(2px); }
-      .caption-component-host { left:${percent(captionLayout.anchor_x_ratio)}; right:auto; top:${percent(emphasisY)}; bottom:auto; translate:-50% -50%; width:max-content; max-width:min(820px, calc(100% - 160px)); min-width:0; padding:10px 16px; border-radius:14px; background:rgba(12,16,20,0.28); color:#fff; border:1px solid rgba(255,255,255,0.14); text-align:center; white-space:normal; overflow-wrap:anywhere; font-size:${Math.max(15, Math.round(captionLayout.font_size_px * 0.85))}px; }
+      .caption-component-host { left:${percent(captionLayout.anchor_x_ratio)}; right:auto; top:${percent(emphasisY)}; bottom:auto; translate:-50% -50%; z-index:9; width:max-content; max-width:${CAPTION_RAIL_MAX_WIDTH_RATIO * 100}%; min-width:0; padding:10px 16px; border-radius:14px; background:rgba(12,16,20,0.28); color:#fff; border:1px solid rgba(255,255,255,0.14); text-align:center; white-space:normal; overflow-wrap:anywhere; font-size:${Math.max(15, Math.round(captionLayout.font_size_px * 0.85))}px; }
       .caption-component-host span { position:relative; z-index:1; }
       .caption-component-host span::before { content:""; position:absolute; z-index:-1; left:-6px; right:-6px; bottom:0.08em; height:0.42em; border-radius:999px; background:rgba(250,204,21,0.72); transform:scaleX(var(--caption-sweep, 0)); transform-origin:left center; }
       .cli-overlay { position:absolute; z-index:7; opacity:0; will-change:opacity, transform; color:#fff; }
@@ -7146,12 +7165,12 @@ function renderRecutHtml(storyboard: EnrichmentStoryboard): string {
       .flow-arrow { stroke: #2b5c88; transform-box: fill-box; transform-origin: left center; }
       .flow-node { fill: #fffef7; stroke: #17201b; transform-box: fill-box; transform-origin: center; }
       .flow text { font: 700 16px system-ui, sans-serif; fill: #17201b; }
-      .caption-rail { position: absolute; left: ${percent(captionLayout.anchor_x_ratio)}; right: auto; top: ${percent(captionLayout.anchor_y_ratio)}; bottom: auto; translate: -50% -50%; width: max-content; max-width: 84%; min-height: 58px; z-index: 8; display: grid; place-items: center; padding: 12px 20px; border-radius: 999px; background: rgba(16, 20, 18, 0.74); color: #fff; box-shadow: 0 16px 40px rgba(0,0,0,0.18); opacity: 0; will-change: opacity, transform; }
-      #caption-text { max-width: 100%; font-size: ${captionLayout.font_size_px}px; line-height: 1.15; font-weight: 800; text-align: center; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .caption-rail { position: absolute; left: ${percent(captionLayout.anchor_x_ratio)}; right: auto; top: ${percent(captionLayout.anchor_y_ratio)}; bottom: auto; translate: -50% -50%; width: max-content; max-width: ${CAPTION_RAIL_MAX_WIDTH_RATIO * 100}%; min-height: 58px; z-index: 8; display: grid; place-items: center; padding: 12px 20px; border-radius: 999px; background: rgba(16, 20, 18, 0.74); color: #fff; box-shadow: 0 16px 40px rgba(0,0,0,0.18); opacity: 0; will-change: opacity, transform; }
+      #caption-text { max-width: 100%; max-height: ${CAPTION_MAX_LINES * 1.15}em; font-size: ${captionLayout.font_size_px}px; line-height: 1.15; font-weight: 800; text-align: center; letter-spacing: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
       .emphasis-chip { position: absolute; left: ${percent(captionLayout.anchor_x_ratio)}; top: ${percent(emphasisY)}; bottom: auto; translate: -50% -50%; z-index: 7; opacity: 0; padding: 10px 18px; border-radius: 999px; color: #132017; background: rgba(255, 243, 176, 0.96); border: 1px solid rgba(76, 63, 14, 0.18); box-shadow: 0 12px 34px rgba(20,18,10,0.16); font-weight: 850; font-size: ${Math.max(15, Math.round(captionLayout.font_size_px * 0.85))}px; will-change: opacity, transform; }
       .source-screen_recording .card-wrap, .source-mixed .card-wrap { color: #fff; }
       .source-screen_recording .zone-left_panel, .source-screen_recording .zone-right_panel, .source-mixed .zone-left_panel, .source-mixed .zone-right_panel { display: flex; align-items: center; }
-      .source-screen_recording .caption-rail, .source-mixed .caption-rail { min-width: min(360px, 42%); max-width: 72%; min-height: 44px; padding: 8px 16px; background: rgba(12, 16, 20, 0.58); border: 1px solid rgba(255,255,255,0.12); box-shadow: 0 12px 30px rgba(0,0,0,0.16); }
+      .source-screen_recording .caption-rail, .source-mixed .caption-rail { min-width: min(360px, 42%); min-height: 44px; padding: 8px 16px; background: rgba(12, 16, 20, 0.58); border: 1px solid rgba(255,255,255,0.12); box-shadow: 0 12px 30px rgba(0,0,0,0.16); }
       .source-screen_recording .zone-lower_third, .source-mixed .zone-lower_third { left: 6%; right: auto; bottom: 18%; min-height: auto; width: max-content; max-width: min(440px, 42vw); }
       .source-screen_recording .screen-focus, .source-mixed .screen-focus { position: relative; width: 100%; height: 100%; color: #facc15; }
       .focus-corners { position: absolute; inset: 0; border: 2px solid rgba(250, 204, 21, 0.92); border-radius: 10px; background: rgba(250, 204, 21, 0.018); box-shadow: 0 0 0 1px rgba(12,14,18,0.18), 0 10px 28px rgba(250,204,21,0.10); transform-origin: center; }
@@ -7690,6 +7709,44 @@ function runHyperframes(args: string[], cwd: string, message: string, timeout = 
   if (result.status !== 0) throw new Error(`${message}: ${spawnError || result.stderr || result.stdout || `process exited with status ${String(result.status)}`}`);
 }
 
+function inspectCaptionTextFit(cwd: string, cues: readonly CaptionCue[]): void {
+  const batchSize = 200;
+  for (let offset = 0; offset < cues.length; offset += batchSize) {
+    const batch = cues.slice(offset, offset + batchSize);
+    const at = batch.map((cue) => formatSeconds((cue.start + cue.end) / 2)).join(",");
+    const result = spawnSync(
+      resolveHyperframesBinary(),
+      ["inspect", ".", "--json", "--strict", `--at=${at}`],
+      { cwd, encoding: "utf8", timeout: 120_000 },
+    );
+    if (result.status !== 0) {
+      const first = offset + 1;
+      const last = offset + batch.length;
+      const issues = hyperframesIssueSummary(result.stdout);
+      throw commandError(
+        "RENDER_PREFLIGHT_FAILED",
+        `caption DOM inspection failed for cues ${first}-${last}; ${issues ?? "HyperFrames reported text/container overflow or an unavailable inspection runtime"}`,
+      );
+    }
+  }
+}
+
+function hyperframesIssueSummary(stdout: string): string | undefined {
+  try {
+    const parsed = JSON.parse(stdout) as { issues?: unknown };
+    if (!Array.isArray(parsed.issues) || parsed.issues.length === 0) return undefined;
+    const summaries = parsed.issues.slice(0, 5).map((issue) => {
+      const record = issue && typeof issue === "object" ? issue as Record<string, unknown> : {};
+      return [record.code, record.selector, record.containerSelector]
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+        .join("@");
+    }).filter(Boolean);
+    return summaries.length > 0 ? `HyperFrames issues: ${summaries.join(", ")}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function mixMusic(basePath: string, musicPath: string, slot: EnrichmentMusic, outputPath: string): void {
   const duration = slot.end - slot.start;
   const delay = Math.round(slot.start * 1000);
@@ -7754,7 +7811,7 @@ function burnSubtitles(basePath: string, subtitlesPath: string, outputPath: stri
   return true;
 }
 
-function parseSrtCues(srt: string): { start: number; end: number; text: string }[] {
+function parseSrtCues(srt: string): CaptionCue[] {
   return srt
     .trim()
     .split(/\r?\n\s*\r?\n/)
@@ -7763,7 +7820,7 @@ function parseSrtCues(srt: string): { start: number; end: number; text: string }
       const timingIndex = lines.findIndex((line) => line.includes("-->"));
       if (timingIndex < 0) return [];
       const [startText, endText] = lines[timingIndex]!.split("-->").map((part) => part.trim());
-      const text = lines.slice(timingIndex + 1).join(" ").trim();
+      const text = lines.slice(timingIndex + 1).join("\n").trim();
       if (!startText || !endText || !text) return [];
       const start = srtTimestampSeconds(startText);
       const end = srtTimestampSeconds(endText);

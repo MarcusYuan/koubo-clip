@@ -41,7 +41,14 @@ import {
   type RenderSourceIdentityV1,
   type OutputFrameSchedule,
 } from "./render-contract";
-import { assertResolvedCaptionLayout, resolveCaptionLayout } from "./caption-layout";
+import {
+  assertResolvedCaptionLayout,
+  assertCaptionCuesFitLayout,
+  captionGraphemeCount,
+  isolatedTailCaptionWarning,
+  layoutCaptionCues,
+  resolveCaptionLayout,
+} from "./caption-layout";
 import {
   compileEdlProject,
   compileCaptionCuesForEdl,
@@ -104,8 +111,8 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
     const selectionKey = `proposal-selection:${selectedOption.id}`;
     const selectionRecord = lifecycle.artifacts[selectionKey];
     if (!selectionRecord) throw coded("CONTRACT_INVALID", `render contract export requires current ${selectionKey}`);
-    const cues = selectedOption?.subtitles.enabled === false ? [] : compileCaptionCuesForEdl(transcript, edl);
-    if (selectedOption?.subtitles.enabled !== false && cues.length === 0) throw coded("PROPOSAL_EXECUTION_MISMATCH", "the confirmed proposal requires subtitles, but no transcript cues map to the retained EDL");
+    const rawCues = selectedOption?.subtitles.enabled === false ? [] : compileCaptionCuesForEdl(transcript, edl);
+    if (selectedOption?.subtitles.enabled !== false && rawCues.length === 0) throw coded("PROPOSAL_EXECUTION_MISMATCH", "the confirmed proposal requires subtitles, but no transcript cues map to the retained EDL");
     const authoringAssets = enrichment?.assets ?? { assets: [] };
     if (plan && !existsSync(assetManifestPath) && referencedAssetIds(plan).size > 0) throw coded("CONTRACT_INVALID", "enrichment plan references assets but asset-manifest.json is missing");
 
@@ -126,7 +133,7 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
     const firstSource = rawSources.sources.find((source) => source.source_id === firstEntry.source_id)!;
     const output = resolveRenderOutputSpec(plan?.profile.aspect_ratio ?? "source", firstSource.identity!.video.display_width, firstSource.identity!.video.display_height);
     const duration = frameSchedule.expected_duration_seconds;
-    const captionLayout = cues.length === 0 ? null : resolveCaptionLayout({
+    const captionLayout = rawCues.length === 0 ? null : resolveCaptionLayout({
       width: output.width,
       height: output.height,
       source_mode: confirmedExecution.source_mode ?? plan?.profile.source_mode ?? "talking_head_avatar",
@@ -135,13 +142,34 @@ export function exportRenderContract(projectPath: string, outputDir: string): Co
         size: selectedOption.subtitles.size ?? "medium",
       },
     });
-    const captionQaChecks = captionLayout && cues[0] ? [{
-      id: "caption-layout",
-      expected: `caption rail uses ${captionLayout.placement} at y=${captionLayout.anchor_y_ratio}`,
-      frame_times: [(cues[0].start + cues[0].end) / 2],
-      needs_human_review: false,
-      status: "passed",
-    }] : [];
+    const cues = captionLayout ? layoutCaptionCues(rawCues, captionLayout, output.width, output.height) : [];
+    const pressureCue = cues.reduce<(typeof cues)[number] | undefined>((current, cue) => (
+      !current || captionGraphemeCount(cue.text) > captionGraphemeCount(current.text) ? cue : current
+    ), undefined);
+    const tailWarning = isolatedTailCaptionWarning(rawCues, duration);
+    const captionQaChecks = captionLayout && pressureCue ? [
+      {
+        id: "caption-layout",
+        expected: `caption rail uses ${captionLayout.placement} at y=${captionLayout.anchor_y_ratio}`,
+        frame_times: [(pressureCue.start + pressureCue.end) / 2],
+        needs_human_review: false,
+        status: "passed",
+      },
+      {
+        id: "caption-text-fit",
+        expected: "caption text preserves the complete cue content inside the frozen two-line safe rail",
+        frame_times: [(pressureCue.start + pressureCue.end) / 2],
+        needs_human_review: false,
+        status: "passed",
+      },
+      ...(tailWarning ? [{
+        id: "caption-tail-transcript-review",
+        expected: tailWarning,
+        frame_times: [((rawCues.at(-1)?.start ?? 0) + (rawCues.at(-1)?.end ?? 0)) / 2],
+        needs_human_review: true,
+        status: "warning",
+      }] : []),
+    ] : [];
     const storyboard = plan ? resolveRenderContractStoryboard({
       projectPath,
       width: output.width,
@@ -402,6 +430,7 @@ export function inspectBoundContract(bundleDir: string, resultPath: string): Com
     const businessPassed = technicalPassed && proposalPassed;
     const overallStatus = businessPassed ? "completed" as const : technicalPassed ? "partial" as const : "failed" as const;
     const blockers = checks.filter((item) => item.status === "blocker").map((item) => item.id);
+    const warnings = checks.filter((item) => item.status === "warning").map((item) => item.message);
     const inspection: StrictInspectionV2 = {
       schema_version: STRICT_RENDER_PROTOCOL_VERSION,
       contract_digest: contract.contract_digest,
@@ -416,7 +445,7 @@ export function inspectBoundContract(bundleDir: string, resultPath: string): Com
       overall_status: overallStatus,
       checks,
       frames: extracted.frames,
-      warnings: [],
+      warnings,
       blockers,
       inspected_at: new Date().toISOString(),
     };
@@ -453,6 +482,20 @@ function readContract(bundleDir: string): RenderContractV2 {
 }
 
 function assertContractCaptionConsistency(contract: RenderContractV2): void {
+  const layout = contract.payload.captions.layout;
+  if (layout) {
+    const output = contract.payload.output as Record<string, unknown>;
+    try {
+      assertCaptionCuesFitLayout(
+        contract.payload.captions.cues,
+        layout,
+        integer(output.width, "output.width"),
+        integer(output.height, "output.height"),
+      );
+    } catch (error) {
+      throw coded("CONTRACT_INVALID", error instanceof Error ? error.message : "caption cues exceed the frozen safe layout");
+    }
+  }
   const composition = contract.payload.composition as Record<string, unknown>;
   if (composition.mode !== "resolved_storyboard") return;
   const storyboard = composition.storyboard;

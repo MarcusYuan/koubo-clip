@@ -53,6 +53,61 @@ test("enrichment elements export through one JSON-safe render-contract boundary"
     for (const absent of ["asset_id", "anchor_point", "target_rect"]) expect(Object.hasOwn(element, absent)).toBe(false);
   }
   expect(plan.elements[3]?.params).toEqual({ title: "Koubo Clip" });
+  const storyboard = contract.payload.composition.storyboard as { captions: { enabled: boolean; identity: string; emphasis: unknown[] } };
+  expect(storyboard.captions.enabled).toBe(true);
+  expect(storyboard.captions.identity).toBe("anchor");
+  expect(storyboard.captions.emphasis).toEqual([]);
+  expect(JSON.stringify(storyboard.captions).includes('"text":"anchor"')).toBe(false);
+});
+
+test("caption identity only exposes explicit emphasis text", async () => {
+  if (!hasFfmpeg()) return;
+  const { root, project } = await projectFixture("caption-explicit-emphasis");
+  writePlan(project, {
+    elements: [{
+      id: "identity",
+      source: "agent",
+      element_id: "anchor",
+      element_type: "caption_identity",
+      start: 0.1,
+      end: 0.7,
+      reason: "keep captions readable",
+      caption_identity: "anchor",
+      params: { text: "明确重点" },
+    }],
+    audio: { music: [], sfx: [] },
+  });
+  const enriched = enrichPlanProject(project);
+  if (!enriched.ok) throw new Error(`${enriched.error.code}: ${enriched.error.message}`);
+  const bundle = join(root, "bundle");
+  const exported = exportRenderContract(project, bundle);
+  if (!exported.ok) throw new Error(`${exported.error.code}: ${exported.error.message}`);
+  const storyboard = readContract(bundle).payload.composition.storyboard as { captions: { emphasis: Array<{ text: string }> } };
+  expect(storyboard.captions.emphasis.length).toBe(1);
+  expect(storyboard.captions.emphasis[0]?.text).toBe("明确重点");
+
+  writePlan(project, {
+    elements: [{
+      id: "identity",
+      source: "agent",
+      element_id: "anchor",
+      element_type: "caption_identity",
+      start: 0.1,
+      end: 0.7,
+      reason: "keep captions readable",
+      caption_identity: "anchor",
+      params: { label: "补充说明" },
+    }],
+    audio: { music: [], sfx: [] },
+  });
+  const labelEnriched = enrichPlanProject(project);
+  if (!labelEnriched.ok) throw new Error(`${labelEnriched.error.code}: ${labelEnriched.error.message}`);
+  const labelBundle = join(root, "bundle-label");
+  const labelExported = exportRenderContract(project, labelBundle);
+  if (!labelExported.ok) throw new Error(`${labelExported.error.code}: ${labelExported.error.message}`);
+  const labelStoryboard = readContract(labelBundle).payload.composition.storyboard as { captions: { emphasis: Array<{ text: string }> } };
+  expect(labelStoryboard.captions.emphasis.length).toBe(1);
+  expect(labelStoryboard.captions.emphasis[0]?.text).toBe("补充说明");
 });
 
 test("enrichment caption layout must match the confirmed proposal preset", async () => {
@@ -335,6 +390,41 @@ test("confirmed strong-hook reorder and source-local overlay survive the complet
   expect(cueRejected.ok).toBe(false);
   if (cueRejected.ok) throw new Error("expected frozen caption cue drift rejection");
   expect(cueRejected.error.code).toBe("CONTRACT_INVALID");
+}, 240_000);
+
+test("HyperFrames caption DOM overflow fails before a strict result is committed", async () => {
+  if (!hasFfmpeg()) return;
+  const { root, project, source } = await projectFixture("caption-overflow", true);
+  writePlan(project, {
+    elements: [{
+      id: "identity",
+      source: "agent",
+      element_id: "anchor",
+      element_type: "caption_identity",
+      start: 0.1,
+      end: 0.6,
+      reason: "exercise the caption DOM overflow gate",
+      caption_identity: "anchor",
+      params: { text: "超".repeat(1200) },
+    }],
+    audio: { music: [], sfx: [] },
+  });
+  const enriched = enrichPlanProject(project);
+  if (!enriched.ok) throw new Error(`${enriched.error.code}: ${enriched.error.message}`);
+  const bundle = join(root, "bundle");
+  const exported = exportRenderContract(project, bundle);
+  if (!exported.ok) throw new Error(`${exported.error.code}: ${exported.error.message}`);
+  const sourceMap = join(root, "source-map.json");
+  const bindings = join(root, "bindings.json");
+  const run = join(root, "run");
+  writeFileSync(sourceMap, JSON.stringify({ "src-001": source }));
+  expect(bindRenderContract(bundle, sourceMap, bindings).ok).toBe(true);
+  const rendered = renderBoundContract(bundle, bindings, run);
+  expect(rendered.ok).toBe(false);
+  if (rendered.ok) throw new Error("expected caption overflow rejection");
+  expect(rendered.error.code).toBe("RENDER_PREFLIGHT_FAILED");
+  expect(rendered.error.message).toContain("caption DOM inspection failed");
+  expect(existsSync(run)).toBe(false);
 }, 240_000);
 
 async function projectFixture(name: string, portrait = false): Promise<{ root: string; project: string; source: string }> {

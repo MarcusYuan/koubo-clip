@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { createProject, exploreProject, probePortableSourceIdentity, probeStrictOutputTiming } from "./project";
+import { createProject, enrichPlanProject, exploreProject, probePortableSourceIdentity, probeStrictOutputTiming } from "./project";
 import { bindRenderContract, exportRenderContract, inspectBoundContract, renderBoundContract, verifyRenderContractBundle } from "./render-contract-commands";
 import { compileOutputFrameSchedule, createRenderContractV2, type RenderContractV2 } from "./render-contract";
 import { confirmProposalAndWriteEditPlan } from "./test-fixtures";
@@ -106,14 +106,42 @@ test("portrait strict captions stay in the center-lower safe area", async () => 
   const root = mkdtempSync(join(tmpdir(), "koubo-contract-portrait-caption-"));
   const source = join(root, "raw.mp4");
   const project = join(root, "authoring");
-  makeBlackVideo(source, 1.2, "180x320");
+  makeBlackVideo(source, 1.2, "224x480");
   expect(createProject([source], { projectPath: project }).ok).toBe(true);
   writeFileSync(join(project, "transcript.json"), JSON.stringify({
     timing_granularity: "segment",
-    segments: [{ source_id: "src-001", start: 0.1, end: 1, text: "SAFE CAPTION" }],
+    segments: [
+      { source_id: "src-001", start: 0.1, end: 0.8, text: "我们直接导航，然后我们这一款功能可以完整展示出来" },
+      { source_id: "src-001", start: 0.84, end: 1.1, text: "秒钟" },
+    ],
   }));
   expect((await exploreProject(project, { asr: "external" })).ok).toBe(true);
-  confirmProposalAndWriteEditPlan(project, [], undefined, { sourceMode: "talking_head_avatar" });
+  confirmProposalAndWriteEditPlan(project, [], undefined, { subtitleStyle: "anchor", sourceMode: "talking_head_avatar" });
+  writeFileSync(join(project, "enrichment-plan.json"), JSON.stringify({
+    version: "2.0",
+    profile: {
+      source_mode: "talking_head_avatar",
+      aspect_ratio: "source",
+      caption_identity: "anchor",
+      caption_layout: { placement: "auto", size: "medium" },
+      layout: "overlay",
+      style: "minimal",
+      frame: "clean",
+    },
+    elements: [{
+      id: "caption-style",
+      source: "agent",
+      element_id: "anchor",
+      element_type: "caption_identity",
+      start: 0,
+      end: 1.2,
+      reason: "use the confirmed anchor caption identity",
+      caption_identity: "anchor",
+    }],
+    audio: { music: [], sfx: [] },
+  }));
+  const enriched = enrichPlanProject(project);
+  if (!enriched.ok) throw new Error(`${enriched.error.code}: ${enriched.error.message}`);
 
   const bundle = join(root, "bundle");
   const exported = exportRenderContract(project, bundle);
@@ -127,6 +155,19 @@ test("portrait strict captions stay in the center-lower safe area", async () => 
     anchor_y_ratio: 0.7,
     font_size_px: 24,
   });
+  expect(contract.payload.captions.cues.map((cue) => cue.text.replaceAll("\n", "")).join("")).toBe("我们直接导航，然后我们这一款功能可以完整展示出来秒钟");
+  const frozenChecks = (contract.payload.inspection as { checks: Array<{ id: string; status: string; expected: string }> }).checks;
+  expect(frozenChecks.some((check) => check.id === "caption-text-fit" && check.status === "passed")).toBe(true);
+  expect(frozenChecks.some((check) => check.id === "caption-tail-transcript-review" && check.expected.includes('text="秒钟"'))).toBe(true);
+  const invalidCaptionContract = structuredClone(contract);
+  invalidCaptionContract.payload.captions.cues[0]!.text = "超".repeat(200);
+  (invalidCaptionContract.payload.composition.storyboard as { captions: { cues: Array<{ text: string }> } }).captions.cues[0]!.text = "超".repeat(200);
+  writeFileSync(join(bundle, "render-contract.json"), `${JSON.stringify(createRenderContractV2(invalidCaptionContract.payload), null, 2)}\n`);
+  const invalidCaptionVerified = verifyRenderContractBundle(bundle);
+  expect(invalidCaptionVerified.ok).toBe(false);
+  if (invalidCaptionVerified.ok) throw new Error("expected overflowing frozen cue rejection");
+  expect(invalidCaptionVerified.error.code).toBe("CONTRACT_INVALID");
+  writeFileSync(join(bundle, "render-contract.json"), `${JSON.stringify(contract, null, 2)}\n`);
 
   const sourceMap = join(root, "source-map.json");
   const bindings = join(root, "bindings.json");
@@ -137,8 +178,16 @@ test("portrait strict captions stay in the center-lower safe area", async () => 
   const inspected = inspectBoundContract(bundle, rendered.data.result_path);
   if (!inspected.ok) throw new Error(`${inspected.error.code}: ${inspected.error.message}`);
   expect(inspected.data.checks.some((check) => check.id === "caption-layout" && check.status === "passed")).toBe(true);
-  const inspection = JSON.parse(readFileSync(join(root, "run", "render-contract-inspection.json"), "utf8")) as { frames: string[] };
+  expect(inspected.data.checks.some((check) => check.id === "frozen-qa-caption-text-fit" && check.status === "passed")).toBe(true);
+  expect(inspected.data.checks.some((check) => check.message === "caption emphasis: anchor")).toBe(false);
+  const inspection = JSON.parse(readFileSync(join(root, "run", "render-contract-inspection.json"), "utf8")) as { frames: string[]; warnings: string[] };
   expect(inspection.frames.some((path) => path.includes("caption-layout"))).toBe(true);
+  expect(inspection.warnings.some((warning) => warning.includes('text="秒钟"') && warning.includes("transcript/ASR"))).toBe(true);
+  const captionHtml = readFileSync(join(root, "run", ".hyperframes", "recut", "public", "index.html"), "utf8");
+  const captionRule = /#caption-text\s*\{([^}]*)\}/.exec(captionHtml)?.[1] ?? "";
+  expect(captionRule.includes("white-space: pre-wrap")).toBe(true);
+  expect(captionRule.includes("text-overflow")).toBe(false);
+  expect(captionRule.includes("overflow: hidden")).toBe(false);
 
   const frame = spawnSync("ffmpeg", [
     "-hide_banner", "-loglevel", "error", "-ss", "0.5", "-i", rendered.data.output_path,
@@ -147,9 +196,9 @@ test("portrait strict captions stay in the center-lower safe area", async () => 
   if (frame.status !== 0) throw new Error(frame.stderr.toString());
   const pixels = Buffer.from(frame.stdout);
   const brightRows: number[] = [];
-  for (let y = 0; y < 320; y += 1) {
-    for (let x = 0; x < 180; x += 1) {
-      const offset = (y * 180 + x) * 3;
+  for (let y = 0; y < 480; y += 1) {
+    for (let x = 0; x < 224; x += 1) {
+      const offset = (y * 224 + x) * 3;
       if (pixels[offset]! > 180 && pixels[offset + 1]! > 180 && pixels[offset + 2]! > 180) {
         brightRows.push(y);
         break;
@@ -158,8 +207,8 @@ test("portrait strict captions stay in the center-lower safe area", async () => 
   }
   expect(brightRows.length > 0).toBe(true);
   const center = (brightRows[0]! + brightRows.at(-1)!) / 2;
-  expect(center >= 320 * 0.6 && center <= 320 * 0.8).toBe(true);
-  expect(brightRows.at(-1)! < 320 * 0.9).toBe(true);
+  expect(center >= 480 * 0.6 && center <= 480 * 0.8).toBe(true);
+  expect(brightRows.at(-1)! < 480 * 0.9).toBe(true);
 
   const oldRuntimeContract = createRenderContractV2({
     ...contract.payload,
@@ -177,7 +226,38 @@ test("portrait strict captions stay in the center-lower safe area", async () => 
   expect(oldVerified.ok).toBe(false);
   if (oldVerified.ok) throw new Error("expected render contract 1.0 rejection");
   expect(oldVerified.error.code).toBe("CONTRACT_SCHEMA_UNSUPPORTED");
-});
+}, 240_000);
+
+test("plain 224x480 subtitles render every character without enrichment", async () => {
+  if (spawnSync("ffmpeg", ["-version"]).status !== 0) return;
+  const root = mkdtempSync(join(tmpdir(), "koubo-contract-plain-portrait-caption-"));
+  const source = join(root, "raw.mp4");
+  const project = join(root, "authoring");
+  const text = "我们直接导航，然后我们这一款功能可以完整展示出来";
+  makeBlackVideo(source, 1.2, "224x480");
+  expect(createProject([source], { projectPath: project }).ok).toBe(true);
+  writeFileSync(join(project, "transcript.json"), JSON.stringify({
+    timing_granularity: "segment",
+    segments: [{ source_id: "src-001", start: 0.1, end: 1, text }],
+  }));
+  expect((await exploreProject(project, { asr: "external" })).ok).toBe(true);
+  confirmProposalAndWriteEditPlan(project, [], undefined, { sourceMode: "talking_head_avatar" });
+  const bundle = join(root, "bundle");
+  const exported = exportRenderContract(project, bundle);
+  if (!exported.ok) throw new Error(`${exported.error.code}: ${exported.error.message}`);
+  const contract = JSON.parse(readFileSync(join(bundle, "render-contract.json"), "utf8")) as RenderContractV2;
+  expect(contract.payload.captions.cues.length > 1).toBe(true);
+  expect(contract.payload.captions.cues.map((cue) => cue.text.replaceAll("\n", "")).join("")).toBe(text);
+  const sourceMap = join(root, "source-map.json");
+  const bindings = join(root, "bindings.json");
+  writeFileSync(sourceMap, JSON.stringify({ "src-001": source }));
+  expect(bindRenderContract(bundle, sourceMap, bindings).ok).toBe(true);
+  const rendered = renderBoundContract(bundle, bindings, join(root, "run"));
+  if (!rendered.ok) throw new Error(`${rendered.error.code}: ${rendered.error.message}`);
+  const inspected = inspectBoundContract(bundle, rendered.data.result_path);
+  if (!inspected.ok) throw new Error(`${inspected.error.code}: ${inspected.error.message}`);
+  expect(inspected.data.accepted).toBe(true);
+}, 240_000);
 
 test("strict inspection rejects renderer identity drift", async () => {
   if (spawnSync("ffmpeg", ["-version"]).status !== 0) return;
