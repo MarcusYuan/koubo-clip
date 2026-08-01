@@ -10,7 +10,7 @@ type PackResult = { filename: string; shasum: string; integrity: string };
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputPath = resolve(process.argv[2] ?? join(root, "dist", `koubo-clip-${packageVersion()}.tgz`));
 const version = packageVersion();
-const sourceRevision = process.env.KOUBO_CLIP_SOURCE_REVISION ?? gitRevision();
+const sourceRevision = resolveSourceRevision();
 const staging = mkdtempSync(join(tmpdir(), "koubo-npm-package-"));
 
 try {
@@ -84,4 +84,19 @@ function gitRevision(): string {
   const revision = run("git", ["rev-parse", "HEAD"], root).trim();
   const dirty = run("git", ["status", "--porcelain", "--untracked-files=all"], root).trim();
   return dirty ? `${revision}-dirty` : revision;
+}
+
+function resolveSourceRevision(): string {
+  const requested = process.env.KOUBO_CLIP_SOURCE_REVISION;
+  if (!requested) return gitRevision();
+  if (!/^[a-f0-9]{40}$/.test(requested)) {
+    throw new Error("KOUBO_CLIP_SOURCE_REVISION must be an exact 40-character lowercase commit SHA");
+  }
+  const head = run("git", ["rev-parse", "HEAD"], root).trim();
+  if (requested !== head) {
+    throw new Error(`KOUBO_CLIP_SOURCE_REVISION must equal the checked-out commit ${head}`);
+  }
+  const dirty = run("git", ["status", "--porcelain", "--untracked-files=all"], root).trim();
+  if (dirty) throw new Error("Refusing to attach a release source revision to a dirty npm package build");
+  return requested;
 }

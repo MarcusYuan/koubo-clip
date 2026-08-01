@@ -544,9 +544,13 @@ function packageVersion(): string {
 }
 
 function resolveProvenance(): { source_revision: string; release_mode: "release" | "preview"; worktree_dirty: boolean } {
-  const sourceRevision = process.env.KOUBO_CLIP_SOURCE_REVISION ?? run("git", ["rev-parse", "HEAD"], root).trim();
+  const headRevision = run("git", ["rev-parse", "HEAD"], root).trim();
+  const sourceRevision = process.env.KOUBO_CLIP_SOURCE_REVISION ?? headRevision;
   if (!/^[a-f0-9]{40}$/.test(sourceRevision)) {
     throw new Error("KOUBO_CLIP_SOURCE_REVISION must be an exact 40-character lowercase commit SHA");
+  }
+  if (sourceRevision !== headRevision) {
+    throw new Error(`KOUBO_CLIP_SOURCE_REVISION must equal the checked-out commit ${headRevision}`);
   }
   const dirty = run("git", ["status", "--porcelain", "--untracked-files=all"], root).trim().length > 0;
   if (dirty && process.env.KOUBO_BOX_ALLOW_DIRTY_PREVIEW !== "1") {
