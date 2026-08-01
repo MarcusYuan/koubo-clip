@@ -66,5 +66,8 @@
   },
   "devDependencies": {
     "ffmpeg-ffprobe-static": "6.1.2-rc.1"
-  }
+  },
+  "trustedDependencies": [
+    "ffmpeg-ffprobe-static"
+  ]
 }
