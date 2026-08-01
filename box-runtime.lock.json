@@ -65,7 +65,7 @@
       "version": "6.1.1",
       "target": "macos-aarch64",
       "source_lock": "third_party/ffmpeg-runtime/macos-aarch64/source-lock.json",
-      "source_lock_sha256": "36db8953210a210a4ecad7f4afdcfe4479b50d5905dad12dcc39d3fd92e6f1d5",
+      "source_lock_sha256": "b77c46159a04d07af5bfc889b58dfc17280f7ee2276ab70c2674afc34e357306",
       "build_recipe": "scripts/build-box-ffmpeg-runtime.sh",
       "build_recipe_sha256": "35145a5cc1acb930f7c4ac8f2c92ac2af1fd786198b91c30a8ee71f92762c78f",
       "runtime_output": "dist/box-runtime/macos-aarch64",
