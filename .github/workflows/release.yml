@@ -19,6 +19,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Require clean main release source
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          test -z "$(git status --porcelain --untracked-files=no)"
+
       - id: meta
         run: |
           node <<'NODE'
@@ -90,8 +97,78 @@ jobs:
             dist/koubo-clip-${{ steps.meta.outputs.version }}.tgz.json
             dist/koubo-clip-${{ steps.meta.outputs.version }}.tgz.acceptance.json
 
-  release:
+  box-macos-aarch64:
     needs: validate
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: bun install --frozen-lockfile
+
+      - name: Prepare pinned Chrome Headless Shell
+        run: |
+          set -euo pipefail
+          cache="$RUNNER_TEMP/koubo-box-browser"
+          npx @puppeteer/browsers@2.13.2 install chrome-headless-shell@131.0.6778.85 --platform mac_arm --path "$cache"
+          browser_root="$cache/chrome-headless-shell/mac_arm-131.0.6778.85/chrome-headless-shell-mac-arm64"
+          test -x "$browser_root/chrome-headless-shell"
+          echo "KOUBO_BOX_BROWSER_ROOT=$browser_root" >> "$GITHUB_ENV"
+
+      - name: Build Box CLI and Skill packages
+        env:
+          KOUBO_CLIP_SOURCE_REVISION: ${{ github.sha }}
+          KOUBO_BOX_TARGET: macos-aarch64
+          KOUBO_BOX_RELEASE_BASE_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}
+        run: bun run package:box
+
+      - name: Verify Box packages from arbitrary cwd
+        run: bun run verify:package:box
+
+      - name: Enforce the committed FFmpeg redistribution gate
+        env:
+          BOX_RELEASE_GATE_OUTPUT: dist/box/ffmpeg-license-gate-${{ needs.validate.outputs.version }}.json
+        run: bun run verify:box-release-gate --release
+
+      - name: Verify Box delivery source revision
+        env:
+          EXPECTED_SOURCE_REVISION: ${{ github.sha }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          tar -xOf "dist/box/koubo-clip-box-cli-${VERSION}-macos-aarch64.tgz" "koubo-clip-box-cli-${VERSION}-macos-aarch64/delivery-manifest.json" > "$RUNNER_TEMP/box-delivery-manifest.json"
+          node <<'NODE'
+          const fs = require("fs");
+          const manifest = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/box-delivery-manifest.json`, "utf8"));
+          if (manifest.source_revision !== process.env.EXPECTED_SOURCE_REVISION) {
+            throw new Error(`Box delivery source_revision mismatch: ${manifest.source_revision}`);
+          }
+          if (manifest.distribution_kind !== "box-cli") {
+            throw new Error(`Box delivery distribution_kind mismatch: ${manifest.distribution_kind}`);
+          }
+          NODE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koubo-clip-${{ needs.validate.outputs.version }}-box-macos-aarch64
+          path: |
+            dist/box/koubo-clip-box-cli-${{ needs.validate.outputs.version }}-macos-aarch64.tgz
+            dist/box/koubo-clip-box-cli-${{ needs.validate.outputs.version }}-macos-aarch64.tgz.acceptance.json
+            dist/box/koubo-clip-box-skill-${{ needs.validate.outputs.version }}.tgz
+            dist/box/cli-package.box.json
+            dist/box/skill.box.json
+            dist/box/koubo-clip-box-${{ needs.validate.outputs.version }}.metadata.json
+            dist/box/ffmpeg-license-gate-${{ needs.validate.outputs.version }}.json
+
+  release:
+    needs:
+      - validate
+      - box-macos-aarch64
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -109,6 +186,11 @@ jobs:
         with:
           name: koubo-clip-${{ needs.validate.outputs.version }}-canonical-npm
           path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: koubo-clip-${{ needs.validate.outputs.version }}-box-macos-aarch64
+          path: dist/box
 
       - name: Install FFmpeg
         run: |
@@ -188,12 +270,24 @@ jobs:
           NPM_TAG: ${{ needs.validate.outputs.npm_tag }}
         run: |
           notes="npm: koubo-clip@${VERSION} (${NPM_TAG})"
+          assets=(
+            "dist/koubo-clip-${VERSION}.tgz"
+            "dist/koubo-clip-${VERSION}.tgz.json"
+            "dist/koubo-clip-${VERSION}.tgz.acceptance.json"
+            "dist/box/koubo-clip-box-cli-${VERSION}-macos-aarch64.tgz"
+            "dist/box/koubo-clip-box-cli-${VERSION}-macos-aarch64.tgz.acceptance.json"
+            "dist/box/koubo-clip-box-skill-${VERSION}.tgz"
+            "dist/box/cli-package.box.json"
+            "dist/box/skill.box.json"
+            "dist/box/koubo-clip-box-${VERSION}.metadata.json"
+            "dist/box/ffmpeg-license-gate-${VERSION}.json"
+          )
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "dist/koubo-clip-${VERSION}.tgz" "dist/koubo-clip-${VERSION}.tgz.json" "dist/koubo-clip-${VERSION}.tgz.acceptance.json" --clobber
+            gh release upload "$TAG" "${assets[@]}" --clobber
           else
             args=(--title "koubo-clip ${VERSION}" --notes "$notes" --verify-tag)
             if [ "$PRERELEASE" = "true" ]; then
               args+=(--prerelease)
             fi
-            gh release create "$TAG" "dist/koubo-clip-${VERSION}.tgz" "dist/koubo-clip-${VERSION}.tgz.json" "dist/koubo-clip-${VERSION}.tgz.acceptance.json" "${args[@]}"
+            gh release create "$TAG" "${assets[@]}" "${args[@]}"
           fi

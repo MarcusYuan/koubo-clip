@@ -248,7 +248,7 @@ Required:
 - Optional network access for online ASR, music generation, and visual asset search.
 - Optional provider API keys or MCP configuration.
 
-These dependencies apply to npm and source installs. The current `darwin-arm64` Box CLI artifact carries and verifies its own managed runtime and does not rely on Bun, Node, npx, FFmpeg/ffprobe, HyperFrames, or the current working directory at execution time.
+These dependencies apply to npm and source installs. The current `macos-aarch64` Box CLI artifact carries and verifies its own managed runtime and does not rely on Bun, Node, npx, FFmpeg/ffprobe, HyperFrames, or the current working directory at execution time.
 
 Recommended macOS install with Homebrew:
 
@@ -454,8 +454,8 @@ Common files in the project directory:
 
 ## Project Status
 
-- Use `koubo-clip --version` as the installed version source. The current repository release target is `0.0.17`.
-- Current package status: the npm stable line remains compatible; 0.0.17 adds separate local Box CLI/Skill artifacts, managed health/self-test contracts, and provider-neutral external ASR handoff.
+- Use `koubo-clip --version` as the installed version source. The current repository release target is `0.0.18`.
+- Current package status: the npm stable line remains compatible; 0.0.18 makes the separate Box CLI/Skill artifacts conform to the Plugin Box v1 package contracts while preserving managed health/self-test and provider-neutral external ASR handoff.
 - Current recommended development mode: use Bun from the source repository.
 - npm package: `koubo-clip`.
 - Visual assets, music, and some provider capabilities depend on network access, API keys, user assets, or host MCP handoff.

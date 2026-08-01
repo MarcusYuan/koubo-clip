@@ -1,7 +1,7 @@
 {
   "name": "koubo-clip",
   "description": "Agent-driven local talking-head video cleanup and enrichment CLI.",
-  "version": "0.0.17",
+  "version": "0.0.18",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -39,6 +39,7 @@
     "package:internal": "bash scripts/package-internal.sh",
     "package:box": "bun scripts/package-box.ts",
     "verify:package:box": "bun scripts/verify-box-package.ts",
+    "verify:box-release-gate": "bun scripts/verify-box-release-gate.ts",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test packages/cli/src"
   },

@@ -12,7 +12,7 @@ on:
       - "v*"
 
 jobs:
-  test:
+  npm-canonical:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,3 +48,66 @@ jobs:
         env:
           EXPECTED_SOURCE_REVISION: ${{ github.sha }}
         run: bun run verify:package:npm dist/koubo-clip-ci.tgz
+
+  box-macos-aarch64:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: bun install --frozen-lockfile
+
+      - name: Prepare pinned Chrome Headless Shell
+        run: |
+          set -euo pipefail
+          cache="$RUNNER_TEMP/koubo-box-browser"
+          npx @puppeteer/browsers@2.13.2 install chrome-headless-shell@131.0.6778.85 --platform mac_arm --path "$cache"
+          browser_root="$cache/chrome-headless-shell/mac_arm-131.0.6778.85/chrome-headless-shell-mac-arm64"
+          test -x "$browser_root/chrome-headless-shell"
+          echo "KOUBO_BOX_BROWSER_ROOT=$browser_root" >> "$GITHUB_ENV"
+
+      - name: Build Box CLI and Skill packages
+        env:
+          KOUBO_CLIP_SOURCE_REVISION: ${{ github.sha }}
+          KOUBO_BOX_TARGET: macos-aarch64
+        run: bun run package:box
+
+      - name: Verify Box packages from arbitrary cwd
+        run: bun run verify:package:box
+
+      - name: Verify the committed Box public-distribution policy
+        run: bun run verify:box-release-gate
+
+      - name: Verify Box delivery source revision
+        env:
+          EXPECTED_SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tar -xOf "dist/box/koubo-clip-box-cli-${version}-macos-aarch64.tgz" "koubo-clip-box-cli-${version}-macos-aarch64/delivery-manifest.json" > "$RUNNER_TEMP/box-delivery-manifest.json"
+          node <<'NODE'
+          const fs = require("fs");
+          const manifest = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/box-delivery-manifest.json`, "utf8"));
+          if (manifest.source_revision !== process.env.EXPECTED_SOURCE_REVISION) {
+            throw new Error(`Box delivery source_revision mismatch: ${manifest.source_revision}`);
+          }
+          if (manifest.distribution_kind !== "box-cli") {
+            throw new Error(`Box delivery distribution_kind mismatch: ${manifest.distribution_kind}`);
+          }
+          NODE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koubo-clip-box-macos-aarch64-ci
+          path: |
+            dist/box/koubo-clip-box-cli-*-macos-aarch64.tgz
+            dist/box/koubo-clip-box-cli-*-macos-aarch64.tgz.acceptance.json
+            dist/box/koubo-clip-box-skill-*.tgz
+            dist/box/cli-package.box.json
+            dist/box/skill.box.json
+            dist/box/koubo-clip-box-*.metadata.json

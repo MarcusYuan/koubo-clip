@@ -15,19 +15,19 @@ import {
 import { artifactContractsDigest } from "../packages/cli/src/artifact-contracts";
 
 type Json = Record<string, any>;
-type FileEntry = { path: string; size: number; sha256: string };
-type Target = { os: "darwin"; arch: "arm64"; tag: "darwin-arm64" };
+type FileEntry = { path: string; size_bytes: number; sha256: string; executable: boolean };
+type Target = { os: "macos"; arch: "aarch64"; tag: "macos-aarch64" };
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const version = packageVersion();
-const sourceRevision = process.env.KOUBO_CLIP_SOURCE_REVISION ?? gitRevision();
+const provenance = resolveProvenance();
+const sourceRevision = provenance.source_revision;
 const outputDir = resolve(process.argv[2] ?? join(root, "dist", "box"));
 const target = parseTarget(process.env.KOUBO_BOX_TARGET ?? `${(process as any).platform}-${(process as any).arch}`);
 const lock = readJson(join(root, "box-runtime.lock.json"));
 const staging = nodeFs.mkdtempSync(join(tmpdir(), "koubo-box-package-"));
 
 try {
-  assertVersion();
   assertLockTarget(lock, target);
   const inputs = resolveInputs(lock);
   const cliRoot = join(staging, `koubo-clip-box-cli-${version}-${target.tag}`);
@@ -42,10 +42,10 @@ try {
   const cliManifest = writeDeliveryManifest(cliRoot, "box-cli");
   const runtimeDigest = computeDeliveryFileSetDigest({ root: cliRoot, files: ["runtime-lock.json"] }).digest;
   const cliTarball = archive(cliRoot, join(outputDir, `koubo-clip-box-cli-${version}-${target.tag}.tgz`));
-  const skillTarball = archive(skillRoot, join(outputDir, `koubo-clip-box-skill-${version}.tgz`));
   const skillDigest = computeOfficialSkillDigest({ root: join(root, "skills", "koubo-clip") }).digest;
 
   const cliDescriptor = makeCliDescriptor({
+    cliRoot,
     cliTarball,
     cliManifest,
     runtimeDigest,
@@ -53,11 +53,12 @@ try {
   });
   const skillDescriptor = makeSkillDescriptor({
     skillRoot,
-    skillTarball,
     cliTarball,
     cliManifest,
     skillDigest,
   });
+  writeJson(join(skillRoot, "skill.box.json"), skillDescriptor);
+  const skillTarball = archive(skillRoot, join(outputDir, `koubo-clip-box-skill-${version}.tgz`));
   writeJson(join(outputDir, "cli-package.box.json"), cliDescriptor);
   writeJson(join(outputDir, "skill.box.json"), skillDescriptor);
   writeJson(join(root, "cli-package.box.json"), cliDescriptor);
@@ -67,6 +68,8 @@ try {
     ok: true,
     version,
     source_revision: sourceRevision,
+    release_mode: provenance.release_mode,
+    provenance,
     target: target.tag,
     cli_package: artifactIdentity(cliTarball),
     skill_package: artifactIdentity(skillTarball),
@@ -167,7 +170,7 @@ function stageCliPackage(packageRoot: string, inputs: ReturnType<typeof resolveI
     ].join("\n"),
   );
   chmod(join(packageRoot, "runtime", "bin", "chrome-headless-shell"), 0o755);
-  nodeFs.cpSync(join(root, "packages", "cli", "vendor", "hyperframes"), join(packageRoot, "resources", "hyperframes"), { recursive: true });
+  copyCliResourceTree(join(root, "packages", "cli", "vendor", "hyperframes"), join(packageRoot, "resources", "hyperframes"));
   writeJson(join(packageRoot, "package.json"), {
     name: "koubo-clip-box-cli",
     version,
@@ -177,12 +180,12 @@ function stageCliPackage(packageRoot: string, inputs: ReturnType<typeof resolveI
   });
 
   assertNoPath(packageRoot, "skills/koubo-clip");
+  assertNoCliSkillPayload(packageRoot);
   assertNoSymlinks(packageRoot);
 }
 
 function stageSkillPackage(packageRoot: string): void {
-  nodeFs.mkdirSync(join(packageRoot, "skills"), { recursive: true });
-  nodeFs.cpSync(join(root, "skills", "koubo-clip"), join(packageRoot, "skills", "koubo-clip"), { recursive: true });
+  nodeFs.cpSync(join(root, "skills", "koubo-clip"), packageRoot, { recursive: true });
   assertNoSymlinks(packageRoot);
 }
 
@@ -215,7 +218,7 @@ function boxShellLauncherSource(): string {
     "PACKAGE_ROOT=$(CDPATH= cd -- \"$BIN_DIR/..\" && pwd)",
     "RUNTIME_BIN=\"$PACKAGE_ROOT/runtime/bin\"",
     "BROWSER=\"$RUNTIME_BIN/chrome-headless-shell\"",
-    "export PATH=\"$RUNTIME_BIN:/usr/bin:/bin\"",
+    "export PATH=\"$RUNTIME_BIN\"",
     "export KOUBO_CLIP_DISTRIBUTION_ROOT=\"$PACKAGE_ROOT\"",
     "export KOUBO_CLIP_HYPERFRAMES_ROOT=\"$PACKAGE_ROOT/resources/hyperframes\"",
     "export KOUBO_CLIP_HYPERFRAMES_BIN=\"$RUNTIME_BIN/hyperframes\"",
@@ -231,10 +234,22 @@ function boxShellLauncherSource(): string {
 function copyRuntimeNodeModules(packageRoot: string, names: string[]): void {
   for (const name of names) {
     const source = join(root, "node_modules", ...name.split("/"));
-  if (!nodeFs.existsSync(source)) throw new Error(`required HyperFrames runtime package is missing: ${name}`);
+    if (!nodeFs.existsSync(source)) throw new Error(`required HyperFrames runtime package is missing: ${name}`);
     const target = join(packageRoot, "runtime", "node_modules", ...name.split("/"));
     nodeFs.mkdirSync(dirname(target), { recursive: true });
     nodeFs.cpSync(source, target, { recursive: true });
+  }
+}
+
+function copyCliResourceTree(sourceRoot: string, targetRoot: string): void {
+  nodeFs.mkdirSync(targetRoot, { recursive: true });
+  for (const path of walkFiles(sourceRoot)) {
+    const rel = relative(sourceRoot, path).replaceAll("\\", "/");
+    if (isCliSkillPayloadPath(rel)) continue;
+    const target = join(targetRoot, rel);
+    nodeFs.mkdirSync(dirname(target), { recursive: true });
+    nodeFs.copyFileSync(path, target);
+    chmod(target, ((nodeFs as any).statSync(path).mode as number) & 0o777);
   }
 }
 
@@ -249,8 +264,8 @@ function writeInstalledRuntimeLock(packageRoot: string): void {
     ))
     .map((entry) => ({
       path: entry.path,
-      size: entry.size,
-      sha256: entry.sha256.replace(/^sha256:/, ""),
+      size: entry.size_bytes,
+      sha256: entry.sha256,
       role: runtimeRole(entry.path),
       ...(isRuntimeExecutable(entry.path) ? { executable: true } : {}),
     }));
@@ -317,79 +332,83 @@ function writeDeliveryManifest(packageRoot: string, distributionKind: string): J
   return manifest;
 }
 
-function makeCliDescriptor(input: { cliTarball: string; cliManifest: Json; runtimeDigest: string; inputs: ReturnType<typeof resolveInputs> }): Json {
+function makeCliDescriptor(input: { cliRoot: string; cliTarball: string; cliManifest: Json; runtimeDigest: string; inputs: ReturnType<typeof resolveInputs> }): Json {
   const artifact = artifactIdentity(input.cliTarball);
   return {
     manifest_version: "1",
     id: "koubo-clip",
+    name: "Koubo Clip",
     version,
-    publisher: "koubo-clip",
+    publisher: "MarcusYuan",
+    source_revision: sourceRevision,
+    release_mode: provenance.release_mode,
+    provenance,
     managed_cli_contract_version: "1",
-    machine_output: {
-      format: "json",
-      contract_version: "1",
-      stdout: "single final JSON object for --json commands",
-      stderr: "diagnostic logs only",
-    },
+    machine_output: { format: "json", encoding: "utf-8" },
     artifacts: [
       {
         os: target.os,
         arch: target.arch,
-        path: relative(root, input.cliTarball).replaceAll("\\", "/"),
-        size: artifact.size,
+        url: artifactUrl(input.cliTarball),
+        size_bytes: artifact.size_bytes,
         sha256: artifact.sha256,
-        entrypoint: "bin/koubo-clip",
-        distribution_kind: "box-cli",
-        unsupported_targets: lock.unsupported_targets,
+        executable: "bin/koubo-clip",
       },
     ],
-    health_check: {
-      command: "bin/koubo-clip",
-      args: ["doctor", "--json"],
-      success_statuses: ["healthy", "degraded", "needs_configuration"],
-      failure: { exit_code: "non-zero", error_contract_version: "1" },
-    },
+    files: listFileEntries(input.cliRoot),
+    health_check: { args: ["doctor", "--json"] },
     permissions: {
-      network: "none during doctor/test/render",
-      filesystem: ["read packaged runtime/resources", "read/write user-selected project and output directories"],
-      processes: ["packaged bun", "packaged ffmpeg", "packaged ffprobe", "packaged hyperframes", "packaged chrome-headless-shell"],
+      file_read: ["packaged runtime/resources", "user-selected project/source media"],
+      file_write: ["user-selected project/output directories"],
+      network: ["optional HTTPS provider APIs only when explicitly invoked"],
+      credentials: ["optional provider credentials supplied by the host at runtime"],
+      devices: [],
+      side_effects: ["local subprocess execution of packaged runtime binaries"],
     },
     data_policy: {
-      source_media: "processed locally",
-      secrets: "not bundled and not printed",
-      telemetry: "none",
-      skill_payload: "excluded from the Box CLI package",
+      preserve_on_update: ["user projects", "user media", "user outputs"],
+      remove_on_uninstall: ["packaged CLI runtime", "packaged renderer resources", "packaged browser runtime"],
     },
+    release_urls: {
+      cli: `${repositoryReleaseBaseUrl()}/download/v${version}/${basename(input.cliTarball)}`,
+    },
+    unsupported_targets: unsupportedTargets(lock.unsupported_targets),
     runtime: {
       lockfile: "runtime-lock.json",
-      runtime_lock_digest: input.runtimeDigest,
-      delivery_digest: input.cliManifest.delivery_digest,
-      renderer_resources_digest: input.cliManifest.renderer_resources_digest,
-      official_skill_digest: input.cliManifest.official_skill_digest,
-      bun_sha256: `sha256:${sha256File(input.inputs.bun)}`,
-      ffmpeg_sha256: `sha256:${sha256File(input.inputs.ffmpeg)}`,
-      ffprobe_sha256: `sha256:${sha256File(input.inputs.ffprobe)}`,
-      browser_tree_sha256: `sha256:${input.inputs.browserTreeSha256}`,
+      runtime_lock_digest: hexDigest(input.runtimeDigest),
+      delivery_digest: hexDigest(input.cliManifest.delivery_digest),
+      renderer_resources_digest: hexDigest(input.cliManifest.renderer_resources_digest),
+      official_skill_digest: hexDigest(input.cliManifest.official_skill_digest),
+      bun_sha256: sha256File(input.inputs.bun),
+      ffmpeg_sha256: sha256File(input.inputs.ffmpeg),
+      ffprobe_sha256: sha256File(input.inputs.ffprobe),
+      browser_tree_sha256: input.inputs.browserTreeSha256,
     },
   };
 }
 
-function makeSkillDescriptor(input: { skillRoot: string; skillTarball: string; cliTarball: string; cliManifest: Json; skillDigest: string }): Json {
+function makeSkillDescriptor(input: { skillRoot: string; cliTarball: string; cliManifest: Json; skillDigest: string }): Json {
   const cliArtifact = artifactIdentity(input.cliTarball);
-  const skillArtifact = artifactIdentity(input.skillTarball);
   return {
     manifest_version: "1",
-    id: "koubo-clip-skill",
+    id: "koubo-clip",
+    name: "Koubo Clip Skill",
+    description: "Agent workflow skill for Koubo Clip talking-head video cleanup and enrichment.",
     version,
-    publisher: "koubo-clip",
-    payload: {
-      root: "skills/koubo-clip",
-      files: listFileEntries(join(input.skillRoot, "skills", "koubo-clip")),
+    source_revision: sourceRevision,
+    release_mode: provenance.release_mode,
+    provenance,
+    entrypoint: "SKILL.md",
+    files: listFileEntries(input.skillRoot),
+    source: {
+      kind: "github",
+      publisher: "MarcusYuan",
     },
     cli_dependencies: [
       {
         id: "koubo-clip",
         version,
+        required: true,
         commands: [
           "koubo-clip --version",
           "koubo-clip capabilities --json",
@@ -402,21 +421,26 @@ function makeSkillDescriptor(input: { skillRoot: string; skillTarball: string; c
         ],
       },
     ],
-    artifacts: [
-      {
-        os: "any",
-        arch: "any",
-        path: relative(root, input.skillTarball).replaceAll("\\", "/"),
-        size: skillArtifact.size,
-        sha256: skillArtifact.sha256,
-      },
-    ],
+    permissions: {
+      file_read: ["user-selected project artifacts and media metadata"],
+      file_write: ["user-selected project plans and reports"],
+      network: ["optional host/provider tools selected by the user"],
+      credentials: [],
+      devices: [],
+      side_effects: [],
+    },
+    data_policy: {
+      preserve_on_update: ["user projects", "user media", "user outputs"],
+      remove_on_uninstall: ["packaged Skill files"],
+    },
+    release_urls: {
+      skill: `${repositoryReleaseBaseUrl()}/download/v${version}/koubo-clip-box-skill-${version}.tgz`,
+    },
     delivery_identity: {
       cli_artifact_sha256: cliArtifact.sha256,
-      skill_artifact_sha256: skillArtifact.sha256,
-      official_skill_digest: input.skillDigest,
-      delivery_digest: input.cliManifest.delivery_digest,
-      renderer_resources_digest: input.cliManifest.renderer_resources_digest,
+      official_skill_digest: hexDigest(input.skillDigest),
+      delivery_digest: hexDigest(input.cliManifest.delivery_digest),
+      renderer_resources_digest: hexDigest(input.cliManifest.renderer_resources_digest),
     },
   };
 }
@@ -454,13 +478,14 @@ function archive(sourceDir: string, outputPath: string): string {
 function listFileEntries(dir: string): FileEntry[] {
   return walkFiles(dir).map((path) => ({
     path: relative(dir, path).replaceAll("\\", "/"),
-    size: nodeFs.statSync(path).size,
-    sha256: `sha256:${sha256File(path)}`,
+    size_bytes: nodeFs.statSync(path).size,
+    sha256: sha256File(path),
+    executable: isExecutable(path),
   })).sort((left, right) => left.path.localeCompare(right.path));
 }
 
-function artifactIdentity(path: string): { path: string; size: number; sha256: string } {
-  return { path, size: nodeFs.statSync(path).size, sha256: `sha256:${sha256File(path)}` };
+function artifactIdentity(path: string): { path: string; size_bytes: number; sha256: string } {
+  return { path, size_bytes: nodeFs.statSync(path).size, sha256: sha256File(path) };
 }
 
 function expectFileHash(path: string, expected: string, label: string): void {
@@ -494,18 +519,23 @@ function assertNoPath(base: string, relativePath: string): void {
   if (nodeFs.existsSync(join(base, relativePath))) throw new Error(`Box CLI package must not contain ${relativePath}`);
 }
 
-function assertVersion(): void {
-  if (version !== "0.0.17") throw new Error(`Box package target is 0.0.17; package.json is ${version}`);
+function assertNoCliSkillPayload(base: string): void {
+  for (const path of walkFiles(base)) {
+    const rel = relative(base, path).replaceAll("\\", "/");
+    if (isCliSkillPayloadPath(rel)) throw new Error(`Box CLI package must not contain Skill payload: ${rel}`);
+  }
 }
 
 function assertLockTarget(lockJson: Json, selected: Target): void {
-  if (lockJson.target?.os !== selected.os || lockJson.target?.arch !== selected.arch) {
+  const lockOs = normalizeOs(lockJson.target?.os);
+  const lockArch = normalizeArch(lockJson.target?.arch);
+  if (lockOs !== selected.os || lockArch !== selected.arch) {
     throw new Error(`Box runtime lock supports ${lockJson.target?.os}-${lockJson.target?.arch}; requested ${selected.tag}`);
   }
 }
 
 function parseTarget(raw: string): Target {
-  if (raw === "darwin-arm64") return { os: "darwin", arch: "arm64", tag: "darwin-arm64" };
+  if (raw === "macos-aarch64" || raw === "darwin-arm64") return { os: "macos", arch: "aarch64", tag: "macos-aarch64" };
   throw new Error(`Unsupported Box target ${raw}; this package script fails closed until runtime inputs are pinned for that platform`);
 }
 
@@ -513,10 +543,28 @@ function packageVersion(): string {
   return (readJson(join(root, "package.json")) as { version: string }).version;
 }
 
-function gitRevision(): string {
-  const revision = run("git", ["rev-parse", "HEAD"], root).trim();
-  const dirty = run("git", ["status", "--porcelain", "--untracked-files=all"], root).trim();
-  return dirty ? `${revision}-dirty` : revision;
+function resolveProvenance(): { source_revision: string; release_mode: "release" | "preview"; worktree_dirty: boolean } {
+  const sourceRevision = process.env.KOUBO_CLIP_SOURCE_REVISION ?? run("git", ["rev-parse", "HEAD"], root).trim();
+  if (!/^[a-f0-9]{40}$/.test(sourceRevision)) {
+    throw new Error("KOUBO_CLIP_SOURCE_REVISION must be an exact 40-character lowercase commit SHA");
+  }
+  const dirty = run("git", ["status", "--porcelain", "--untracked-files=all"], root).trim().length > 0;
+  if (dirty && process.env.KOUBO_BOX_ALLOW_DIRTY_PREVIEW !== "1") {
+    throw new Error("Refusing to build a release Box package from a dirty worktree; set KOUBO_BOX_ALLOW_DIRTY_PREVIEW=1 only for local preview artifacts");
+  }
+  return {
+    source_revision: sourceRevision,
+    release_mode: dirty ? "preview" : "release",
+    worktree_dirty: dirty,
+  };
+}
+
+function repositoryReleaseBaseUrl(): string {
+  const packageJson = readJson(join(root, "package.json")) as { repository?: { url?: string } | string };
+  const raw = typeof packageJson.repository === "string" ? packageJson.repository : packageJson.repository?.url;
+  const normalized = String(raw ?? "").replace(/^git\+/, "").replace(/\.git$/, "");
+  if (!normalized.startsWith("https://github.com/")) throw new Error(`package.json repository must be an HTTPS GitHub URL for Box release URLs: ${raw}`);
+  return normalized.replace(/\/$/, "") + "/releases";
 }
 
 function readJson(path: string): Json {
@@ -541,6 +589,52 @@ function run(command: string, args: string[], cwd: string): string {
 
 function chmod(path: string, mode: number): void {
   (nodeFs as any).chmodSync(path, mode);
+}
+
+function isExecutable(path: string): boolean {
+  return (((nodeFs as any).statSync(path).mode as number) & 0o111) !== 0;
+}
+
+function hexDigest(value: string): string {
+  return value.replace(/^sha256:/, "");
+}
+
+function artifactUrl(path: string): string {
+  const releaseBase = process.env.KOUBO_BOX_RELEASE_BASE_URL;
+  if (releaseBase) {
+    if (!/^https:\/\/[^/]+\/.+/.test(releaseBase)) throw new Error("KOUBO_BOX_RELEASE_BASE_URL must be an HTTPS URL");
+    return `${releaseBase.replace(/\/$/, "")}/${basename(path)}`;
+  }
+  return `bundled://${relative(root, path).replaceAll("\\", "/")}`;
+}
+
+function normalizeOs(value: unknown): string {
+  if (value === "darwin") return "macos";
+  if (value === "win32") return "windows";
+  return String(value);
+}
+
+function normalizeArch(value: unknown): string {
+  return value === "arm64" ? "aarch64" : String(value);
+}
+
+function unsupportedTargets(value: unknown): Json[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => ({
+    ...entry,
+    os: normalizeOs(entry.os),
+    arch: normalizeArch(entry.arch),
+  }));
+}
+
+function isCliSkillPayloadPath(path: string): boolean {
+  const parts = path.split("/");
+  const basename = parts[parts.length - 1];
+  return basename === "SKILL.md"
+    || basename === "skill.json"
+    || basename === "skill.box.json"
+    || parts.includes("skills")
+    || parts.includes("agents");
 }
 
 function lstat(path: string): { isSymbolicLink(): boolean; isDirectory(): boolean; isFile(): boolean } {
