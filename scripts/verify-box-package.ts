@@ -169,22 +169,29 @@ function verifyDoctorTamperClassifications(cliRoot: string, cli: string, cwd: st
 }
 
 function verifyNoHostFallbackForRenderAndAsr(cliRoot: string, cli: string, cwd: string): void {
-  expect(spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0, "host ffmpeg must exist to prove Box does not fall back to PATH");
+  const hostileBin = join(cwd, "host-runtime-sentinels");
+  nodeFs.mkdirSync(hostileBin, { recursive: true });
+  for (const name of ["ffmpeg", "ffprobe"]) {
+    const sentinel = join(hostileBin, name);
+    nodeFs.writeFileSync(sentinel, "#!/bin/sh\nexit 0\n");
+    chmod(sentinel, 0o755);
+  }
+  const hostileEnv = { PATH: `${hostileBin}:${process.env.PATH ?? ""}` };
   const source = join(cwd, "asr-source.mp4");
   const project = join(cwd, "asr-project");
-  makeVideo(source);
-  const created = runCliJson(cli, ["project", "create", source, "--project", project, "--json"], cwd);
+  makeVideo(source, join(cliRoot, "runtime", "bin", "ffmpeg"));
+  const created = runCliJson(cli, ["project", "create", source, "--project", project, "--json"], cwd, hostileEnv);
   expect(created.status === 0 && created.json.ok === true, "failed to create Box fallback-test project while runtime was healthy");
 
   const ffmpeg = join(cliRoot, "runtime", "bin", "ffmpeg");
   const backup = `${ffmpeg}.bak`;
   rename(ffmpeg, backup);
   try {
-    const renderSmoke = runCliJson(cli, ["test", "--json"], cwd);
+    const renderSmoke = runCliJson(cli, ["test", "--json"], cwd, hostileEnv);
     expect(renderSmoke.status !== 0 && renderSmoke.json.ok === false, "Box render smoke unexpectedly succeeded after managed ffmpeg was removed");
     expect(renderSmoke.json.error?.code === "MANAGED_RUNTIME_FILE_MISSING", "Box render smoke did not fail at the managed runtime guard after ffmpeg removal");
 
-    const asrPrepare = runCliJsonResult(cli, ["project", "asr-prepare", project, "--output", "asr-upload", "--json"], cwd);
+    const asrPrepare = runCliJsonResult(cli, ["project", "asr-prepare", project, "--output", "asr-upload", "--json"], cwd, hostileEnv);
     expect(asrPrepare.status !== 0 && asrPrepare.json.ok === false, "Box external ASR prepare unexpectedly succeeded after managed ffmpeg was removed");
     expect(asrPrepare.json.error?.code === "MANAGED_RUNTIME_FILE_MISSING", "Box external ASR prepare did not fail at the managed runtime guard after ffmpeg removal");
   } finally {
@@ -194,7 +201,7 @@ function verifyNoHostFallbackForRenderAndAsr(cliRoot: string, cli: string, cwd: 
   const original = nodeFs.readFileSync(ffmpeg);
   appendFile(ffmpeg, "\n# digest tamper\n");
   try {
-    const asrPrepare = runCliJsonResult(cli, ["project", "asr-prepare", project, "--output", "asr-upload-tampered", "--json"], cwd);
+    const asrPrepare = runCliJsonResult(cli, ["project", "asr-prepare", project, "--output", "asr-upload-tampered", "--json"], cwd, hostileEnv);
     expect(asrPrepare.status !== 0 && asrPrepare.json.ok === false, "Box external ASR prepare unexpectedly succeeded after managed ffmpeg was tampered");
     expect(
       asrPrepare.json.error?.code === "MANAGED_RUNTIME_SIZE_MISMATCH" || asrPrepare.json.error?.code === "MANAGED_RUNTIME_DIGEST_MISMATCH",
@@ -206,8 +213,8 @@ function verifyNoHostFallbackForRenderAndAsr(cliRoot: string, cli: string, cwd: 
   }
 }
 
-function makeVideo(path: string): void {
-  const result = spawnSync("ffmpeg", [
+function makeVideo(path: string, ffmpeg = "ffmpeg"): void {
+  const result = spawnSync(ffmpeg, [
     "-y",
     "-f",
     "lavfi",
