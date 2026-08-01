@@ -2,12 +2,12 @@
   "manifest_version": "1",
   "id": "koubo-clip",
   "name": "Koubo Clip",
-  "version": "0.0.18",
+  "version": "0.0.19",
   "publisher": "MarcusYuan",
-  "source_revision": "5e1e54b8cbbd938b883298ee8a7e7d4fafd3b187",
+  "source_revision": "5d051c21bd00a85d91a73565cfdd4e6638d3e2b3",
   "release_mode": "preview",
   "provenance": {
-    "source_revision": "5e1e54b8cbbd938b883298ee8a7e7d4fafd3b187",
+    "source_revision": "5d051c21bd00a85d91a73565cfdd4e6638d3e2b3",
     "release_mode": "preview",
     "worktree_dirty": true
   },
@@ -20,9 +20,9 @@
     {
       "os": "macos",
       "arch": "aarch64",
-      "url": "bundled://dist/box/koubo-clip-box-cli-0.0.18-macos-aarch64.tgz",
-      "size_bytes": 232149550,
-      "sha256": "e8f7816dc969eabbf6d76c8286a69129bf2f545dd3856e09dad6606af7f5c23f",
+      "url": "bundled://dist/box/koubo-clip-box-cli-0.0.19-macos-aarch64.tgz",
+      "size_bytes": 232148924,
+      "sha256": "869355c202df1ff1a8a1754050f769b6083a643d5392db88074969ba7e5c0ef0",
       "executable": "bin/koubo-clip"
     }
   ],
@@ -36,13 +36,13 @@
     {
       "path": "bin/koubo-clip-runtime",
       "size_bytes": 61977376,
-      "sha256": "a3947881783a4dc0464cf9dc27108c628d866861364b102593085533832c3e97",
+      "sha256": "7293895d0023d5061ab07a93f325eee2839d8c6d84aac5d0abc5811b66f30ff2",
       "executable": true
     },
     {
       "path": "delivery-manifest.json",
       "size_bytes": 1712,
-      "sha256": "f765cb7865465004d9b2ace5e92c14175eae77302204add90ddb6b3902528291",
+      "sha256": "a0bdbf8fd11b6d7ca7a07678a8c9201be3bafa6ef8c5def624d296d330f38551",
       "executable": false
     },
     {
@@ -54,13 +54,13 @@
     {
       "path": "licenses/ffmpeg-runtime/build-environment.txt",
       "size_bytes": 326,
-      "sha256": "b66e9144cc9a2f0601dc6d9bc5ccf6124ca0f441d9c46d529fd48acd862b79b6",
+      "sha256": "14e87c4d12d1c442b094104b0c9966fdaa99fdd8d23f7c83e67ec629c5458931",
       "executable": false
     },
     {
       "path": "licenses/ffmpeg-runtime/build-evidence.json",
       "size_bytes": 9394,
-      "sha256": "71f37a367ae36975a34d821fd21aec51af4aa96c53acd30abd7dcbb450fba4e5",
+      "sha256": "059a26660d89e611e49b6f5ad29ea36a45fbf10594adb80d462f4f4c665983a4",
       "executable": false
     },
     {
@@ -192,19 +192,19 @@
     {
       "path": "licenses/ffmpeg-runtime/SOURCE_OFFER.json",
       "size_bytes": 603,
-      "sha256": "2944dbd18da1a9c8622842bb215dc111f0722e222cbcf1dc8d1d74331a6e59b3",
+      "sha256": "d106ec316ffa23dc3133f5c28b23ca70f319bced27e4bcf546205c0bff8ba458",
       "executable": false
     },
     {
       "path": "licenses/ffmpeg-runtime/source-lock.json",
       "size_bytes": 5198,
-      "sha256": "b77c46159a04d07af5bfc889b58dfc17280f7ee2276ab70c2674afc34e357306",
+      "sha256": "227092461e3650b61c10a6997f8d985ae0116488ca7b131e647d6fd24613412a",
       "executable": false
     },
     {
       "path": "package.json",
       "size_bytes": 148,
-      "sha256": "35912f1979e770a658841a8e469771481d9dc3300ce87c80ab56d15c445a730e",
+      "sha256": "2ee3302365bf87a5595a677a17e74982e1d4defa9dad34c7a08c63043461d127",
       "executable": false
     },
     {
@@ -5892,7 +5892,7 @@
     {
       "path": "runtime-lock.json",
       "size_bytes": 274941,
-      "sha256": "aa184c5d067dbcc7454ad925bdf8057878d1c6febefeefaad63b544abd2ffd6e",
+      "sha256": "82da80052f3f3845dc590ad7943c202df01813e9835cfe1ac8bed9a5fc53a508",
       "executable": false
     },
     {
@@ -5910,13 +5910,13 @@
     {
       "path": "runtime/bin/ffmpeg",
       "size_bytes": 24527272,
-      "sha256": "2254a0f6ace3a0f03490fa075db8a8585a1bc429fe2e8f946d9cd6d0304291bb",
+      "sha256": "2dd93ddd8b030720044997bc32931850fee7ec8e7e6c8f8b3ce11173b85417e9",
       "executable": true
     },
     {
       "path": "runtime/bin/ffprobe",
       "size_bytes": 24436456,
-      "sha256": "c976f5f8d0ba79f2f46391d5c48c4b78bc4e25e95df84c246476e13e4e297e94",
+      "sha256": "463ea93feae590e490b2981a8dd99d8710308fe877c7309de6826591ac952a3d",
       "executable": true
     },
     {
@@ -6738,8 +6738,8 @@
     ]
   },
   "release_urls": {
-    "cli": "https://github.com/MarcusYuan/koubo-clip/releases/download/v0.0.18/koubo-clip-box-cli-0.0.18-macos-aarch64.tgz",
-    "ffmpeg_corresponding_source": "https://github.com/MarcusYuan/koubo-clip/releases/download/v0.0.18/koubo-clip-ffmpeg-sources-0.0.18.tar.xz"
+    "cli": "https://github.com/MarcusYuan/koubo-clip/releases/download/v0.0.19/koubo-clip-box-cli-0.0.19-macos-aarch64.tgz",
+    "ffmpeg_corresponding_source": "https://github.com/MarcusYuan/koubo-clip/releases/download/v0.0.19/koubo-clip-ffmpeg-sources-0.0.19.tar.xz"
   },
   "unsupported_targets": [
     {
@@ -6769,18 +6769,18 @@
   ],
   "runtime": {
     "lockfile": "runtime-lock.json",
-    "runtime_lock_digest": "0fbdb1e011b80c5d5453464878e15ad6d7c4b2b75025b32c3a1267bca8b270da",
-    "delivery_digest": "5cf10e26f40efd0048aad06dd2c9acd3189606cca63c1e67b7f23016539a0fde",
+    "runtime_lock_digest": "826c2813d90425270dfe26d6a95ccd5049c577e61ab95144bbd09877dcdd3609",
+    "delivery_digest": "3efa26701fd53a8a71c2a6f0ef96b03d80b9e95a21998392f9050cb4bd231466",
     "renderer_resources_digest": "63a0ab4a23a75d7c0a355c576a5cded50ba6d7ace9dd29729df296202ea9e3ef",
     "official_skill_digest": "444785a685cea3bbe5bcfe0feac71ff0057e7d59babc1174ae80447cd50f0e8a",
     "bun_sha256": "1d77af7bfd811aebb7d37bec496a5eed14fe227ded3ab7866d2f39786e8107b6",
-    "ffmpeg_sha256": "2254a0f6ace3a0f03490fa075db8a8585a1bc429fe2e8f946d9cd6d0304291bb",
-    "ffprobe_sha256": "c976f5f8d0ba79f2f46391d5c48c4b78bc4e25e95df84c246476e13e4e297e94",
-    "ffmpeg_build_evidence_sha256": "71f37a367ae36975a34d821fd21aec51af4aa96c53acd30abd7dcbb450fba4e5",
-    "ffmpeg_source_lock_sha256": "b77c46159a04d07af5bfc889b58dfc17280f7ee2276ab70c2674afc34e357306",
-    "ffmpeg_source_bundle_sha256": "2593d55495f9a64a69d39c06ace606ee86bb50d019b302c3deb0ce9ab32448cd",
-    "ffmpeg_source_bundle_size_bytes": 34588456,
-    "ffmpeg_source_bundle_url": "https://github.com/MarcusYuan/koubo-clip/releases/download/v0.0.18/koubo-clip-ffmpeg-sources-0.0.18.tar.xz",
+    "ffmpeg_sha256": "2dd93ddd8b030720044997bc32931850fee7ec8e7e6c8f8b3ce11173b85417e9",
+    "ffprobe_sha256": "463ea93feae590e490b2981a8dd99d8710308fe877c7309de6826591ac952a3d",
+    "ffmpeg_build_evidence_sha256": "059a26660d89e611e49b6f5ad29ea36a45fbf10594adb80d462f4f4c665983a4",
+    "ffmpeg_source_lock_sha256": "227092461e3650b61c10a6997f8d985ae0116488ca7b131e647d6fd24613412a",
+    "ffmpeg_source_bundle_sha256": "d92b7de41cf0e7026cd75cd627f5f63314fd486e955144f6f8e6982e91da095a",
+    "ffmpeg_source_bundle_size_bytes": 34588484,
+    "ffmpeg_source_bundle_url": "https://github.com/MarcusYuan/koubo-clip/releases/download/v0.0.19/koubo-clip-ffmpeg-sources-0.0.19.tar.xz",
     "browser_tree_sha256": "092c81c87981cc56e906e2b6af806f6213362f50544d7b88b046a3df9eea859a"
   }
 }

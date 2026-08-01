@@ -454,8 +454,8 @@ Common files in the project directory:
 
 ## Project Status
 
-- Use `koubo-clip --version` as the installed version source. The current repository release target is `0.0.18`.
-- Current package status: the npm stable line remains compatible; 0.0.18 makes the separate Box CLI/Skill artifacts conform to the Plugin Box v1 package contracts while preserving managed health/self-test and provider-neutral external ASR handoff.
+- Use `koubo-clip --version` as the installed version source. The current repository release target is `0.0.19`.
+- Current package status: the npm stable line remains compatible; 0.0.19 fixes the Box Skill v1 per-file contract to use exact `{ path, sha256, size }` entries and bare CLI subcommands while preserving the separate self-contained Box CLI and all existing managed health/self-test and provider-neutral external ASR behavior.
 - Current recommended development mode: use Bun from the source repository.
 - npm package: `koubo-clip`.
 - Visual assets, music, and some provider capabilities depend on network access, API keys, user assets, or host MCP handoff.

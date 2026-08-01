@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import * as nodeFs from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { verifySkillManifestV1, verifySkillPayloadDirectory } from "./box-skill-manifest";
 
 type Json = Record<string, any>;
 type LicenseEntry = { path: string; size_bytes: number; sha256: string; mode: "0644" };
@@ -458,7 +459,7 @@ function verifySkillDescriptor(skillPackageRoot: string, descriptor: Json): void
   expect(nodeFs.existsSync(join(payloadRoot, "skill.box.json")), "Box Skill package is missing root skill.box.json");
   expect(JSON.stringify(readJson(join(payloadRoot, "skill.box.json"))) === JSON.stringify(descriptor), "packaged skill.box.json must match the external descriptor");
   expect(!nodeFs.existsSync(join(skillPackageRoot, "skills", "koubo-clip")), "Box Skill package must expose SKILL.md at package root, not nested skills/koubo-clip");
-  verifyPackageFiles(payloadRoot, descriptor.files, "skill.box.json", ["skill.box.json"]);
+  verifySkillPayloadDirectory(payloadRoot, descriptor.files);
   verifySkillPayloadSet(payloadRoot, descriptor.files);
   const listed = new Set((descriptor.files ?? []).map((entry: Json) => entry.path));
   for (const required of ["SKILL.md"]) expect(listed.has(required), `skill.box.json does not list ${required}`);
@@ -467,7 +468,7 @@ function verifySkillDescriptor(skillPackageRoot: string, descriptor: Json): void
   }
   const dependency = descriptor.cli_dependencies?.[0];
   expect(dependency?.id === "koubo-clip" && dependency.version === version, `Box Skill must depend on koubo-clip ${version}`);
-  for (const command of ["koubo-clip doctor --json", "koubo-clip test --json", "koubo-clip render-contract render"]) {
+  for (const command of ["doctor", "test", "render-contract render"]) {
     expect(dependency.commands.includes(command), `Box Skill dependency is missing ${command}`);
   }
 }
@@ -502,6 +503,7 @@ function verifyCliDescriptorStrict(descriptor: Json, cliTarballPath: string): vo
 }
 
 function verifySkillDescriptorStrict(descriptor: Json): void {
+  verifySkillManifestV1(descriptor);
   expect(descriptor.manifest_version === "1", "Skill manifest_version must be 1");
   expect(descriptor.id === "koubo-clip", "Skill id must be koubo-clip");
   expect(typeof descriptor.name === "string" && descriptor.name.length > 0, "Skill name is required");
@@ -519,6 +521,9 @@ function verifySkillDescriptorStrict(descriptor: Json): void {
     expect(!(key in descriptor), `Skill descriptor must not include legacy key ${key}`);
   }
   expect(!("skill_artifact_sha256" in (descriptor.delivery_identity ?? {})), "Skill descriptor must not include skill tarball hash and create a digest cycle");
+  for (const command of dependency.commands) {
+    expect(!command.startsWith("koubo-clip ") && !command.includes(" --"), `Skill dependency command must be a bare subcommand or command prefix: ${command}`);
+  }
 }
 
 function expectPermissionShape(value: Json | undefined, label: string): void {

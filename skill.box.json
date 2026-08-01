@@ -3,11 +3,11 @@
   "id": "koubo-clip",
   "name": "Koubo Clip Skill",
   "description": "Agent workflow skill for Koubo Clip talking-head video cleanup and enrichment.",
-  "version": "0.0.18",
-  "source_revision": "5e1e54b8cbbd938b883298ee8a7e7d4fafd3b187",
+  "version": "0.0.19",
+  "source_revision": "5d051c21bd00a85d91a73565cfdd4e6638d3e2b3",
   "release_mode": "preview",
   "provenance": {
-    "source_revision": "5e1e54b8cbbd938b883298ee8a7e7d4fafd3b187",
+    "source_revision": "5d051c21bd00a85d91a73565cfdd4e6638d3e2b3",
     "release_mode": "preview",
     "worktree_dirty": true
   },
@@ -15,63 +15,53 @@
   "files": [
     {
       "path": "agents/openai.yaml",
-      "size_bytes": 283,
       "sha256": "0a164094a6a35db7bb11661f02b37232069c50b2de441689c6a60f67824ff921",
-      "executable": false
+      "size": 283
     },
     {
       "path": "references/business-planning.md",
-      "size_bytes": 6934,
       "sha256": "596ccb3fb7ccc017e76b8abbff1e3c9190ae967592d00bba6541ff68175ac30a",
-      "executable": false
+      "size": 6934
     },
     {
       "path": "references/captions.md",
-      "size_bytes": 1477,
       "sha256": "9c836e3a50f58b9f6dcdfc3227ab25ee59bc0f5d65b9fd1d64abad2c4ef24629",
-      "executable": false
+      "size": 1477
     },
     {
       "path": "references/hyperframes-elements.md",
-      "size_bytes": 1923,
       "sha256": "292518a6572c77a15d8b6acb25db273cfe3f1d40089bb7ac2475230cfd95df50",
-      "executable": false
+      "size": 1923
     },
     {
       "path": "references/media-selection.md",
-      "size_bytes": 3327,
       "sha256": "d3fa05e8e5fe02ab4e79b566caf3314a287ed7f0bbe581d0cbddf3e6bb39afe8",
-      "executable": false
+      "size": 3327
     },
     {
       "path": "references/motion-and-sfx.md",
-      "size_bytes": 1209,
       "sha256": "eaa33dd797e196ba1ff475a3079381ea41681202cffcb0c7dab8054447a6904c",
-      "executable": false
+      "size": 1209
     },
     {
       "path": "references/storyboard-qa.md",
-      "size_bytes": 1895,
       "sha256": "f053e80090bd244eb02c535adab6c90df3a8e35e98f7ff79562048f8d030333b",
-      "executable": false
+      "size": 1895
     },
     {
       "path": "references/visual-selection.md",
-      "size_bytes": 5280,
       "sha256": "e3c7099fe972777d3f3976c097b700b40720c4cdf1c4dc63485ec02823540bcd",
-      "executable": false
+      "size": 5280
     },
     {
       "path": "references/workflow.md",
-      "size_bytes": 14141,
       "sha256": "396fd439728421b410b3404f9a8d620637be65d129cfbffbf5dacbdb968768df",
-      "executable": false
+      "size": 14141
     },
     {
       "path": "SKILL.md",
-      "size_bytes": 23100,
       "sha256": "a8ccda43affa75ffcc480ea535bd9f40d6fd9d531259df4440a1177b275a00c4",
-      "executable": false
+      "size": 23100
     }
   ],
   "source": {
@@ -81,17 +71,16 @@
   "cli_dependencies": [
     {
       "id": "koubo-clip",
-      "version": "0.0.18",
+      "version": "0.0.19",
       "required": true,
       "commands": [
-        "koubo-clip --version",
-        "koubo-clip capabilities --json",
-        "koubo-clip doctor --json",
-        "koubo-clip test --json",
-        "koubo-clip render-contract verify",
-        "koubo-clip render-contract bind",
-        "koubo-clip render-contract render",
-        "koubo-clip render-contract inspect"
+        "capabilities",
+        "doctor",
+        "test",
+        "render-contract verify",
+        "render-contract bind",
+        "render-contract render",
+        "render-contract inspect"
       ]
     }
   ],
@@ -120,12 +109,12 @@
     ]
   },
   "release_urls": {
-    "skill": "https://github.com/MarcusYuan/koubo-clip/releases/download/v0.0.18/koubo-clip-box-skill-0.0.18.tgz"
+    "skill": "https://github.com/MarcusYuan/koubo-clip/releases/download/v0.0.19/koubo-clip-box-skill-0.0.19.tgz"
   },
   "delivery_identity": {
-    "cli_artifact_sha256": "e8f7816dc969eabbf6d76c8286a69129bf2f545dd3856e09dad6606af7f5c23f",
+    "cli_artifact_sha256": "869355c202df1ff1a8a1754050f769b6083a643d5392db88074969ba7e5c0ef0",
     "official_skill_digest": "444785a685cea3bbe5bcfe0feac71ff0057e7d59babc1174ae80447cd50f0e8a",
-    "delivery_digest": "5cf10e26f40efd0048aad06dd2c9acd3189606cca63c1e67b7f23016539a0fde",
+    "delivery_digest": "3efa26701fd53a8a71c2a6f0ef96b03d80b9e95a21998392f9050cb4bd231466",
     "renderer_resources_digest": "63a0ab4a23a75d7c0a355c576a5cded50ba6d7ace9dd29729df296202ea9e3ef"
   }
 }

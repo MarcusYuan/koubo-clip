@@ -13,6 +13,7 @@ import {
   computeRuntimeCompatibilityDigest,
 } from "../packages/cli/src/delivery-identity";
 import { artifactContractsDigest } from "../packages/cli/src/artifact-contracts";
+import { type SkillManifestFile, verifySkillManifestV1 } from "./box-skill-manifest";
 
 type Json = Record<string, any>;
 type FileEntry = { path: string; size_bytes: number; sha256: string; executable: boolean };
@@ -420,7 +421,7 @@ function makeCliDescriptor(input: { cliRoot: string; cliTarball: string; cliMani
 
 function makeSkillDescriptor(input: { skillRoot: string; cliTarball: string; cliManifest: Json; skillDigest: string }): Json {
   const cliArtifact = artifactIdentity(input.cliTarball);
-  return {
+  const descriptor = {
     manifest_version: "1",
     id: "koubo-clip",
     name: "Koubo Clip Skill",
@@ -430,7 +431,7 @@ function makeSkillDescriptor(input: { skillRoot: string; cliTarball: string; cli
     release_mode: provenance.release_mode,
     provenance,
     entrypoint: "SKILL.md",
-    files: listFileEntries(input.skillRoot),
+    files: listSkillManifestFiles(input.skillRoot),
     source: {
       kind: "github",
       publisher: "MarcusYuan",
@@ -441,14 +442,13 @@ function makeSkillDescriptor(input: { skillRoot: string; cliTarball: string; cli
         version,
         required: true,
         commands: [
-          "koubo-clip --version",
-          "koubo-clip capabilities --json",
-          "koubo-clip doctor --json",
-          "koubo-clip test --json",
-          "koubo-clip render-contract verify",
-          "koubo-clip render-contract bind",
-          "koubo-clip render-contract render",
-          "koubo-clip render-contract inspect",
+          "capabilities",
+          "doctor",
+          "test",
+          "render-contract verify",
+          "render-contract bind",
+          "render-contract render",
+          "render-contract inspect",
         ],
       },
     ],
@@ -474,6 +474,8 @@ function makeSkillDescriptor(input: { skillRoot: string; cliTarball: string; cli
       renderer_resources_digest: hexDigest(input.cliManifest.renderer_resources_digest),
     },
   };
+  verifySkillManifestV1(descriptor);
+  return descriptor;
 }
 
 function resolveInputs(lockJson: Json) {
@@ -573,6 +575,14 @@ function listFileEntries(dir: string): FileEntry[] {
     size_bytes: nodeFs.statSync(path).size,
     sha256: sha256File(path),
     executable: isExecutable(path),
+  })).sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function listSkillManifestFiles(dir: string): SkillManifestFile[] {
+  return walkFiles(dir).map((path) => ({
+    path: relative(dir, path).replaceAll("\\", "/"),
+    sha256: sha256File(path),
+    size: nodeFs.statSync(path).size,
   })).sort((left, right) => left.path.localeCompare(right.path));
 }
 
