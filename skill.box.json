@@ -1,67 +1,88 @@
 {
   "manifest_version": "1",
-  "id": "koubo-clip-skill",
-  "version": "0.0.17",
-  "publisher": "koubo-clip",
-  "payload": {
-    "root": "skills/koubo-clip",
-    "files": [
-      {
-        "path": "agents/openai.yaml",
-        "size": 283,
-        "sha256": "sha256:0a164094a6a35db7bb11661f02b37232069c50b2de441689c6a60f67824ff921"
-      },
-      {
-        "path": "references/business-planning.md",
-        "size": 6934,
-        "sha256": "sha256:596ccb3fb7ccc017e76b8abbff1e3c9190ae967592d00bba6541ff68175ac30a"
-      },
-      {
-        "path": "references/captions.md",
-        "size": 1477,
-        "sha256": "sha256:9c836e3a50f58b9f6dcdfc3227ab25ee59bc0f5d65b9fd1d64abad2c4ef24629"
-      },
-      {
-        "path": "references/hyperframes-elements.md",
-        "size": 1923,
-        "sha256": "sha256:292518a6572c77a15d8b6acb25db273cfe3f1d40089bb7ac2475230cfd95df50"
-      },
-      {
-        "path": "references/media-selection.md",
-        "size": 3327,
-        "sha256": "sha256:d3fa05e8e5fe02ab4e79b566caf3314a287ed7f0bbe581d0cbddf3e6bb39afe8"
-      },
-      {
-        "path": "references/motion-and-sfx.md",
-        "size": 1209,
-        "sha256": "sha256:eaa33dd797e196ba1ff475a3079381ea41681202cffcb0c7dab8054447a6904c"
-      },
-      {
-        "path": "references/storyboard-qa.md",
-        "size": 1895,
-        "sha256": "sha256:f053e80090bd244eb02c535adab6c90df3a8e35e98f7ff79562048f8d030333b"
-      },
-      {
-        "path": "references/visual-selection.md",
-        "size": 5280,
-        "sha256": "sha256:e3c7099fe972777d3f3976c097b700b40720c4cdf1c4dc63485ec02823540bcd"
-      },
-      {
-        "path": "references/workflow.md",
-        "size": 14141,
-        "sha256": "sha256:396fd439728421b410b3404f9a8d620637be65d129cfbffbf5dacbdb968768df"
-      },
-      {
-        "path": "SKILL.md",
-        "size": 23100,
-        "sha256": "sha256:a8ccda43affa75ffcc480ea535bd9f40d6fd9d531259df4440a1177b275a00c4"
-      }
-    ]
+  "id": "koubo-clip",
+  "name": "Koubo Clip Skill",
+  "description": "Agent workflow skill for Koubo Clip talking-head video cleanup and enrichment.",
+  "version": "0.0.18",
+  "source_revision": "b7f8f7e648220fd8227f9289c3de15d78ab54c58",
+  "release_mode": "preview",
+  "provenance": {
+    "source_revision": "b7f8f7e648220fd8227f9289c3de15d78ab54c58",
+    "release_mode": "preview",
+    "worktree_dirty": true
+  },
+  "entrypoint": "SKILL.md",
+  "files": [
+    {
+      "path": "agents/openai.yaml",
+      "size_bytes": 283,
+      "sha256": "0a164094a6a35db7bb11661f02b37232069c50b2de441689c6a60f67824ff921",
+      "executable": false
+    },
+    {
+      "path": "references/business-planning.md",
+      "size_bytes": 6934,
+      "sha256": "596ccb3fb7ccc017e76b8abbff1e3c9190ae967592d00bba6541ff68175ac30a",
+      "executable": false
+    },
+    {
+      "path": "references/captions.md",
+      "size_bytes": 1477,
+      "sha256": "9c836e3a50f58b9f6dcdfc3227ab25ee59bc0f5d65b9fd1d64abad2c4ef24629",
+      "executable": false
+    },
+    {
+      "path": "references/hyperframes-elements.md",
+      "size_bytes": 1923,
+      "sha256": "292518a6572c77a15d8b6acb25db273cfe3f1d40089bb7ac2475230cfd95df50",
+      "executable": false
+    },
+    {
+      "path": "references/media-selection.md",
+      "size_bytes": 3327,
+      "sha256": "d3fa05e8e5fe02ab4e79b566caf3314a287ed7f0bbe581d0cbddf3e6bb39afe8",
+      "executable": false
+    },
+    {
+      "path": "references/motion-and-sfx.md",
+      "size_bytes": 1209,
+      "sha256": "eaa33dd797e196ba1ff475a3079381ea41681202cffcb0c7dab8054447a6904c",
+      "executable": false
+    },
+    {
+      "path": "references/storyboard-qa.md",
+      "size_bytes": 1895,
+      "sha256": "f053e80090bd244eb02c535adab6c90df3a8e35e98f7ff79562048f8d030333b",
+      "executable": false
+    },
+    {
+      "path": "references/visual-selection.md",
+      "size_bytes": 5280,
+      "sha256": "e3c7099fe972777d3f3976c097b700b40720c4cdf1c4dc63485ec02823540bcd",
+      "executable": false
+    },
+    {
+      "path": "references/workflow.md",
+      "size_bytes": 14141,
+      "sha256": "396fd439728421b410b3404f9a8d620637be65d129cfbffbf5dacbdb968768df",
+      "executable": false
+    },
+    {
+      "path": "SKILL.md",
+      "size_bytes": 23100,
+      "sha256": "a8ccda43affa75ffcc480ea535bd9f40d6fd9d531259df4440a1177b275a00c4",
+      "executable": false
+    }
+  ],
+  "source": {
+    "kind": "github",
+    "publisher": "MarcusYuan"
   },
   "cli_dependencies": [
     {
       "id": "koubo-clip",
-      "version": "0.0.17",
+      "version": "0.0.18",
+      "required": true,
       "commands": [
         "koubo-clip --version",
         "koubo-clip capabilities --json",
@@ -74,20 +95,37 @@
       ]
     }
   ],
-  "artifacts": [
-    {
-      "os": "any",
-      "arch": "any",
-      "path": "dist/box/koubo-clip-box-skill-0.0.17.tgz",
-      "size": 21555,
-      "sha256": "sha256:b0626caf7069442ba49af7ae42e1f9a61abc6f63e33e67c537774d94d6ebbe3c"
-    }
-  ],
+  "permissions": {
+    "file_read": [
+      "user-selected project artifacts and media metadata"
+    ],
+    "file_write": [
+      "user-selected project plans and reports"
+    ],
+    "network": [
+      "optional host/provider tools selected by the user"
+    ],
+    "credentials": [],
+    "devices": [],
+    "side_effects": []
+  },
+  "data_policy": {
+    "preserve_on_update": [
+      "user projects",
+      "user media",
+      "user outputs"
+    ],
+    "remove_on_uninstall": [
+      "packaged Skill files"
+    ]
+  },
+  "release_urls": {
+    "skill": "https://github.com/MarcusYuan/koubo-clip/releases/download/v0.0.18/koubo-clip-box-skill-0.0.18.tgz"
+  },
   "delivery_identity": {
-    "cli_artifact_sha256": "sha256:157e7752e271cdf2cbd9b8d56d745e1e4af617c503754148036bb72c217c9fc8",
-    "skill_artifact_sha256": "sha256:b0626caf7069442ba49af7ae42e1f9a61abc6f63e33e67c537774d94d6ebbe3c",
-    "official_skill_digest": "sha256:444785a685cea3bbe5bcfe0feac71ff0057e7d59babc1174ae80447cd50f0e8a",
-    "delivery_digest": "sha256:ce15501c336413559a72f3b1f147d9d8651c85c205f17b3444a365db46714a61",
-    "renderer_resources_digest": "sha256:51d07c4346916bba3cad591e0ad99c8adf04377bd4f8ee6c23e796a33da7e346"
+    "cli_artifact_sha256": "4cc2dfb5ac3e4a38ac89bdf3abd0d93d025d66b17afc461ac8f127a9824a2cbd",
+    "official_skill_digest": "444785a685cea3bbe5bcfe0feac71ff0057e7d59babc1174ae80447cd50f0e8a",
+    "delivery_digest": "81982b42ca70dfe2ef786362eca195b534fa535e1622abde930dc2df61d06f45",
+    "renderer_resources_digest": "63a0ab4a23a75d7c0a355c576a5cded50ba6d7ace9dd29729df296202ea9e3ef"
   }
 }

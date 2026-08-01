@@ -248,7 +248,7 @@ npx skills add <owner>/<repo>
 - 可选网络访问，用于在线 ASR、音乐生成、视觉素材搜索。
 - 可选 provider API key 或 MCP 配置。
 
-这些依赖适用于 npm 和源码安装。当前 `darwin-arm64` Box CLI 构件自带并校验受管运行时，执行时不依赖用户安装 Bun、Node、npx、FFmpeg/ffprobe、HyperFrames，也不依赖当前工作目录。
+这些依赖适用于 npm 和源码安装。当前 `macos-aarch64` Box CLI 构件自带并校验受管运行时，执行时不依赖用户安装 Bun、Node、npx、FFmpeg/ffprobe、HyperFrames，也不依赖当前工作目录。
 
 macOS 推荐用 Homebrew：
 
@@ -454,8 +454,8 @@ bun run koubo-clip -- project focus-review <project>
 
 ## 项目状态
 
-- 当前安装版本以 `koubo-clip --version` 为准；当前仓库发布目标为 `0.0.17`。
-- 当前包状态：npm 稳定发布线保持兼容；0.0.17 新增分离的本地 Box CLI/Skill 构件、managed health/self-test 合同和 provider-neutral 外部 ASR handoff。
+- 当前安装版本以 `koubo-clip --version` 为准；当前仓库发布目标为 `0.0.18`。
+- 当前包状态：npm 稳定发布线保持兼容；0.0.18 将分离的 Box CLI/Skill 构件收敛到 Plugin Box v1 包合同，同时保留 managed health/self-test 合同和 provider-neutral 外部 ASR handoff。
 - 当前推荐开发方式：源码仓库中使用 Bun。
 - npm package：`koubo-clip`。
 - 视觉素材、音乐和部分 provider 能力依赖网络、API key、用户资产或 host MCP handoff。
