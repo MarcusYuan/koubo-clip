@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
+import { resolveManagedRuntimeTool } from "../managed-runtime";
 
 export const MUSIC_EXTENSIONS = new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".aiff", ".aif"]);
 
@@ -39,7 +40,7 @@ export function resolveLibraryTrack(trackName: string, libraryDir = musicLibrary
 }
 
 export function probeAudioDuration(path: string): number | undefined {
-  const result = spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path], {
+  const result = spawnSync(resolveManagedRuntimeTool("ffprobe"), ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path], {
     encoding: "utf8",
     timeout: 15_000,
   });

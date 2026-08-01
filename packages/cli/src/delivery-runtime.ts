@@ -21,19 +21,22 @@ export function readInstalledDeliveryManifest(): DeliveryManifest {
   return parseDeliveryManifest(JSON.parse(readFileSync(path, "utf8")));
 }
 
-export function computeInstalledDeliveryDigests(skillRoot = resolveKouboClipSkillRoot()) {
+export function computeInstalledDeliveryDigests(manifest?: Pick<DeliveryManifest, "distribution_kind" | "official_skill_digest">, skillRoot = resolveKouboClipSkillRoot()) {
   const distributionRoot = resolveDistributionRoot();
+  const officialSkillDigest = manifest?.distribution_kind === "box-cli"
+    ? manifest.official_skill_digest
+    : computeOfficialSkillDigest({ root: skillRoot }).digest;
   return {
     cli_payload_digest: computeCliPayloadDigest({ root: distributionRoot, files: cliPayloadFiles(distributionRoot) }).digest,
     renderer_resources_digest: computeRendererResourcesDigest({ root: resolveHyperframesRoot() }).digest,
-    official_skill_digest: computeOfficialSkillDigest({ root: skillRoot }).digest,
+    official_skill_digest: officialSkillDigest,
     artifact_contracts_digest: artifactContractsDigest(),
   };
 }
 
 export function verifyInstalledDelivery(): DeliveryManifest {
   const manifest = readInstalledDeliveryManifest();
-  return verifyDeliveryManifest(manifest, computeInstalledDeliveryDigests(), { cli_version: cliVersion() });
+  return verifyDeliveryManifest(manifest, computeInstalledDeliveryDigests(manifest), { cli_version: cliVersion() });
 }
 
 export function verifyInstalledSkill(path: string): { manifest: DeliveryManifest; path: string; digest: string } {
@@ -44,7 +47,7 @@ export function verifyInstalledSkill(path: string): { manifest: DeliveryManifest
 }
 
 export function cliPayloadFiles(root: string): string[] {
-  const candidates = ["package.json", "bin/koubo-clip", ...walkFiles(join(root, "packages", "cli", "src")).map((path) => relative(root, path).replaceAll("\\", "/"))];
+  const candidates = ["package.json", "bin/koubo-clip", "runtime-lock.json", ...walkFiles(join(root, "packages", "cli", "src")).map((path) => relative(root, path).replaceAll("\\", "/"))];
   return candidates.filter((path) => existsSync(join(root, path)) && !path.endsWith(".test.ts") && !path.includes("/__snapshots__/"));
 }
 

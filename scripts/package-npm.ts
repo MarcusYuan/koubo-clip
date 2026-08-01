@@ -81,5 +81,7 @@ function packageVersion(): string {
 }
 
 function gitRevision(): string {
-  return run("git", ["rev-parse", "HEAD"], root).trim();
+  const revision = run("git", ["rev-parse", "HEAD"], root).trim();
+  const dirty = run("git", ["status", "--porcelain", "--untracked-files=all"], root).trim();
+  return dirty ? `${revision}-dirty` : revision;
 }

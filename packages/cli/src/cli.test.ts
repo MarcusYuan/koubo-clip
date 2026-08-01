@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -146,6 +147,80 @@ test("doctor prints runtime json", async () => {
   expect(json.bundle.skill_path.endsWith("skills/koubo-clip")).toBe(true);
 });
 
+test("doctor --json prints the Box managed CLI envelope on stdout only", async () => {
+  let output = "";
+  let error = "";
+  const code = await main(["doctor", "--json"], { stdout: (text) => (output = text), stderr: (text) => (error = text) });
+  expect(code).toBe(0);
+  expect(error).toBe("");
+  const json = JSON.parse(output);
+  expect(json.contract_version).toBe("1");
+  expect(json.ok).toBe(true);
+  expect(json.result.id).toBe("koubo-clip");
+  expect(json.result.version).toBe(packageVersion);
+  expect(["healthy", "degraded", "needs_configuration"]).toContain(json.result.status);
+});
+
+test("doctor --json failures use one redacted machine envelope and a non-zero exit", async () => {
+  let output = "";
+  let error = "";
+  const code = await main(["doctor", "--provider-mode", "not-a-mode", "--json"], {
+    stdout: (text) => (output = text),
+    stderr: (text) => (error = text),
+  });
+  expect(code).toBe(1);
+  expect(error).toBe("");
+  const json = JSON.parse(output);
+  expect(json).toEqual({
+    contract_version: "1",
+    ok: false,
+    error: { code: "DOCTOR_FAILED", message: "Invalid --provider-mode value: not-a-mode", retryable: false },
+  });
+});
+
+test("Box doctor verifies runtime-lock files and classifies missing versus corruption", async () => {
+  const oldKind = process.env.KOUBO_CLIP_DISTRIBUTION_KIND;
+  const oldRoot = process.env.KOUBO_CLIP_DISTRIBUTION_ROOT;
+  const root = mkdtempSync(join(tmpdir(), "koubo-box-runtime-"));
+  process.env.KOUBO_CLIP_DISTRIBUTION_KIND = "box-cli";
+  process.env.KOUBO_CLIP_DISTRIBUTION_ROOT = root;
+  try {
+    let output = "";
+    expect(await main(["doctor", "--json"], { stdout: (text) => (output = text) })).toBe(0);
+    expect(JSON.parse(output).result.status).toBe("needs_configuration");
+    expect(JSON.parse(output).result.issues[0].code).toBe("RUNTIME_LOCK_MISSING");
+
+    mkdirSync(join(root, "runtime", "bin"), { recursive: true });
+    const ffmpeg = join(root, "runtime", "bin", "ffmpeg");
+    writeFileSync(ffmpeg, "managed-ffmpeg");
+    expect(spawnSync("chmod", ["755", ffmpeg]).status).toBe(0);
+    writeFileSync(join(root, "runtime-lock.json"), JSON.stringify({ schema_version: "1", files: [lockedFile(root, "runtime/bin/ffmpeg", "ffmpeg", true)] }));
+    output = "";
+    expect(await main(["doctor", "--json"], { stdout: (text) => (output = text) })).toBe(0);
+    expect(JSON.parse(output).result.status).toBe("healthy");
+
+    expect(spawnSync("chmod", ["644", ffmpeg]).status).toBe(0);
+    output = "";
+    expect(await main(["doctor", "--json"], { stdout: (text) => (output = text) })).toBe(0);
+    const permission = JSON.parse(output);
+    expect(permission.result.status).toBe("degraded");
+    expect(permission.result.issues[0].code).toBe("MANAGED_RUNTIME_PERMISSION_MISMATCH");
+
+    expect(spawnSync("chmod", ["755", ffmpeg]).status).toBe(0);
+    writeFileSync(ffmpeg, "tampered");
+    output = "";
+    expect(await main(["doctor", "--json"], { stdout: (text) => (output = text) })).toBe(0);
+    const degraded = JSON.parse(output);
+    expect(degraded.result.status).toBe("degraded");
+    expect(degraded.result.issues[0].code).toBe("MANAGED_RUNTIME_SIZE_MISMATCH");
+  } finally {
+    if (oldKind === undefined) delete process.env.KOUBO_CLIP_DISTRIBUTION_KIND;
+    else process.env.KOUBO_CLIP_DISTRIBUTION_KIND = oldKind;
+    if (oldRoot === undefined) delete process.env.KOUBO_CLIP_DISTRIBUTION_ROOT;
+    else process.env.KOUBO_CLIP_DISTRIBUTION_ROOT = oldRoot;
+  }
+});
+
 test("doctor reports platform provider mode as host managed without secrets", async () => {
   const oldMiniMax = process.env.MINIMAX_API_KEY;
   process.env.MINIMAX_API_KEY = "secret-platform-value";
@@ -165,6 +240,21 @@ test("doctor reports platform provider mode as host managed without secrets", as
     else process.env.MINIMAX_API_KEY = oldMiniMax;
   }
 });
+
+test("test --json runs a real local render-contract smoke with a stdout envelope", async () => {
+  if (spawnSync("ffmpeg", ["-version"]).status !== 0 || spawnSync("ffprobe", ["-version"]).status !== 0) return;
+  let output = "";
+  let error = "";
+  const code = await main(["test", "--json"], { stdout: (text) => (output = text), stderr: (text) => (error = text) });
+  expect(code).toBe(0);
+  expect(error).toBe("");
+  const json = JSON.parse(output);
+  expect(json.contract_version).toBe("1");
+  expect(json.ok).toBe(true);
+  expect(json.result.status).toBe("passed");
+  expect(json.result.steps).toContain("render-contract.inspect");
+  expect(json.result.output_size_bytes > 0).toBe(true);
+}, 240_000);
 
 test("platform doctor does not load provider keys from local env files", async () => {
   const previousCwd = process.cwd();
@@ -426,6 +516,17 @@ function makeSourceFrameVideo(path: string): void {
     encoding: "utf8",
   });
   if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+}
+
+function lockedFile(root: string, path: string, role: string, executable = false) {
+  const bytes = readFileSync(join(root, ...path.split("/")));
+  return {
+    path,
+    role,
+    size: bytes.byteLength,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    ...(executable ? { executable: true } : {}),
+  };
 }
 
 function entries(path: string): string[] {

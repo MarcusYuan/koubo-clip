@@ -10,6 +10,9 @@ import { projectStatus } from "./project-status";
 import { bindRenderContract, exportRenderContract, inspectBoundContract, renderBoundContract, verifyRenderContractBundle } from "./render-contract-commands";
 import { verifyInstalledDelivery, verifyInstalledSkill } from "./delivery-runtime";
 import { artifactContractIndex, getArtifactContract } from "./artifact-contracts";
+import { boxDoctorResult, errorEnvelope, machineFailure, machineSuccess } from "./managed-runtime";
+import { runSelfTest } from "./self-test";
+import { importExternalAsrProject, prepareExternalAsrProject } from "./external-asr";
 import {
   commandExists,
   compileEdlProject,
@@ -48,7 +51,8 @@ Usage:
   koubo-clip --version
   koubo-clip capabilities --json
   koubo-clip artifact contract <artifact-id> --json
-  koubo-clip doctor [--provider-mode standalone|platform]
+  koubo-clip doctor [--provider-mode standalone|platform] [--json]
+  koubo-clip test --json
   koubo-clip delivery verify --json
   koubo-clip skills path [--json]
   koubo-clip skills verify [--path <installed-skill>] --json
@@ -61,6 +65,8 @@ Usage:
   koubo-clip project create <video...> [--project <dir>] [--provider-mode standalone|platform]
   koubo-clip project create --source-manifest <sources-v2.json> --project <dir> [--provider-mode standalone|platform]
   koubo-clip project explore <project> [--provider-mode standalone|platform] [--asr auto|off|external] [--asr-provider cloudflare-whisper|whisper-cli]
+  koubo-clip project asr-prepare <project> [--source-id <id>] [--output <project-relative-dir>] [--max-bytes <bytes>] [--json]
+  koubo-clip project asr-import <project> --input <project-relative-json> [--json]
   koubo-clip project source-frames <project> [--import <evidence-dir>] [--provider-mode standalone|platform] [--json]
   koubo-clip project review <project>
   koubo-clip project proposal <project>
@@ -87,6 +93,8 @@ const projectCommands = [
   "create <video...> [--project <dir>] [--provider-mode standalone|platform]",
   "create --source-manifest <sources-v2.json> --project <dir> [--provider-mode standalone|platform]",
   "explore <project> [--provider-mode standalone|platform] [--asr auto|off|external] [--asr-provider cloudflare-whisper|whisper-cli]",
+  "asr-prepare <project> [--source-id <id>] [--output <project-relative-dir>] [--max-bytes <bytes>] [--json]",
+  "asr-import <project> --input <project-relative-json> [--json]",
   "source-frames <project> [--import <evidence-dir>] [--provider-mode standalone|platform] [--json]",
   "review <project> [--provider-mode standalone|platform]",
   "proposal <project> [--provider-mode standalone|platform]",
@@ -138,25 +146,52 @@ export async function main(argv = process.argv.slice(2), io: Io = {}): Promise<n
 
   if (command === "doctor") {
     const { flags } = parseArgs(argv.slice(1));
-    const mode = providerMode(flags["provider-mode"], "standalone") ?? "standalone";
-    const bun = (globalThis as typeof globalThis & { Bun?: { version: string } }).Bun;
-    out(
-      JSON.stringify({
-        ok: true,
-        provider_mode: mode,
-        runtime: "bun",
-        bun: bun?.version ?? null,
-        node: process.version,
-        ffmpeg: commandExists("ffmpeg"),
-        ffprobe: commandExists("ffprobe"),
-        npx: commandExists("npx"),
-        hyperframes: commandExists("hyperframes") || existsSync(join(process.cwd(), "node_modules", ".bin", "hyperframes")),
-        whisper_cli: commandExists("whisper-cli"),
-        bundle: bundleInfo(),
-        providers: providerStatus(mode),
-      }),
-    );
-    return 0;
+    try {
+      const mode = providerMode(flags["provider-mode"], "standalone") ?? "standalone";
+      if (flags.json) {
+        out(JSON.stringify(machineSuccess(boxDoctorResult(mode))));
+        return 0;
+      }
+      const bun = (globalThis as typeof globalThis & { Bun?: { version: string } }).Bun;
+      out(
+        JSON.stringify({
+          ok: true,
+          provider_mode: mode,
+          runtime: "bun",
+          bun: bun?.version ?? null,
+          node: process.version,
+          ffmpeg: commandExists("ffmpeg"),
+          ffprobe: commandExists("ffprobe"),
+          npx: commandExists("npx"),
+          hyperframes: commandExists("hyperframes") || existsSync(join(process.cwd(), "node_modules", ".bin", "hyperframes")),
+          whisper_cli: commandExists("whisper-cli"),
+          bundle: bundleInfo(),
+          providers: providerStatus(mode),
+        }),
+      );
+      return 0;
+    } catch (error) {
+      const envelope = errorEnvelope(error, "DOCTOR_FAILED");
+      (flags.json ? out : err)(JSON.stringify(flags.json ? envelope : { ok: false, error: envelope.error }));
+      return 1;
+    }
+  }
+
+  if (command === "test") {
+    const { flags, positionals } = parseArgs(argv.slice(1));
+    if (!flags.json || positionals.length > 0) {
+      const envelope = machineFailure("TEST_ARGUMENT_INVALID", "Use: koubo-clip test --json");
+      out(JSON.stringify(envelope));
+      return 1;
+    }
+    try {
+      const result = await runSelfTest();
+      out(JSON.stringify(machineSuccess(result)));
+      return 0;
+    } catch (error) {
+      out(JSON.stringify(errorEnvelope(error, "SELF_TEST_FAILED")));
+      return 1;
+    }
   }
 
   if (command === "delivery") {
@@ -298,7 +333,7 @@ function loadLocalEnv() {
 }
 
 function shouldLoadLocalEnv(argv: string[]): boolean {
-  if (argv[0] === "--version" || argv[0] === "-v" || argv[0] === "capabilities" || argv[0] === "artifact") return false;
+  if (argv[0] === "--version" || argv[0] === "-v" || argv[0] === "capabilities" || argv[0] === "artifact" || argv[0] === "test") return false;
   if (argv[0] === "project" && argv[1] === "status") return false;
   const explicitMode = explicitProviderMode(argv);
   if (explicitMode) return explicitMode === "standalone";
@@ -345,6 +380,8 @@ function softwareCapabilities(): CapabilitiesArtifact {
       source_binding: true,
       artifact_contract_discovery: true,
       artifact_validation_aggregate: true,
+      external_asr_handoff: true,
+      box_managed_cli: true,
     },
     provider_modes: {
       standalone: { providers: "cli-managed", artifact_contract: "shared" },
@@ -394,8 +431,25 @@ function softwareCapabilities(): CapabilitiesArtifact {
       "EVIDENCE_SIZE_MISMATCH",
       "EVIDENCE_HASH_MISMATCH",
       "EVIDENCE_BINDING_MISMATCH",
+      "ASR_INPUT_INVALID",
+      "ASR_INPUT_UNSAFE",
+      "ASR_OUTPUT_EXISTS",
+      "ASR_SOURCE_REQUIRED",
+      "ASR_SOURCE_NOT_FOUND",
+      "ASR_SOURCE_RESULT_MISSING",
+      "ASR_SOURCE_ID_MISMATCH",
+      "ASR_SOURCE_BINDING_REQUIRED",
+      "ASR_SOURCE_BINDING_INVALID",
+      "ASR_FFMPEG_UNAVAILABLE",
+      "ASR_FFMPEG_FAILED",
+      "ASR_PROBE_UNAVAILABLE",
+      "ASR_PROBE_FAILED",
+      "ASR_PROBE_OUTPUT_INVALID",
+      "ASR_UPLOAD_LIMIT_EXCEEDED",
+      "ASR_TIMING_REQUIRED",
+      "ASR_TIMING_INVALID",
     ],
-    capability_ids: ["detached_source.v1", "external_frame_evidence.v1", "portable_edl.v1", "render_contract.export.v1", "render_contract.consume_strict.v1", "source_binding.v1", "artifact_contract.discovery.v1", "artifact_validation.aggregate.v1", "caption_layout.safe_area.v1"],
+    capability_ids: ["detached_source.v1", "external_frame_evidence.v1", "portable_edl.v1", "render_contract.export.v1", "render_contract.consume_strict.v1", "source_binding.v1", "artifact_contract.discovery.v1", "artifact_validation.aggregate.v1", "caption_layout.safe_area.v1", "external_asr.handoff.v1", "box_managed_cli.v1"],
     delivery: { manifest_schema_version: "3.0", aggregate_delivery_digest: true, cli_version: cliVersion(), runtime_dependencies: ["gsap@3.15.0", "hyperframes@0.7.36"] },
     render_contract: { schema_version: "2.0", exact_runtime_compatibility: true, immutable_directory_bundle: true },
     artifact_contracts: artifactContractIndex(),
@@ -490,6 +544,12 @@ async function runProjectCommand(argv: string[]) {
   const mode = providerMode(flags["provider-mode"]);
   if (subcommand === "create") return createProject(rest, { projectPath: flags.project, providerMode: mode, sourceManifestPath: flags["source-manifest"] });
   if (subcommand === "explore") return await exploreProject(required(rest[0], "project path"), { asr: asrMode(flags.asr), asrProvider: asrProvider(flags["asr-provider"]), providerMode: mode });
+  if (subcommand === "asr-prepare") return prepareExternalAsrProject(required(rest[0], "project path"), {
+    sourceId: flags["source-id"],
+    outputDir: flags.output,
+    maxBytes: optionalPositiveInteger(flags["max-bytes"], "--max-bytes"),
+  });
+  if (subcommand === "asr-import") return importExternalAsrProject(required(rest[0], "project path"), { inputPath: required(flags.input, "--input") });
   if (subcommand === "source-frames") return sourceFramesProject(required(rest[0], "project path"), { providerMode: mode, importPath: flags.import });
   if (subcommand === "review") return reviewProject(required(rest[0], "project path"), { providerMode: mode });
   if (subcommand === "proposal") return proposalProject(required(rest[0], "project path"), { providerMode: mode });
@@ -589,6 +649,15 @@ function providerMode(value: string | undefined, defaultMode?: ProviderExecution
 function required(value: string | undefined, name: string): string {
   if (!value) throw new Error(`Missing ${name}`);
   return value;
+}
+
+function optionalPositiveInteger(value: string | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw Object.assign(new Error(`${name} must be a positive integer`), { code: "ASR_INPUT_INVALID" });
+  }
+  return parsed;
 }
 
 if (import.meta.main) {

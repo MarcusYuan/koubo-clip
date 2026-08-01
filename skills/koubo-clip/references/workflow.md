@@ -11,7 +11,7 @@ Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabili
    - Choose `standalone` or `platform` once, then pass the same `--provider-mode` to project commands.
    - Run `project create --provider-mode <mode>`.
    - In `standalone` mode, run `project explore --asr auto` unless a transcript already exists.
-   - In `platform` mode, the host/platform ASR capability must write `transcript.json`; then run `project explore --asr external --provider-mode platform`.
+   - In `platform` mode, prepare each required source with `project asr-prepare`, let the host/provider write its provider-neutral timed result inside the project, and normalize it with `project asr-import`; then run `project explore --asr external --provider-mode platform`. The CLI owns source binding, 25 MiB upload-limit enforcement, timing/boundary validation, and the atomic `transcript.json` write. Text-only output is a blocker, not an exact-edit transcript.
    - Read `material-report.md` before asking final positioning questions.
 
 2. Collect source-frame evidence before business planning.

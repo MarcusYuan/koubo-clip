@@ -174,6 +174,7 @@ import {
 } from "./visual/acquire";
 import { sourceIdentityFingerprintProjection as portableSourceIdentityFingerprintProjection } from "./source-identity";
 import { validateEvidenceDirectory } from "./evidence-import";
+import { resolveManagedRuntimeTool } from "./managed-runtime";
 import {
   applyConfirmedTextOverlays,
   assertConfirmedAssetSlots,
@@ -5203,7 +5204,7 @@ function extractSourceFrameImage(sourcePath: string, timeSeconds: number, target
 
 function extractJpegFrame(sourcePath: string, seekText: string, targetPath: string, options: { quality: number; maxEdge?: number }) {
   return spawnSync(
-    "ffmpeg",
+    resolveManagedRuntimeTool("ffmpeg"),
     [
       "-y",
       "-ss",
@@ -5235,7 +5236,7 @@ function sourceFrameSeekText(timeSeconds: number): string {
 }
 
 function probeSourceFrame(path: string, maxEdge: number): { width: number; height: number } {
-  const result = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json", path], { encoding: "utf8" });
+  const result = spawnSync(resolveManagedRuntimeTool("ffprobe"), ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json", path], { encoding: "utf8" });
   if (result.status !== 0) throw new Error("ffprobe failed");
   const value = JSON.parse(result.stdout) as { streams?: Array<{ codec_name?: unknown; width?: unknown; height?: unknown }> };
   const stream = value.streams?.[0];
@@ -6180,6 +6181,14 @@ function adapterForPlanElement(element: EnrichmentElement): HyperframesElementAd
 }
 
 export function commandExists(command: string): boolean {
+  if (command === "ffmpeg" || command === "ffprobe") {
+    try {
+      const tool = resolveManagedRuntimeTool(command);
+      return spawnSync(tool, ["-version"], { stdio: "ignore" }).status === 0;
+    } catch {
+      return false;
+    }
+  }
   return spawnSync(command, ["-version"], { stdio: "ignore" }).status === 0;
 }
 
@@ -6298,7 +6307,7 @@ function audioInputPath(projectPath: string, sourceId: string, sourcePath: strin
   const asrDir = join(projectPath, ".asr");
   mkdirSync(asrDir, { recursive: true });
   const audioPath = join(asrDir, `${sourceId}.wav`);
-  const result = spawnSync("ffmpeg", ["-y", "-i", sourcePath, "-vn", "-ac", "1", "-ar", "16000", audioPath], { encoding: "utf8" });
+  const result = spawnSync(resolveManagedRuntimeTool("ffmpeg"), ["-y", "-i", sourcePath, "-vn", "-ac", "1", "-ar", "16000", audioPath], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(`ffmpeg audio extraction failed for ${sourceId}: ${result.stderr || result.stdout}`);
   return audioPath;
 }
@@ -6309,7 +6318,7 @@ function onlineAudioInputPath(projectPath: string, sourceId: string, sourcePath:
   const asrDir = join(projectPath, ".asr");
   mkdirSync(asrDir, { recursive: true });
   const audioPath = join(asrDir, `${sourceId}-online.mp3`);
-  const result = spawnSync("ffmpeg", ["-y", "-i", sourcePath, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k", audioPath], { encoding: "utf8" });
+  const result = spawnSync(resolveManagedRuntimeTool("ffmpeg"), ["-y", "-i", sourcePath, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k", audioPath], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(`ffmpeg online audio extraction failed for ${sourceId}: ${result.stderr || result.stdout}`);
   return audioPath;
 }
@@ -6816,7 +6825,7 @@ function renderResolvedEdl(
   const filterPath = join(workDir, "strict-render.ffmpeg");
   writeFileSync(filterPath, filters.join(";\n") + "\n");
   args.push("-filter_complex_threads", "1", "-filter_complex_script", filterPath, "-map", "[v]", "-map", "[a]", "-frames:v", String(schedule.total_frames), "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-r", String(output.fps), "-vsync", "cfr", "-c:a", "aac", "-ar", String(schedule.audio_sample_rate), "-ac", "2", "-movflags", "+faststart", outputPath);
-  const result = spawnSync("ffmpeg", args, { encoding: "utf8" });
+  const result = spawnSync(resolveManagedRuntimeTool("ffmpeg"), args, { encoding: "utf8" });
   if (result.status !== 0) throw commandError("CONTRACT_RENDER_FAILED", `strict timeline render failed: ${result.stderr || result.stdout}`);
 }
 
@@ -7850,12 +7859,12 @@ function escapeFfmpegFilterValue(value: string): string {
 
 function ffmpeg(args: string[], message: string): void {
   if (!commandExists("ffmpeg")) throw new Error("ffmpeg not found for render");
-  const result = spawnSync("ffmpeg", args, { encoding: "utf8" });
+  const result = spawnSync(resolveManagedRuntimeTool("ffmpeg"), args, { encoding: "utf8" });
   if (result.status !== 0) throw new Error(`${message}: ${result.stderr || result.stdout}`);
 }
 
 function ffmpegFilterExists(name: string): boolean {
-  const result = spawnSync("ffmpeg", ["-hide_banner", "-filters"], { encoding: "utf8" });
+  const result = spawnSync(resolveManagedRuntimeTool("ffmpeg"), ["-hide_banner", "-filters"], { encoding: "utf8" });
   return result.status === 0 && result.stdout.includes(` ${name} `);
 }
 
@@ -8010,7 +8019,7 @@ function extractInspectionChecks(projectPath: string, outputPath: string, checks
     const framePaths = check.frame_times.map((time, index) => {
       const suffix = check.frame_times.length === 1 ? "" : `-${index + 1}`;
       const framePath = join(dir, `${safeFileName(check.id)}${suffix}.jpg`);
-      const result = spawnSync("ffmpeg", ["-y", "-ss", formatSeconds(time), "-i", outputPath, "-frames:v", "1", "-q:v", "3", framePath], { encoding: "utf8" });
+      const result = spawnSync(resolveManagedRuntimeTool("ffmpeg"), ["-y", "-ss", formatSeconds(time), "-i", outputPath, "-frames:v", "1", "-q:v", "3", framePath], { encoding: "utf8" });
       if (result.status !== 0) throw new Error(`ffmpeg inspection frame failed for ${check.id}: ${result.stderr || result.stdout}`);
       return framePath;
     });
@@ -8056,7 +8065,7 @@ function pad(value: number): string {
 }
 
 function probeMedia(path: string): Record<string, unknown> & { duration_seconds: number; probe_ok: boolean; probe_error?: string } {
-  const result = spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path], {
+  const result = spawnSync(resolveManagedRuntimeTool("ffprobe"), ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path], {
     encoding: "utf8",
   });
   const duration = result.status === 0 ? Number.parseFloat(result.stdout.trim()) : Number.NaN;
@@ -8072,7 +8081,7 @@ export function probeStrictOutputTiming(path: string): {
   video_start_time_seconds: number;
   avg_frame_rate: string;
 } {
-  const result = spawnSync("ffprobe", [
+  const result = spawnSync(resolveManagedRuntimeTool("ffprobe"), [
     "-v", "error", "-count_frames", "-show_entries",
     "stream=codec_type,nb_read_frames,nb_frames,duration,start_time,avg_frame_rate:format=duration",
     "-of", "json", path,
@@ -8108,7 +8117,7 @@ export function probePortableSourceIdentity(path: string): NonNullable<SourceAss
   const bytes = readFileSync(path);
   const sha256 = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
   const sizeBytes = bytes.byteLength;
-  const result = spawnSync("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", path], { encoding: "utf8" });
+  const result = spawnSync(resolveManagedRuntimeTool("ffprobe"), ["-v", "error", "-show_streams", "-show_format", "-of", "json", path], { encoding: "utf8" });
   let root: Record<string, unknown> = {};
   try {
     root = result.status === 0 ? JSON.parse(result.stdout) as Record<string, unknown> : {};
@@ -8219,7 +8228,7 @@ function commandError(code: string, message: string): Error & { code: string } {
 }
 
 function probeVideoSize(path: string): { width: number; height: number } {
-  const result = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", path], {
+  const result = spawnSync(resolveManagedRuntimeTool("ffprobe"), ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", path], {
     encoding: "utf8",
   });
   const [width, height] = result.stdout.trim().split("x").map(Number);

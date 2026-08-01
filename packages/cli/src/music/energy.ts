@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { probeAudioDuration } from "./library";
+import { resolveManagedRuntimeTool } from "../managed-runtime";
 
 export type MusicEnergySummary = {
   duration_seconds?: number;
@@ -14,7 +15,7 @@ export function analyzeMusicEnergy(path: string, targetDuration?: number): Music
   const duration = probeAudioDuration(path);
   if (!duration) return { recommended_offset_seconds: 0, needs_loop: false, reason: "duration unavailable" };
 
-  const result = spawnSync("ffmpeg", ["-i", path, "-af", "ebur128", "-f", "null", "-"], { encoding: "utf8", timeout: 120_000 });
+  const result = spawnSync(resolveManagedRuntimeTool("ffmpeg"), ["-i", path, "-af", "ebur128", "-f", "null", "-"], { encoding: "utf8", timeout: 120_000 });
   if (result.status !== 0) {
     return { duration_seconds: duration, recommended_offset_seconds: 0, needs_loop: targetDuration ? duration < targetDuration : false, reason: "ebur128 unavailable" };
   }

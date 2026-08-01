@@ -128,3 +128,12 @@ npm publish --access public --registry=https://registry.npmjs.org/
 - `skills install` 必须在复制前验证 bundled Skill，在 staging 后和 atomic replace 后再次验证 installed Skill。
 - Release 外层另生成 artifact SHA-256；外层 digest 不替代 delivery manifest 内部身份。
 - 安装态 authoring smoke 至少读取唯一当前 `production-proposal.json` 3.0 合同，生成 2-4 个完整 options，首次 `project proposal --json` 通过或最多依据一次聚合 issues 整体修正后通过，并验证 option selection fingerprint 可继续绑定 edit plan/compile EDL；同一安装态还必须证明不存在 schema version 选择面，非当前 version 返回 `CONTRACT_SCHEMA_UNSUPPORTED`。
+
+## Plugin Box delivery
+
+- Box CLI 与 Box Skill 是独立构件；`cli-package.box.json` 不得引用 CLI tarball 内的用户可见 Skill payload，`skill.box.json` 必须列出全部 payload 文件的 size/SHA-256，并声明 exact CLI version 与主要命令。
+- 两个构件必须通过 CLI artifact digest、official Skill digest、delivery digest 和 renderer resources digest 关联；CLI 安装态验证不得要求 Skill 与 CLI 共址，npm/internal 的联合包验证不得因此放宽。
+- Box CLI 只从 package-owned root 定位 executable、HyperFrames runtime/resources、FFmpeg/ffprobe、browser、runtime lock 和 delivery manifest；禁止 cwd/PATH/npx/runtime network fallback。
+- `box-runtime.lock.json` 固定可复现打包输入；每个受支持 os/arch 必须有独立锁定输入和构建入口。未锁定平台必须 fail closed，不能生成声称可用的 artifact。
+- Box 安装态验收必须从任意 cwd 运行 `--version`、`delivery verify --json`、`doctor --json` 和 `test --json`，并验证 CLI/Skill 分离、逐文件 digest、runtime tamper 分类和真实 render/inspect smoke。
+- 本地 `package:box`/`verify:package:box` 只生成和验证构件；不得隐式执行 npm publish、远端 push 或 GitHub Release。

@@ -1,6 +1,6 @@
 # 内部二进制打包
 
-公开分发主路径是 npm package `koubo-clip`。本文件只记录可选的内部二进制 tarball 打包方式，用于离线、本机或临时分发：
+公开分发主路径是 npm package `koubo-clip`。本文件只记录可选的联合内部二进制 tarball 打包方式，用于离线、本机或临时分发：
 
 ```text
 koubo-clip-<platform>-<arch>.tgz
@@ -51,3 +51,5 @@ bun run package:internal
 - `resources/hyperframes` 是 CLI 运行时资源，不是 agent skill。
 - `skills/koubo-clip` 是唯一给 agent 加载的 skill。
 - 第一版只打当前平台二进制；跨平台构建后续再加。
+
+Plugin Box 不使用此联合布局。Box CLI 与 Skill 独立构建，CLI 自带受管 Bun、FFmpeg/ffprobe、HyperFrames/browser runtime，并按 `docs/box-packaging.md` 验证；不要把 Box 的 fail-closed runtime 规则反向套用为破坏现有 npm/internal 用户的要求。

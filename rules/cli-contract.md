@@ -78,10 +78,14 @@ koubo-clip project create <video> --provider-mode platform
 koubo-clip --version
 koubo-clip capabilities --json
 koubo-clip doctor
+koubo-clip doctor --json
+koubo-clip test --json
 koubo-clip artifact contract <artifact> --json
 koubo-clip project create <video>
 koubo-clip project status <project> --json
 koubo-clip project explore <project> --asr auto
+koubo-clip project asr-prepare <project> --source-id <source-id> --json
+koubo-clip project asr-import <project> --input <project-relative-json> --json
 koubo-clip project source-frames <project>
 koubo-clip project review <project>
 koubo-clip project proposal <project>
@@ -103,6 +107,10 @@ koubo-clip generate <video>
 ```
 
 Support commands 应优先提供 `--json`，让 agents 不需要抓取 logs。`capabilities` 描述命令、artifact contract index/schema digest、feature flags、provider-mode 语义和 render/inspect 所需 artifact keys，不探测当前机器；`artifact contract` 按 artifact 返回唯一当前 schema 的 ownership、role、完整 schema、适用的 template/example、validator/producer、prerequisites 和 digest，不接受 version 选择；`project status` 只读返回 artifact/stage 状态、blockers、remediation、next commands、canonical deliverable 和最后 checkpoint。`project source-frames` 校验 `source-frame-request.json`，按 request 顺序抽取 source-local JPEG 并返回 manifest path、数量、总 byte size 和稳定 warnings；`project proposal` 聚合校验 `production-proposal.json`，并在生成 Markdown、lineage 或 fingerprints 前验证每个 candidate-cleanup option 的 overlays 都完整落在 selected cuts 产生的单个连续 retained range 内；冲突以完整有界 `issues[]` 返回，CLI 不自动截断、拆分或修复。`project element-catalog` 返回完整 vendored HyperFrames 元素目录；`project focus-candidates` 校验 normalized semantic intents、candidate element types 和所需证据；`project focus-frames` 把 cleaned output-timeline candidate timing 经 EDL 映射为 source-local frame evidence；`project focus-grounding` 返回 coordinates 与 evidence 的绑定校验结果；`project focus-review` 返回 `proposed_elements[]`；`project enrich-plan` 返回 `source_mode`、`element_usage[]`、`qa_checks[]` 和 `warnings[]`；`project inspect` 只消费 current render result 的 canonical output，并返回 `source_mode`、`element_usage[]` 和 `inspection_checks[]`。confirmed proposal 的 option selection fingerprint 继续约束后续 `edit-plan` 和 `enrichment-plan`；被确认 option 的 `duration_target`、有序 `timeline`、`text_overlays` 和 `asset_requirements` 共同构成后续执行合同。若剪辑或素材语义越出已确认 option，CLI 必须返回 blocker 而不是静默修补。local authoring render、strict render 和 strict inspect 共享同一个冻结执行内核和同一帧时序语义，inspect 在 blockers 非零时仍可返回结构化结果，但命令必须 fail closed。
+
+Box machine output contract 固定为 `contract_version:"1"`。`doctor --json` 与 `test --json` 的 stdout 只能包含一个最终 JSON object，日志只能进入 stderr。成功 envelope 是 `{contract_version:"1",ok:true,result:{...}}`；失败必须使用非零退出码和 `{contract_version:"1",ok:false,error:{code,message,retryable}}`，且 message 必须脱敏。Doctor success 的 `result.status` 只允许 `healthy|degraded|needs_configuration`；test success 的 `result.status` 必须是 `passed`，并执行有限、可清理、无默认云费用的真实 render-contract smoke。未带 `--json` 的 doctor 保持既有兼容输出。
+
+外部 ASR adapter 不得包含 provider 私有业务逻辑。`asr-prepare` 只生成 project source-local 的受限压缩音频与上传 manifest；默认 25 MiB 上限，超限必须返回明确 machine blocker。`asr-import` 只接受完整 source coverage 的 segment/word timing，验证 source_id、边界、顺序、重叠和未知字段后原子写入；text-only 必须 fail closed。
 
 ## Source Frames 合同
 

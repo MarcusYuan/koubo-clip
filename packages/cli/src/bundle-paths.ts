@@ -6,6 +6,7 @@ const moduleDir = dirname(fileURLToPath(import.meta.url));
 const sourceRoot = resolve(moduleDir, "..", "..", "..");
 const binaryRoot = resolve(dirname(process.execPath), "..");
 declare const KOUBO_CLIP_BUILD_VERSION: string | undefined;
+declare const KOUBO_CLIP_DISTRIBUTION_KIND: string | undefined;
 let resolvedCliVersion: string | undefined;
 
 export function cliVersion(): string {
@@ -28,6 +29,12 @@ export function cliVersion(): string {
 }
 
 export function resolveHyperframesRoot(): string {
+  if (isBoxCliDistribution()) {
+    return firstExisting(
+      [isEmbeddedBoxCliDistribution() ? undefined : process.env.KOUBO_CLIP_HYPERFRAMES_ROOT, join(binaryRoot, "resources", "hyperframes")],
+      (path) => existsSync(join(path, "registry")) && existsSync(join(path, "resources")),
+    );
+  }
   return firstExisting(
     [
       process.env.KOUBO_CLIP_HYPERFRAMES_ROOT,
@@ -39,6 +46,12 @@ export function resolveHyperframesRoot(): string {
 }
 
 export function resolveKouboClipSkillRoot(): string {
+  if (isBoxCliDistribution()) {
+    return firstExisting(
+      [isEmbeddedBoxCliDistribution() ? undefined : process.env.KOUBO_CLIP_SKILL_ROOT, join(binaryRoot, "skills", "koubo-clip")],
+      (path) => existsSync(join(path, "SKILL.md")),
+    );
+  }
   return firstExisting(
     [
       process.env.KOUBO_CLIP_SKILL_ROOT,
@@ -50,6 +63,12 @@ export function resolveKouboClipSkillRoot(): string {
 }
 
 export function resolveDistributionRoot(): string {
+  if (isBoxCliDistribution()) {
+    return firstExisting(
+      [isEmbeddedBoxCliDistribution() ? undefined : process.env.KOUBO_CLIP_DISTRIBUTION_ROOT, binaryRoot],
+      (path) => existsSync(join(path, "delivery-manifest.json")),
+    );
+  }
   return firstExisting(
     [process.env.KOUBO_CLIP_DISTRIBUTION_ROOT, binaryRoot, sourceRoot],
     (path) => existsSync(join(path, "delivery-manifest.json")) || existsSync(join(path, "package.json")),
@@ -57,6 +76,11 @@ export function resolveDistributionRoot(): string {
 }
 
 export function resolveHyperframesBinary(): string {
+  if (isBoxCliDistribution()) {
+    if (!isEmbeddedBoxCliDistribution() && process.env.KOUBO_CLIP_HYPERFRAMES_BIN) return process.env.KOUBO_CLIP_HYPERFRAMES_BIN;
+    const managed = join(binaryRoot, "runtime", "bin", "hyperframes");
+    return existsSync(managed) ? managed : "";
+  }
   if (process.env.KOUBO_CLIP_HYPERFRAMES_BIN) return process.env.KOUBO_CLIP_HYPERFRAMES_BIN;
   const candidates = [
     join(sourceRoot, "node_modules", ".bin", "hyperframes"),
@@ -65,6 +89,21 @@ export function resolveHyperframesBinary(): string {
     join(process.cwd(), "node_modules", ".bin", "hyperframes"),
   ];
   return candidates.find((path) => existsSync(path)) ?? "hyperframes";
+}
+
+export function distributionKind(): string {
+  if (typeof KOUBO_CLIP_DISTRIBUTION_KIND !== "undefined" && KOUBO_CLIP_DISTRIBUTION_KIND) {
+    return KOUBO_CLIP_DISTRIBUTION_KIND;
+  }
+  return process.env.KOUBO_CLIP_DISTRIBUTION_KIND || "source";
+}
+
+export function isBoxCliDistribution(): boolean {
+  return distributionKind() === "box-cli";
+}
+
+function isEmbeddedBoxCliDistribution(): boolean {
+  return typeof KOUBO_CLIP_DISTRIBUTION_KIND !== "undefined" && KOUBO_CLIP_DISTRIBUTION_KIND === "box-cli";
 }
 
 export function bundleInfo() {
