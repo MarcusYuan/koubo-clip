@@ -454,8 +454,8 @@ bun run koubo-clip -- project focus-review <project>
 
 ## 项目状态
 
-- 当前安装版本以 `koubo-clip --version` 为准；当前仓库发布目标为 `0.0.18`。
-- 当前包状态：npm 稳定发布线保持兼容；0.0.18 将分离的 Box CLI/Skill 构件收敛到 Plugin Box v1 包合同，同时保留 managed health/self-test 合同和 provider-neutral 外部 ASR handoff。
+- 当前安装版本以 `koubo-clip --version` 为准；当前仓库发布目标为 `0.0.19`。
+- 当前包状态：npm 稳定发布线保持兼容；0.0.19 将 Box Skill v1 的逐文件合同修正为严格的 `{ path, sha256, size }`，并使用裸 CLI 子命令，同时保留独立、自包含的 Box CLI、managed health/self-test 合同和 provider-neutral 外部 ASR handoff。
 - 当前推荐开发方式：源码仓库中使用 Bun。
 - npm package：`koubo-clip`。
 - 视觉素材、音乐和部分 provider 能力依赖网络、API key、用户资产或 host MCP handoff。

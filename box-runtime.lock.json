@@ -65,12 +65,12 @@
       "version": "6.1.1",
       "target": "macos-aarch64",
       "source_lock": "third_party/ffmpeg-runtime/macos-aarch64/source-lock.json",
-      "source_lock_sha256": "b77c46159a04d07af5bfc889b58dfc17280f7ee2276ab70c2674afc34e357306",
+      "source_lock_sha256": "227092461e3650b61c10a6997f8d985ae0116488ca7b131e647d6fd24613412a",
       "build_recipe": "scripts/build-box-ffmpeg-runtime.sh",
       "build_recipe_sha256": "35145a5cc1acb930f7c4ac8f2c92ac2af1fd786198b91c30a8ee71f92762c78f",
       "runtime_output": "dist/box-runtime/macos-aarch64",
       "build_evidence": "dist/box-runtime/macos-aarch64/evidence/build-evidence.json",
-      "source_bundle": "dist/box/koubo-clip-ffmpeg-sources-0.0.18.tar.xz"
+      "source_bundle": "dist/box/koubo-clip-ffmpeg-sources-0.0.19.tar.xz"
     },
     "chrome_headless_shell": {
       "version": "131.0.6778.85",
