@@ -16,7 +16,7 @@ Box CLI 包只包含 CLI、HyperFrames resources 和受管运行时，不包含�
 
 当前可构建目标只有 `macos/aarch64`，本机 `darwin-arm64` 会映射到该 Box 目标。其他目标由 `KOUBO_BOX_TARGET` 选择时必须 fail closed，直到该平台拥有独立的锁版本、摘要和验收结果。
 
-`box-runtime.lock.json` 是源码侧的可复现输入合同，固定 Bun、FFmpeg、ffprobe、HyperFrames 和 Chrome Headless Shell 的版本与摘要。Chrome 输入目录必须通过 `KOUBO_BOX_BROWSER_ROOT` 明确提供；打包脚本先验证完整文件树摘要再复制。安装包内的 `runtime-lock.json` 是另一份安装态合同，列出实际 runtime/resources 文件的 size、SHA-256 与可执行属性。两者不得混用。
+`box-runtime.lock.json` 是源码侧的可复现输入合同，固定 Bun、受管 FFmpeg 构建合同、HyperFrames 和 Chrome Headless Shell 的版本与摘要。FFmpeg 的逐项 source URL/version/SHA-256、补丁和 build recipe 位于 `third_party/ffmpeg-runtime/macos-aarch64/`；构建结果必须落在 `dist/box-runtime/macos-aarch64/`，并同时生成 binary-to-source evidence 与 corresponding-source tarball。Chrome 输入目录必须通过 `KOUBO_BOX_BROWSER_ROOT` 明确提供；打包脚本先验证完整文件树摘要再复制。安装包内的 `runtime-lock.json` 是另一份安装态合同，列出实际 runtime/resources/evidence 文件的 size、SHA-256 与可执行属性。三者不得混用。
 
 Box CLI 的稳定入口只从包自身定位：
 
@@ -34,11 +34,21 @@ runtime-lock.json
 
 运行时不依赖用户安装 Bun、Node、npx、HyperFrames、FFmpeg/ffprobe，也不从当前工作目录或 PATH 选择替代版本。缺文件属于 `needs_configuration`；已存在但摘要、布局或可执行属性损坏属于 `degraded`。render/test 不允许联网临时下载 renderer。
 
-FFmpeg/ffprobe 当前由 `ffmpeg-ffprobe-static@6.1.2-rc.1` 提供并在输入合同中锁定二进制摘要。`box-runtime.lock.json.public_distribution_gate` 是公开发布门禁的唯一事实源；`bun run verify:box-release-gate` 校验本地证据，tag workflow 使用 `--release` 模式 fail closed。当前输入缺少 exact corresponding source/build recipe/binary-to-source mapping，且锁定二进制报告 `--enable-nonfree`，因此状态保持 `blocked`。本地构件验证不等于公开再分发批准，这项工程门禁也不构成法律结论。
+FFmpeg/ffprobe 由仓库 build recipe 从锁定的 FFmpeg、x264、FreeType、HarfBuzz 和 build-tool sources 构建。当前配置保留现有 `libx264`/`drawtext` 成功路径，因此启用 GPL 与所需 libraries，但禁止 `--enable-nonfree`。构建产物只允许依赖 macOS 系统动态库；非系统 `@rpath`、Homebrew、临时目录或构建前缀依赖会让门禁失败。
+
+`box-runtime.lock.json.public_distribution_gate` 是公开上传 Box CLI 前的工程事实源。`bun run verify:box-release-gate` 会核对实际 binary flags/features、逐文件摘要、source lock、build recipe、许可证/版权文本、只含系统动态依赖、binary-to-source mapping 和 corresponding-source bundle；tag workflow 使用 `--release` 模式 fail closed。证据完整只表示仓库定义的发布工程门禁通过，不构成法律结论。
+
+许可证 payload 不是“目录非空”检查。`build-evidence.json.license_evidence[]` 是唯一逐文件集合：每项使用规范化相对路径、实际 byte size、纯 hex SHA-256 和 `0644` mode。发布门禁同时要求 source lock 声明、CLI 内 `licenses/ffmpeg-runtime/licenses/` 和 corresponding-source tarball 内 `licenses/` 三方文件集合完全一致，且同路径文件 bytes 一致；额外、缺失、篡改、mode 漂移、重复或路径不规范都会 fail closed。安装态验收还对 CLI/source 两侧执行额外、缺失和篡改 mutation 负测。
 
 ## 构建
 
-先准备锁定的 Chrome Headless Shell 文件树，然后运行：
+先构建受管 FFmpeg runtime 和 source bundle，再准备锁定的 Chrome Headless Shell 文件树：
+
+```bash
+bun run build:box-ffmpeg-runtime
+```
+
+然后运行：
 
 ```bash
 KOUBO_BOX_BROWSER_ROOT=/absolute/path/to/chrome-headless-shell-mac-arm64 \
@@ -66,3 +76,13 @@ bun scripts/verify-box-package.ts
 - 删除或修改受管 runtime 文件后的 fail-closed doctor 分类。
 
 本流程只生成和验证本地构件，不执行 npm publish、远端 push 或 GitHub Release。
+
+正式 `v<version>` Release 还会上传：
+
+- `koubo-clip-ffmpeg-sources-<version>.tar.xz`：FFmpeg 及其链接组件的完整锁定 source archives、已校验的 build-tool distributions、补丁、build recipe、source manifest 和许可证/版权文本；
+- `koubo-clip-ffmpeg-build-evidence-<version>.json`：该次二进制的摘要、configure args、source_revision 与门禁断言；
+- `koubo-clip-ffmpeg-source-lock-<version>.json` 和 `koubo-clip-ffmpeg-build-recipe-<version>.sh`：可独立核验的源锁和构建入口。
+
+CLI descriptor、Box metadata 和 release-gate report 都绑定这些 exact bytes 的 SHA-256。Release 页面应把 corresponding-source asset 与 Box CLI asset 放在同一 tag 下；不得改写或用其他 commit 重新生成其中任一项。
+
+Box CLI 根目录携带 `THIRD_PARTY_NOTICES.md`，并在 `licenses/ffmpeg-runtime/SOURCE_OFFER.json` 提供版本化机器可读 source offer。该 offer、`cli-package.box.json` 和 `build-evidence.json` 必须同时记录同一 `v<version>` Release 下 corresponding-source asset 的直接 HTTPS URL、size 和 SHA-256；package verification 会拒绝 URL 或 digest 任一不一致。

@@ -1,0 +1,13 @@
+diff --git a/src/OT/glyf/VarCompositeGlyph.hh b/src/OT/glyf/VarCompositeGlyph.hh
+--- a/src/OT/glyf/VarCompositeGlyph.hh
++++ b/src/OT/glyf/VarCompositeGlyph.hh
+@@ -181,7 +181,8 @@ struct VarCompositeGlyph
+     float c;
+     float s;
+ #ifdef HAVE_SINCOSF
+-    sincosf (rotation, &s, &c);
++    s = sinf (rotation);
++    c = cosf (rotation);
+ #else
+     c = cosf (rotation);
+     s = sinf (rotation);

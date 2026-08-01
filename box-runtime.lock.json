@@ -32,42 +32,45 @@
     }
   ],
   "public_distribution_gate": {
-    "status": "blocked",
-    "blocker_code": "FFMPEG_REDISTRIBUTION_EVIDENCE_INCOMPLETE",
-    "input": "ffmpeg-ffprobe-static@6.1.2-rc.1",
+    "status": "ready",
+    "release_policy": "gpl-corresponding-source",
+    "input": "repository-built-ffmpeg-6.1.1-macos-aarch64",
     "policy_reference": "https://ffmpeg.org/legal.html",
-    "observed_binary_flags": [
+    "required_binary_flags": [
       "--enable-gpl",
-      "--enable-version3",
-      "--enable-nonfree"
+      "--disable-nonfree",
+      "--enable-libx264",
+      "--enable-libfreetype",
+      "--enable-libharfbuzz"
     ],
     "forbidden_release_flags": [
       "--enable-nonfree"
     ],
     "required_evidence": [
-      "exact corresponding source archive and SHA-256",
-      "build recipe and configure flags tied to the shipped binaries",
-      "license, copyright, and third-party notice bundle",
-      "binary-to-source mapping for the locked ffmpeg and ffprobe SHA-256 values"
+      "checksum-locked upstream source archives and applied patches",
+      "exact build recipe and configure flags tied to the shipped binaries",
+      "license and copyright texts copied from every locked source",
+      "binary-to-source mapping for the shipped ffmpeg and ffprobe SHA-256 values",
+      "same-release corresponding-source bundle with exact size and SHA-256",
+      "actual binary feature and system-only dynamic-dependency inspection"
     ],
-    "remediation": "Replace the current binaries with an auditable redistributable build, or commit a reviewed complete-source distribution record that satisfies the selected release policy."
+    "legal_assessment": "not_provided"
   },
   "inputs": {
     "bun": {
       "version": "1.3.11",
       "sha256": "1d77af7bfd811aebb7d37bec496a5eed14fe227ded3ab7866d2f39786e8107b6"
     },
-    "ffmpeg": {
-      "package": "ffmpeg-ffprobe-static",
-      "package_version": "6.1.2-rc.1",
-      "binary_version": "6.1.1",
-      "sha256": "9f865039102a1139c7057d7f21ddaacd106d602fa3af1f99b70f43d520439b8c"
-    },
-    "ffprobe": {
-      "package": "ffmpeg-ffprobe-static",
-      "package_version": "6.1.2-rc.1",
-      "binary_version": "6.1.1",
-      "sha256": "05a26b32c32115785d48b01601e104712bbc6c2b1d363b9cf44c42232684e25e"
+    "ffmpeg_runtime": {
+      "version": "6.1.1",
+      "target": "macos-aarch64",
+      "source_lock": "third_party/ffmpeg-runtime/macos-aarch64/source-lock.json",
+      "source_lock_sha256": "36db8953210a210a4ecad7f4afdcfe4479b50d5905dad12dcc39d3fd92e6f1d5",
+      "build_recipe": "scripts/build-box-ffmpeg-runtime.sh",
+      "build_recipe_sha256": "35145a5cc1acb930f7c4ac8f2c92ac2af1fd786198b91c30a8ee71f92762c78f",
+      "runtime_output": "dist/box-runtime/macos-aarch64",
+      "build_evidence": "dist/box-runtime/macos-aarch64/evidence/build-evidence.json",
+      "source_bundle": "dist/box/koubo-clip-ffmpeg-sources-0.0.18.tar.xz"
     },
     "chrome_headless_shell": {
       "version": "131.0.6778.85",

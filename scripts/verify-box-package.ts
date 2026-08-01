@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 
 type Json = Record<string, any>;
+type LicenseEntry = { path: string; size_bytes: number; sha256: string; mode: "0644" };
 
 const root = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const packageJson = readJson(join(root, "package.json"));
@@ -12,6 +13,7 @@ const version = String(packageJson.version);
 const boxDist = join(root, "dist", "box");
 const cliTarball = resolve(process.argv[2] ?? join(boxDist, `koubo-clip-box-cli-${version}-macos-aarch64.tgz`));
 const skillTarball = resolve(process.argv[3] ?? join(boxDist, `koubo-clip-box-skill-${version}.tgz`));
+const ffmpegSourceBundle = resolve(process.argv[4] ?? join(dirname(cliTarball), `koubo-clip-ffmpeg-sources-${version}.tar.xz`));
 const tmp = nodeFs.mkdtempSync(join(tmpdir(), "koubo-box-acceptance-"));
 
 try {
@@ -39,11 +41,14 @@ try {
   expect(nodeFs.existsSync(join(cliRoot, "runtime", "bin", "hyperframes")), "Box CLI package is missing managed HyperFrames launcher");
   expect(nodeFs.existsSync(join(cliRoot, "resources", "hyperframes", "registry")), "Box CLI package is missing HyperFrames registry resources");
   expect(nodeFs.existsSync(join(cliRoot, "runtime", "browser", "chrome-headless-shell", "mac_arm-131.0.6778.85", "chrome-headless-shell-mac-arm64", "chrome-headless-shell")), "Box CLI package is missing managed Chrome Headless Shell");
-  for (const notice of ["LICENSE", "ffmpeg.README", "README.md"]) {
-    expect(nodeFs.existsSync(join(cliRoot, "licenses", "ffmpeg-ffprobe-static", notice)), `Box CLI package is missing ffmpeg notice ${notice}`);
-  }
+  expect(nodeFs.existsSync(join(cliRoot, "licenses", "ffmpeg-runtime", "build-evidence.json")), "Box CLI package is missing FFmpeg build evidence");
+  expect(nodeFs.existsSync(join(cliRoot, "licenses", "ffmpeg-runtime", "source-lock.json")), "Box CLI package is missing FFmpeg source lock evidence");
+  expect(nodeFs.existsSync(join(cliRoot, "licenses", "ffmpeg-runtime", "licenses")), "Box CLI package is missing FFmpeg runtime license texts");
+  expect(nodeFs.existsSync(join(cliRoot, "licenses", "ffmpeg-runtime", "SOURCE_OFFER.json")), "Box CLI package is missing the versioned FFmpeg source offer");
+  expect(nodeFs.existsSync(join(cliRoot, "THIRD_PARTY_NOTICES.md")), "Box CLI package is missing THIRD_PARTY_NOTICES.md");
 
   verifyRuntimeLock(cliRoot);
+  verifyFfmpegRuntimeEvidence(cliRoot, cliDescriptor, ffmpegSourceBundle);
   verifyNoBareManagedToolSpawns();
   verifyPackageFiles(cliRoot, cliDescriptor.files, "cli-package.box.json");
   verifySkillDescriptor(skillRoot, skillDescriptor);
@@ -110,8 +115,216 @@ function verifyRuntimeLock(cliRoot: string): void {
   for (const required of ["bin/koubo-clip", "bin/koubo-clip-runtime", "runtime/bin/bun", "runtime/bin/ffmpeg", "runtime/bin/ffprobe", "runtime/bin/hyperframes", "runtime/bin/chrome-headless-shell", "runtime/hyperframes.js"]) {
     expect(locked.has(required), `runtime-lock does not list ${required}`);
   }
-  for (const required of ["licenses/ffmpeg-ffprobe-static/LICENSE", "licenses/ffmpeg-ffprobe-static/ffmpeg.README", "licenses/ffmpeg-ffprobe-static/README.md"]) {
+  for (const required of ["licenses/ffmpeg-runtime/build-evidence.json", "licenses/ffmpeg-runtime/source-lock.json", "licenses/ffmpeg-runtime/build-box-ffmpeg-runtime.sh", "licenses/ffmpeg-runtime/ffmpeg-version.txt", "licenses/ffmpeg-runtime/ffprobe-version.txt", "licenses/ffmpeg-runtime/otool-ffmpeg.txt", "licenses/ffmpeg-runtime/otool-ffprobe.txt", "licenses/ffmpeg-runtime/SOURCE_OFFER.json", "THIRD_PARTY_NOTICES.md"]) {
     expect(locked.has(required), `runtime-lock does not list ${required}`);
+  }
+  expect([...locked.keys()].some((path) => path.startsWith("licenses/ffmpeg-runtime/licenses/")), "runtime-lock does not list FFmpeg runtime license texts");
+}
+
+function verifyFfmpegRuntimeEvidence(cliRoot: string, descriptor: Json, sourceBundlePath: string): void {
+  const evidenceRoot = join(cliRoot, "licenses", "ffmpeg-runtime");
+  const evidence = readJson(join(evidenceRoot, "build-evidence.json"));
+  expect(evidence.contract_version === "1", "FFmpeg build evidence contract_version must be 1");
+  expect(evidence.target?.os === "macos" && evidence.target?.arch === "aarch64", "FFmpeg build evidence target mismatch");
+  const expectedEvidenceRevision = descriptor.provenance?.worktree_dirty === true ? `${descriptor.source_revision}-dirty` : descriptor.source_revision;
+  expect(evidence.source_revision === expectedEvidenceRevision, "FFmpeg build evidence source_revision must match the Box descriptor provenance");
+  expect(evidence.git_dirty === (descriptor.provenance?.worktree_dirty === true), "FFmpeg build evidence dirty state must match the Box descriptor provenance");
+  expect(Array.isArray(evidence.build?.configure_args) && evidence.build.configure_args.length > 0, "FFmpeg build evidence must record configure arguments");
+  const configure = evidence.build.configure_args.join(" ");
+  for (const flag of ["--enable-gpl", "--enable-libx264", "--enable-libfreetype", "--enable-libharfbuzz"]) {
+    expect(evidence.build.configure_args.includes(flag), `FFmpeg build evidence is missing ${flag}`);
+  }
+  expect(!configure.includes("--enable-nonfree"), "FFmpeg build evidence contains --enable-nonfree");
+  for (const [key, label] of [
+    ["gpl_enabled", "GPL mode"],
+    ["nonfree_disabled", "nonfree-disabled mode"],
+    ["libx264_enabled", "libx264"],
+    ["libfreetype_enabled", "libfreetype"],
+    ["libharfbuzz_enabled", "libharfbuzz"],
+    ["drawtext_available", "drawtext"],
+    ["only_system_dynamic_dependencies", "system-only dynamic dependencies"],
+  ] as const) {
+    expect(evidence.assertions?.[key] === true, `FFmpeg build evidence did not assert ${label}`);
+  }
+
+  const binaries = new Map((evidence.binaries ?? []).map((entry: Json) => [entry.path, entry]));
+  for (const relativePath of ["bin/ffmpeg", "bin/ffprobe"]) {
+    const path = join(cliRoot, "runtime", relativePath);
+    const entry = binaries.get(relativePath) as Json | undefined;
+    expect(Boolean(entry), `FFmpeg build evidence does not list ${relativePath}`);
+    expect(entry!.size_bytes === nodeFs.statSync(path).size, `FFmpeg build evidence size mismatch for ${relativePath}`);
+    expect(entry!.sha256 === sha256File(path), `FFmpeg build evidence digest mismatch for ${relativePath}`);
+    expect(entry!.mode === "0755", `FFmpeg build evidence executable mode mismatch for ${relativePath}`);
+    verifyOnlySystemDynamicDependencies(path);
+  }
+  const ffmpegPath = join(cliRoot, "runtime", "bin", "ffmpeg");
+  expect(descriptor.runtime?.ffmpeg_sha256 === sha256File(ffmpegPath), "CLI descriptor ffmpeg digest does not match the packaged binary");
+  expect(descriptor.runtime?.ffprobe_sha256 === sha256File(join(cliRoot, "runtime", "bin", "ffprobe")), "CLI descriptor ffprobe digest does not match the packaged binary");
+  const versionOutput = run(ffmpegPath, ["-version"], cliRoot);
+  for (const flag of ["--enable-gpl", "--disable-nonfree", "--enable-libx264", "--enable-libfreetype", "--enable-libharfbuzz"]) {
+    expect(versionOutput.includes(flag), `packaged ffmpeg is missing ${flag}`);
+  }
+  expect(!versionOutput.includes("--enable-nonfree"), "packaged ffmpeg contains --enable-nonfree");
+  const filters = run(ffmpegPath, ["-hide_banner", "-filters"], cliRoot);
+  expect(/\bdrawtext\b/.test(filters), "packaged ffmpeg is missing drawtext");
+  const encoders = run(ffmpegPath, ["-hide_banner", "-encoders"], cliRoot);
+  for (const encoder of ["aac", "libx264"]) expect(new RegExp(`\\b${encoder}\\b`).test(encoders), `packaged ffmpeg is missing ${encoder}`);
+
+  expect(nodeFs.existsSync(sourceBundlePath), `FFmpeg corresponding-source bundle is missing: ${sourceBundlePath}`);
+  expect(evidence.source_bundle?.size_bytes === nodeFs.statSync(sourceBundlePath).size, "FFmpeg source bundle size does not match build evidence");
+  expect(evidence.source_bundle?.sha256 === sha256File(sourceBundlePath), "FFmpeg source bundle digest does not match build evidence");
+  expect(descriptor.runtime?.ffmpeg_source_bundle_sha256 === evidence.source_bundle.sha256, "CLI descriptor does not bind the FFmpeg source bundle digest");
+  expect(descriptor.runtime?.ffmpeg_build_evidence_sha256 === sha256File(join(evidenceRoot, "build-evidence.json")), "CLI descriptor does not bind FFmpeg build evidence");
+  expect(descriptor.runtime?.ffmpeg_source_lock_sha256 === sha256File(join(evidenceRoot, "source-lock.json")), "CLI descriptor does not bind the FFmpeg source lock");
+  const canonicalSourceUrl = `https://github.com/MarcusYuan/koubo-clip/releases/download/v${version}/koubo-clip-ffmpeg-sources-${version}.tar.xz`;
+  expect(evidence.source_bundle?.url === canonicalSourceUrl, "FFmpeg build evidence does not identify the canonical same-release corresponding-source URL");
+  expect(descriptor.release_urls?.ffmpeg_corresponding_source === canonicalSourceUrl, "CLI descriptor does not identify the canonical same-release corresponding-source URL");
+  expect(descriptor.runtime?.ffmpeg_source_bundle_url === canonicalSourceUrl, "CLI runtime identity does not bind the corresponding-source URL");
+  expect(descriptor.runtime?.ffmpeg_source_bundle_size_bytes === evidence.source_bundle.size_bytes, "CLI runtime identity does not bind the corresponding-source size");
+  const sourceOffer = readJson(join(evidenceRoot, "SOURCE_OFFER.json"));
+  expect(sourceOffer.contract_version === "1" && sourceOffer.version === version && sourceOffer.source_revision === descriptor.source_revision, "FFmpeg source offer delivery identity mismatch");
+  expect(canonicalJson(sourceOffer.artifact) === canonicalJson({ url: canonicalSourceUrl, size_bytes: evidence.source_bundle.size_bytes, sha256: evidence.source_bundle.sha256 }), "FFmpeg source offer does not bind the exact corresponding-source asset");
+  const licenses = licenseEntriesFromEvidence(evidence, readJson(join(evidenceRoot, "source-lock.json")));
+  verifyExactLicensePayload(evidenceRoot, sourceBundlePath, licenses);
+  verifyLicenseMutationFailures(join(evidenceRoot, "licenses"), sourceBundlePath, licenses);
+}
+
+function licenseEntriesFromEvidence(evidence: Json, sourceLock: Json): Map<string, LicenseEntry> {
+  const declaredPaths = new Set<string>();
+  expect(Array.isArray(sourceLock.sources), "packaged FFmpeg source lock is missing sources[]");
+  for (const source of sourceLock.sources as Json[]) {
+    expect(typeof source.id === "string" && Array.isArray(source.license_files), "packaged FFmpeg source lock has incomplete license declarations");
+    for (const path of source.license_files) {
+      expect(isSafeBoxRelativePath(`${source.id}/${path}`), `packaged FFmpeg source lock has unsafe license path ${source.id}/${path}`);
+      const declaredPath = `${source.id}/${path}`;
+      expect(!declaredPaths.has(declaredPath), `packaged FFmpeg source lock contains duplicate license path ${declaredPath}`);
+      declaredPaths.add(declaredPath);
+    }
+  }
+  expect(Array.isArray(evidence.license_evidence), "FFmpeg build evidence is missing license_evidence[]");
+  const entries = new Map<string, LicenseEntry>();
+  for (const raw of evidence.license_evidence as Json[]) {
+    expectExactKeys(raw, ["path", "size_bytes", "sha256", "mode"], "FFmpeg license evidence entry");
+    expect(typeof raw.path === "string" && raw.path.startsWith("evidence/licenses/"), "FFmpeg license evidence path must be below evidence/licenses/");
+    const path = raw.path.slice("evidence/licenses/".length);
+    expect(isSafeBoxRelativePath(path) && raw.path === `evidence/licenses/${path}`, `FFmpeg license evidence contains unsafe or non-normalized path ${raw.path}`);
+    expect(!entries.has(path), `FFmpeg license evidence contains duplicate path ${path}`);
+    expect(Number.isInteger(raw.size_bytes) && raw.size_bytes > 0, `FFmpeg license evidence size is invalid for ${path}`);
+    expect(/^[a-f0-9]{64}$/.test(raw.sha256), `FFmpeg license evidence SHA-256 is invalid for ${path}`);
+    expect(raw.mode === "0644", `FFmpeg license evidence mode must be 0644 for ${path}`);
+    entries.set(path, raw as LicenseEntry);
+  }
+  expect(entries.size === declaredPaths.size && [...declaredPaths].every((path) => entries.has(path)), "FFmpeg license evidence must exactly match the source-lock license paths");
+  return entries;
+}
+
+function verifyExactLicensePayload(evidenceRoot: string, sourceBundlePath: string, expected: Map<string, LicenseEntry>): void {
+  const unpack = nodeFs.mkdtempSync(join(tmpdir(), "koubo-box-license-source-"));
+  try {
+    const listing = run("tar", ["-tJf", sourceBundlePath], root).split(/\r?\n/).filter(Boolean);
+    expect(listing.length > 0 && listing.every(isSafeArchiveEntry), "FFmpeg source bundle contains an unsafe path");
+    expect(new Set(listing).size === listing.length, "FFmpeg source bundle contains duplicate paths");
+    const verbose = run("tar", ["-tvJf", sourceBundlePath], root).split(/\r?\n/).filter(Boolean);
+    expect(verbose.length === listing.length && verbose.every((line) => line.startsWith("-") || line.startsWith("d")), "FFmpeg source bundle may contain only regular files and directories");
+    run("tar", ["-xJf", sourceBundlePath, "-C", unpack], root);
+    const bundleRoot = singleDir(unpack, "koubo-clip-ffmpeg-sources-");
+    const runtimeLicenses = join(evidenceRoot, "licenses");
+    const sourceLicenses = join(bundleRoot, "licenses");
+    verifyLicenseDirectory(runtimeLicenses, expected, "CLI runtime license payload");
+    verifyLicenseDirectory(sourceLicenses, expected, "corresponding-source license payload");
+    verifyLicenseBytesMatch(runtimeLicenses, sourceLicenses, expected);
+  } finally {
+    nodeFs.rmSync(unpack, { recursive: true, force: true });
+  }
+}
+
+function verifyLicenseMutationFailures(runtimeLicenses: string, sourceBundlePath: string, expected: Map<string, LicenseEntry>): void {
+  const sourceUnpack = nodeFs.mkdtempSync(join(tmpdir(), "koubo-box-license-mutations-source-"));
+  try {
+    run("tar", ["-xJf", sourceBundlePath, "-C", sourceUnpack], root);
+    const sourceLicenses = join(singleDir(sourceUnpack, "koubo-clip-ffmpeg-sources-"), "licenses");
+    const firstPath = expected.keys().next().value as string | undefined;
+    expect(Boolean(firstPath), "license mutation tests require at least one license file");
+    const cases: Array<{ label: string; mutate(runtime: string, source: string): void }> = [
+      { label: "extra CLI license", mutate: (runtime) => nodeFs.writeFileSync(join(runtime, "unexpected-license.txt"), "unexpected\n") },
+      { label: "missing CLI license", mutate: (runtime) => nodeFs.rmSync(join(runtime, firstPath!)) },
+      { label: "tampered CLI license", mutate: (runtime) => appendFile(join(runtime, firstPath!), "\ntampered\n") },
+      { label: "extra source license", mutate: (_runtime, source) => nodeFs.writeFileSync(join(source, "unexpected-license.txt"), "unexpected\n") },
+      { label: "missing source license", mutate: (_runtime, source) => nodeFs.rmSync(join(source, firstPath!)) },
+      { label: "tampered source license", mutate: (_runtime, source) => appendFile(join(source, firstPath!), "\ntampered\n") },
+    ];
+    for (const testCase of cases) {
+      const caseRoot = nodeFs.mkdtempSync(join(tmpdir(), "koubo-box-license-mutation-"));
+      try {
+        const runtimeCopy = join(caseRoot, "runtime");
+        const sourceCopy = join(caseRoot, "source");
+        nodeFs.cpSync(runtimeLicenses, runtimeCopy, { recursive: true });
+        nodeFs.cpSync(sourceLicenses, sourceCopy, { recursive: true });
+        testCase.mutate(runtimeCopy, sourceCopy);
+        expectThrows(() => {
+          verifyLicenseDirectory(runtimeCopy, expected, "mutated CLI runtime license payload");
+          verifyLicenseDirectory(sourceCopy, expected, "mutated corresponding-source license payload");
+          verifyLicenseBytesMatch(runtimeCopy, sourceCopy, expected);
+        }, `license mutation was not rejected: ${testCase.label}`);
+      } finally {
+        nodeFs.rmSync(caseRoot, { recursive: true, force: true });
+      }
+    }
+  } finally {
+    nodeFs.rmSync(sourceUnpack, { recursive: true, force: true });
+  }
+}
+
+function verifyLicenseDirectory(directory: string, expected: Map<string, LicenseEntry>, label: string): void {
+  expect(nodeFs.existsSync(directory) && nodeFs.statSync(directory).isDirectory(), `${label} directory is missing`);
+  const files = walkFiles(directory);
+  expect(files.length === expected.size, `${label} has an extra or missing file`);
+  const actual = new Set<string>();
+  for (const file of files) {
+    const path = relative(directory, file).replaceAll("\\", "/");
+    expect(isSafeBoxRelativePath(path) && !actual.has(path), `${label} contains unsafe or duplicate path ${path}`);
+    actual.add(path);
+    const entry = expected.get(path);
+    expect(Boolean(entry), `${label} contains undeclared file ${path}`);
+    expect(nodeFs.statSync(file).size === entry!.size_bytes, `${label} size mismatch for ${path}`);
+    expect(sha256File(file) === entry!.sha256, `${label} SHA-256 mismatch for ${path}`);
+    expect((((nodeFs as any).statSync(file).mode as number) & 0o777) === 0o644, `${label} mode mismatch for ${path}`);
+  }
+  expect([...expected.keys()].every((path) => actual.has(path)), `${label} is missing a declared license file`);
+}
+
+function verifyLicenseBytesMatch(runtimeLicenses: string, sourceLicenses: string, expected: Map<string, LicenseEntry>): void {
+  for (const path of expected.keys()) {
+    expect(sha256File(join(runtimeLicenses, path)) === sha256File(join(sourceLicenses, path)), `CLI runtime and corresponding-source license bytes differ for ${path}`);
+  }
+}
+
+function expectThrows(action: () => void, message: string): void {
+  let threw = false;
+  try { action(); } catch { threw = true; }
+  expect(threw, message);
+}
+
+function isSafeArchiveEntry(path: string): boolean {
+  const normalized = path.endsWith("/") ? path.slice(0, -1) : path;
+  return normalized.length > 0 && isSafeBoxRelativePath(normalized);
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function verifyOnlySystemDynamicDependencies(binaryPath: string): void {
+  const output = run("otool", ["-L", binaryPath], root);
+  const dependencies = output.split(/\r?\n/).slice(1).map((line) => line.trim().split(" (")[0]).filter(Boolean);
+  expect(dependencies.length > 0, `otool did not report dynamic dependencies for ${binaryPath}`);
+  for (const dependency of dependencies) {
+    expect(dependency.startsWith("/usr/lib/") || dependency.startsWith("/System/Library/"), `FFmpeg runtime has a non-system dynamic dependency: ${dependency}`);
   }
 }
 
@@ -276,6 +489,13 @@ function verifyCliDescriptorStrict(descriptor: Json, cliTarballPath: string): vo
   expect(descriptor.artifacts[0].os === "macos" && descriptor.artifacts[0].arch === "aarch64", "CLI artifact target must be macos/aarch64");
   expect(descriptor.artifacts[0].executable === "bin/koubo-clip", "CLI artifact executable must be bin/koubo-clip");
   expect(descriptor.release_urls?.cli === `https://github.com/MarcusYuan/koubo-clip/releases/download/v${version}/${basename(cliTarballPath)}`, "CLI release_urls.cli must use the canonical GitHub release URL");
+  const sourceUrl = `https://github.com/MarcusYuan/koubo-clip/releases/download/v${version}/koubo-clip-ffmpeg-sources-${version}.tar.xz`;
+  expect(descriptor.release_urls?.ffmpeg_corresponding_source === sourceUrl, "CLI release_urls.ffmpeg_corresponding_source must use the canonical same-release URL");
+  expect(descriptor.runtime?.ffmpeg_source_bundle_url === sourceUrl, "CLI runtime FFmpeg source bundle URL mismatch");
+  expect(descriptor.runtime?.ffmpeg_source_bundle_size_bytes === nodeFs.statSync(ffmpegSourceBundle).size, "CLI runtime FFmpeg source bundle size mismatch");
+  for (const key of ["ffmpeg_sha256", "ffprobe_sha256", "ffmpeg_build_evidence_sha256", "ffmpeg_source_lock_sha256", "ffmpeg_source_bundle_sha256"]) {
+    expect(/^[a-f0-9]{64}$/.test(descriptor.runtime?.[key]), `CLI runtime.${key} must be a pure SHA-256 hex digest`);
+  }
   for (const key of ["path", "release_url", "entrypoint", "distribution_kind"]) {
     expect(!(key in descriptor.artifacts[0]), `CLI artifact must not include legacy key ${key}`);
   }

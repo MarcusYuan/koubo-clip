@@ -4,10 +4,10 @@
   "name": "Koubo Clip Skill",
   "description": "Agent workflow skill for Koubo Clip talking-head video cleanup and enrichment.",
   "version": "0.0.18",
-  "source_revision": "c799d5bf005564729dbc464169e5d91116386d03",
+  "source_revision": "b7f8f7e648220fd8227f9289c3de15d78ab54c58",
   "release_mode": "preview",
   "provenance": {
-    "source_revision": "c799d5bf005564729dbc464169e5d91116386d03",
+    "source_revision": "b7f8f7e648220fd8227f9289c3de15d78ab54c58",
     "release_mode": "preview",
     "worktree_dirty": true
   },
@@ -123,9 +123,9 @@
     "skill": "https://github.com/MarcusYuan/koubo-clip/releases/download/v0.0.18/koubo-clip-box-skill-0.0.18.tgz"
   },
   "delivery_identity": {
-    "cli_artifact_sha256": "a51e8b6ba8688c281344bb7e7066f46826dccbff291392ea6416bb4b15662539",
+    "cli_artifact_sha256": "4cc2dfb5ac3e4a38ac89bdf3abd0d93d025d66b17afc461ac8f127a9824a2cbd",
     "official_skill_digest": "444785a685cea3bbe5bcfe0feac71ff0057e7d59babc1174ae80447cd50f0e8a",
-    "delivery_digest": "c3b40c9ea42d242318353c899cf457014d5f33584e468610399bcc26aec88d2c",
+    "delivery_digest": "81982b42ca70dfe2ef786362eca195b534fa535e1622abde930dc2df61d06f45",
     "renderer_resources_digest": "63a0ab4a23a75d7c0a355c576a5cded50ba6d7ace9dd29729df296202ea9e3ef"
   }
 }

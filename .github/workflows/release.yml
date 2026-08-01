@@ -9,6 +9,10 @@ permissions:
   contents: write
   id-token: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -115,6 +119,11 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Build audited FFmpeg runtime and corresponding-source bundle
+        env:
+          KOUBO_CLIP_SOURCE_REVISION: ${{ github.sha }}
+        run: bun run build:box-ffmpeg-runtime
+
       - name: Prepare pinned Chrome Headless Shell
         run: |
           set -euo pipefail
@@ -168,6 +177,10 @@ jobs:
             dist/box/skill.box.json
             dist/box/koubo-clip-box-${{ needs.validate.outputs.version }}.metadata.json
             dist/box/ffmpeg-license-gate-${{ needs.validate.outputs.version }}.json
+            dist/box/koubo-clip-ffmpeg-sources-${{ needs.validate.outputs.version }}.tar.xz
+            dist/box/koubo-clip-ffmpeg-build-evidence-${{ needs.validate.outputs.version }}.json
+            dist/box/koubo-clip-ffmpeg-source-lock-${{ needs.validate.outputs.version }}.json
+            dist/box/koubo-clip-ffmpeg-build-recipe-${{ needs.validate.outputs.version }}.sh
 
   release:
     needs:
@@ -204,6 +217,119 @@ jobs:
           sudo apt-get install -y ffmpeg
 
       - run: bun install --frozen-lockfile
+
+      - name: Stage and verify immutable GitHub Release assets
+        id: github_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          NPM_TAG: ${{ needs.validate.outputs.npm_tag }}
+        run: |
+          set -euo pipefail
+
+          source_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/koubo-clip-ffmpeg-sources-${VERSION}.tar.xz"
+          notes=$(printf 'npm: koubo-clip@%s (%s)\n\nBox managed FFmpeg corresponding source: %s\n' "$VERSION" "$NPM_TAG" "$source_url")
+          assets=(
+            "dist/box/koubo-clip-ffmpeg-sources-${VERSION}.tar.xz"
+            "dist/box/koubo-clip-ffmpeg-source-lock-${VERSION}.json"
+            "dist/box/koubo-clip-ffmpeg-build-recipe-${VERSION}.sh"
+            "dist/box/koubo-clip-ffmpeg-build-evidence-${VERSION}.json"
+            "dist/box/ffmpeg-license-gate-${VERSION}.json"
+            "dist/koubo-clip-${VERSION}.tgz"
+            "dist/koubo-clip-${VERSION}.tgz.json"
+            "dist/koubo-clip-${VERSION}.tgz.acceptance.json"
+            "dist/box/koubo-clip-box-skill-${VERSION}.tgz"
+            "dist/box/cli-package.box.json"
+            "dist/box/skill.box.json"
+            "dist/box/koubo-clip-box-${VERSION}.metadata.json"
+            "dist/box/koubo-clip-box-cli-${VERSION}-macos-aarch64.tgz.acceptance.json"
+            "dist/box/koubo-clip-box-cli-${VERSION}-macos-aarch64.tgz"
+          )
+
+          for asset in "${assets[@]}"; do
+            test -f "$asset"
+          done
+
+          remote_tag_rows=$(git ls-remote --tags origin "refs/tags/${TAG}" "refs/tags/${TAG}^{}")
+          remote_tag_sha=$(awk -v ref="refs/tags/${TAG}^{}" '$2 == ref { print $1 }' <<< "$remote_tag_rows")
+          if [ -z "$remote_tag_sha" ]; then
+            remote_tag_sha=$(awk -v ref="refs/tags/${TAG}" '$2 == ref { print $1 }' <<< "$remote_tag_rows")
+          fi
+          if [ "$remote_tag_sha" != "$GITHUB_SHA" ]; then
+            echo "Remote tag ${TAG} resolves to ${remote_tag_sha:-missing}, expected ${GITHUB_SHA}." >&2
+            exit 1
+          fi
+
+          release_is_draft=false
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            release_is_draft=$(gh release view "$TAG" --json isDraft --jq '.isDraft')
+            release_is_prerelease=$(gh release view "$TAG" --json isPrerelease --jq '.isPrerelease')
+            actual_name=$(gh release view "$TAG" --json name --jq '.name')
+            actual_notes=$(gh release view "$TAG" --json body --jq '.body')
+            test "$actual_name" = "koubo-clip ${VERSION}"
+            test "$actual_notes" = "$notes"
+            test "$release_is_prerelease" = "$PRERELEASE"
+          else
+            create_args=(--draft --title "koubo-clip ${VERSION}" --notes "$notes" --verify-tag)
+            if [ "$PRERELEASE" = "true" ]; then
+              create_args+=(--prerelease)
+            fi
+            gh release create "$TAG" "${create_args[@]}"
+            release_is_draft=true
+          fi
+
+          verify_root="$RUNNER_TEMP/github-release-asset-verification"
+          asset_manifest="$RUNNER_TEMP/github-release-assets-${VERSION}.txt"
+          mkdir -p "$verify_root"
+          : > "$asset_manifest"
+          existing_assets=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          for asset in "${assets[@]}"; do
+            name=$(basename "$asset")
+            if grep -Fqx -- "$name" <<< "$existing_assets"; then
+              :
+            elif [ "$release_is_draft" = "true" ]; then
+              gh release upload "$TAG" "$asset"
+              existing_assets=$(printf '%s\n%s\n' "$existing_assets" "$name")
+            else
+              echo "Published release ${TAG} is missing immutable asset ${name}." >&2
+              exit 1
+            fi
+
+            expected_size=$(stat -c '%s' "$asset")
+            expected_sha256=$(sha256sum "$asset" | awk '{print $1}')
+            downloaded="$verify_root/$name"
+            for attempt in 1 2 3 4 5; do
+              rm -f "$downloaded"
+              if gh release download "$TAG" --pattern "$name" --dir "$verify_root" >/dev/null 2>&1; then
+                break
+              fi
+              if [ "$attempt" = 5 ]; then
+                echo "Unable to download ${name} for immutable-byte verification." >&2
+                exit 1
+              fi
+              sleep 2
+            done
+            actual_size=$(stat -c '%s' "$downloaded")
+            actual_sha256=$(sha256sum "$downloaded" | awk '{print $1}')
+            if [ "$actual_size" != "$expected_size" ] || [ "$actual_sha256" != "$expected_sha256" ]; then
+              echo "Existing release asset ${name} does not match the validated local bytes." >&2
+              echo "expected size=${expected_size} sha256=${expected_sha256}" >&2
+              echo "actual   size=${actual_size} sha256=${actual_sha256}" >&2
+              exit 1
+            fi
+            printf '%s %s %s\n' "$expected_sha256" "$expected_size" "$name" >> "$asset_manifest"
+          done
+
+          expected_count=${#assets[@]}
+          actual_count=$(gh release view "$TAG" --json assets --jq '.assets | length')
+          if [ "$actual_count" != "$expected_count" ]; then
+            echo "Release ${TAG} has ${actual_count} assets; expected exactly ${expected_count}." >&2
+            exit 1
+          fi
+
+          echo "was_draft=${release_is_draft}" >> "$GITHUB_OUTPUT"
 
       - id: npm_auth
         env:
@@ -267,7 +393,7 @@ jobs:
           if (canonical !== registry) throw new Error(`registry tarball digest mismatch: ${canonical} != ${registry}`);
           NODE
 
-      - name: Create GitHub Release
+      - name: Publish verified GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
@@ -275,25 +401,42 @@ jobs:
           PRERELEASE: ${{ needs.validate.outputs.prerelease }}
           NPM_TAG: ${{ needs.validate.outputs.npm_tag }}
         run: |
-          notes="npm: koubo-clip@${VERSION} (${NPM_TAG})"
-          assets=(
-            "dist/koubo-clip-${VERSION}.tgz"
-            "dist/koubo-clip-${VERSION}.tgz.json"
-            "dist/koubo-clip-${VERSION}.tgz.acceptance.json"
-            "dist/box/koubo-clip-box-cli-${VERSION}-macos-aarch64.tgz"
-            "dist/box/koubo-clip-box-cli-${VERSION}-macos-aarch64.tgz.acceptance.json"
-            "dist/box/koubo-clip-box-skill-${VERSION}.tgz"
-            "dist/box/cli-package.box.json"
-            "dist/box/skill.box.json"
-            "dist/box/koubo-clip-box-${VERSION}.metadata.json"
-            "dist/box/ffmpeg-license-gate-${VERSION}.json"
-          )
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${assets[@]}" --clobber
-          else
-            args=(--title "koubo-clip ${VERSION}" --notes "$notes" --verify-tag)
-            if [ "$PRERELEASE" = "true" ]; then
-              args+=(--prerelease)
-            fi
-            gh release create "$TAG" "${assets[@]}" "${args[@]}"
+          set -euo pipefail
+          verify_root="$RUNNER_TEMP/github-release-final-verification"
+          asset_manifest="$RUNNER_TEMP/github-release-assets-${VERSION}.txt"
+          source_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/koubo-clip-ffmpeg-sources-${VERSION}.tar.xz"
+          expected_notes=$(printf 'npm: koubo-clip@%s (%s)\n\nBox managed FFmpeg corresponding source: %s\n' "$VERSION" "$NPM_TAG" "$source_url")
+          mkdir -p "$verify_root"
+          remote_tag_rows=$(git ls-remote --tags origin "refs/tags/${TAG}" "refs/tags/${TAG}^{}")
+          remote_tag_sha=$(awk -v ref="refs/tags/${TAG}^{}" '$2 == ref { print $1 }' <<< "$remote_tag_rows")
+          if [ -z "$remote_tag_sha" ]; then
+            remote_tag_sha=$(awk -v ref="refs/tags/${TAG}" '$2 == ref { print $1 }' <<< "$remote_tag_rows")
           fi
+          if [ "$remote_tag_sha" != "$GITHUB_SHA" ]; then
+            echo "Remote tag ${TAG} changed before publication." >&2
+            exit 1
+          fi
+          while read -r expected_sha256 expected_size name; do
+            downloaded="$verify_root/$name"
+            rm -f "$downloaded"
+            gh release download "$TAG" --pattern "$name" --dir "$verify_root"
+            actual_size=$(stat -c '%s' "$downloaded")
+            actual_sha256=$(sha256sum "$downloaded" | awk '{print $1}')
+            if [ "$actual_size" != "$expected_size" ] || [ "$actual_sha256" != "$expected_sha256" ]; then
+              echo "Release asset ${name} changed after initial verification." >&2
+              exit 1
+            fi
+          done < "$asset_manifest"
+          expected_count=$(wc -l < "$asset_manifest" | tr -d '[:space:]')
+          actual_count=$(gh release view "$TAG" --json assets --jq '.assets | length')
+          if [ "$actual_count" != "$expected_count" ]; then
+            echo "Release ${TAG} asset set changed after initial verification." >&2
+            exit 1
+          fi
+          test "$(gh release view "$TAG" --json name --jq '.name')" = "koubo-clip ${VERSION}"
+          test "$(gh release view "$TAG" --json body --jq '.body')" = "$expected_notes"
+          test "$(gh release view "$TAG" --json isPrerelease --jq '.isPrerelease')" = "$PRERELEASE"
+          if [ "${{ steps.github_release.outputs.was_draft }}" = "true" ]; then
+            gh release edit "$TAG" --draft=false
+          fi
+          test "$(gh release view "$TAG" --json isDraft --jq '.isDraft')" = "false"

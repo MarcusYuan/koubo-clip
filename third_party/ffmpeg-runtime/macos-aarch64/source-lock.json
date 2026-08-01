@@ -1,0 +1,157 @@
+{
+  "contract_version": "1",
+  "delivery": {
+    "id": "koubo-clip",
+    "version": "0.0.18"
+  },
+  "target": {
+    "os": "macos",
+    "arch": "aarch64",
+    "minimum_deployment_target": "13.0"
+  },
+  "runtime": {
+    "ffmpeg_version": "6.1.1",
+    "distribution_license_profile": "GPL-enabled; nonfree disabled",
+    "required_configure_flags": [
+      "--enable-gpl",
+      "--disable-nonfree",
+      "--enable-libx264",
+      "--enable-libfreetype",
+      "--enable-libharfbuzz",
+      "--enable-static",
+      "--disable-shared"
+    ],
+    "forbidden_configure_flags": [
+      "--enable-nonfree"
+    ],
+    "required_capabilities": {
+      "filters": [
+        "drawtext"
+      ],
+      "encoders": [
+        "aac",
+        "libx264"
+      ]
+    }
+  },
+  "build_tools": {
+    "meson": "1.3.2",
+    "ninja": "1.11.1.1",
+    "compiler": "/usr/bin/clang",
+    "python": "/usr/bin/python3"
+  },
+  "sources": [
+    {
+      "id": "ffmpeg",
+      "kind": "source-archive",
+      "version": "6.1.1",
+      "archive": "ffmpeg-6.1.1.tar.xz",
+      "source_directory": "ffmpeg-6.1.1",
+      "url": "https://ffmpeg.org/releases/ffmpeg-6.1.1.tar.xz",
+      "sha256": "8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968",
+      "license": "GPL-2.0-or-later when built with --enable-gpl and libx264",
+      "license_files": [
+        "COPYING.GPLv2",
+        "COPYING.GPLv3",
+        "COPYING.LGPLv2.1",
+        "COPYING.LGPLv3",
+        "LICENSE.md"
+      ],
+      "patches": []
+    },
+    {
+      "id": "x264",
+      "kind": "source-archive",
+      "version": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55",
+      "archive": "x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz",
+      "source_directory": "x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55",
+      "url": "https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz",
+      "sha256": "cd71a7515b0e9a012e1ac9b1f8415bebcaf6fc97d4db32286642ac4c0fbe24f9",
+      "license": "GPL-2.0-or-later",
+      "license_files": [
+        "COPYING"
+      ],
+      "patches": []
+    },
+    {
+      "id": "freetype",
+      "kind": "source-archive",
+      "version": "2.13.2",
+      "archive": "freetype-2.13.2.tar.xz",
+      "source_directory": "freetype-2.13.2",
+      "url": "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.2.tar.xz",
+      "sha256": "12991c4e55c506dd7f9b765933e62fd2be2e06d421505d7950a132e4f1bb484d",
+      "license": "FTL or GPL-2.0-only",
+      "license_files": [
+        "LICENSE.TXT",
+        "docs/FTL.TXT",
+        "docs/GPLv2.TXT"
+      ],
+      "patches": []
+    },
+    {
+      "id": "harfbuzz",
+      "kind": "source-archive",
+      "version": "8.3.0",
+      "archive": "harfbuzz-8.3.0.tar.xz",
+      "source_directory": "harfbuzz-8.3.0",
+      "url": "https://github.com/harfbuzz/harfbuzz/releases/download/8.3.0/harfbuzz-8.3.0.tar.xz",
+      "sha256": "109501eaeb8bde3eadb25fab4164e993fbace29c3d775bcaa1c1e58e2f15f847",
+      "license": "Old-MIT",
+      "license_files": [
+        "COPYING"
+      ],
+      "patches": [
+        {
+          "path": "patches/harfbuzz-8.3.0-macos-sincosf.patch",
+          "sha256": "3ad820cfa06150c802424cdd2e147c6cb3bad0c87e8e7d219a2296d1b0a7230b",
+          "reason": "Avoid the macOS SDK plain sincosf false-positive by using the public sinf and cosf functions."
+        }
+      ]
+    },
+    {
+      "id": "pkgconf",
+      "kind": "source-archive",
+      "version": "2.1.1",
+      "archive": "pkgconf-2.1.1.tar.xz",
+      "source_directory": "pkgconf-2.1.1",
+      "url": "https://distfiles.ariadne.space/pkgconf/pkgconf-2.1.1.tar.xz",
+      "sha256": "3a224f2accf091b77a5781316e27b9ee3ba82c083cc2e539e08940b68a44fec5",
+      "license": "ISC",
+      "license_files": [
+        "COPYING"
+      ],
+      "patches": []
+    },
+    {
+      "id": "meson",
+      "kind": "python-wheel",
+      "role": "build-tool",
+      "version": "1.3.2",
+      "archive": "meson-1.3.2-py3-none-any.whl",
+      "source_directory": "meson-1.3.2-wheel",
+      "url": "https://files.pythonhosted.org/packages/39/7c/ff115bec047c5127567048db40818b83b47fd0d3bfcfd0d87630d44ed66f/meson-1.3.2-py3-none-any.whl",
+      "sha256": "0ba4a71fbc060c44721c7b674807598c5af9ea51335073cae7a3e9a95b375c89",
+      "license": "Apache-2.0",
+      "license_files": [
+        "meson-1.3.2.dist-info/COPYING"
+      ],
+      "patches": []
+    },
+    {
+      "id": "ninja",
+      "kind": "python-wheel",
+      "role": "build-tool",
+      "version": "1.11.1.1",
+      "archive": "ninja-1.11.1.1-py2.py3-none-macosx_10_9_universal2.macosx_10_9_x86_64.macosx_11_0_arm64.macosx_11_0_universal2.whl",
+      "source_directory": "ninja-1.11.1.1-wheel",
+      "url": "https://files.pythonhosted.org/packages/3d/6e/04ed11bb244039908f6f212cb5f3e97933e238655248e4ce307c1687ba1f/ninja-1.11.1.1-py2.py3-none-macosx_10_9_universal2.macosx_10_9_x86_64.macosx_11_0_arm64.macosx_11_0_universal2.whl",
+      "sha256": "376889c76d87b95b5719fdd61dd7db193aa7fd4432e5d52d2e44e4c497bdbbee",
+      "license": "Apache-2.0",
+      "license_files": [
+        "ninja-1.11.1.1.dist-info/LICENSE_Apache_20"
+      ],
+      "patches": []
+    }
+  ]
+}

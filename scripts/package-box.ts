@@ -64,6 +64,13 @@ try {
   writeJson(join(root, "cli-package.box.json"), cliDescriptor);
   writeJson(join(root, "skill.box.json"), skillDescriptor);
 
+  const ffmpegBuildEvidenceAsset = join(outputDir, `koubo-clip-ffmpeg-build-evidence-${version}.json`);
+  const ffmpegSourceLockAsset = join(outputDir, `koubo-clip-ffmpeg-source-lock-${version}.json`);
+  const ffmpegBuildRecipeAsset = join(outputDir, `koubo-clip-ffmpeg-build-recipe-${version}.sh`);
+  nodeFs.copyFileSync(inputs.ffmpegBuildEvidence, ffmpegBuildEvidenceAsset);
+  nodeFs.copyFileSync(inputs.ffmpegSourceLock, ffmpegSourceLockAsset);
+  nodeFs.copyFileSync(join(inputs.ffmpegEvidenceRoot, "build-box-ffmpeg-runtime.sh"), ffmpegBuildRecipeAsset);
+
   const metadata = {
     ok: true,
     version,
@@ -75,6 +82,10 @@ try {
     skill_package: artifactIdentity(skillTarball),
     cli_descriptor: artifactIdentity(join(outputDir, "cli-package.box.json")),
     skill_descriptor: artifactIdentity(join(outputDir, "skill.box.json")),
+    ffmpeg_build_evidence: artifactIdentity(ffmpegBuildEvidenceAsset),
+    ffmpeg_source_lock: artifactIdentity(ffmpegSourceLockAsset),
+    ffmpeg_build_recipe: artifactIdentity(ffmpegBuildRecipeAsset),
+    ffmpeg_corresponding_source: artifactIdentity(inputs.ffmpegSourceBundle),
   };
   writeJson(join(outputDir, `koubo-clip-box-${version}.metadata.json`), metadata);
   console.log(JSON.stringify(metadata));
@@ -88,7 +99,7 @@ function stageCliPackage(packageRoot: string, inputs: ReturnType<typeof resolveI
   nodeFs.mkdirSync(join(packageRoot, "runtime", "node_modules"), { recursive: true });
   nodeFs.mkdirSync(join(packageRoot, "runtime", "browser", "chrome-headless-shell", "mac_arm-131.0.6778.85"), { recursive: true });
   nodeFs.mkdirSync(join(packageRoot, "resources"), { recursive: true });
-  nodeFs.mkdirSync(join(packageRoot, "licenses", "ffmpeg-ffprobe-static"), { recursive: true });
+  nodeFs.mkdirSync(join(packageRoot, "licenses", "ffmpeg-runtime"), { recursive: true });
 
   const launcher = join(packageRoot, ".box-launcher.ts");
   nodeFs.writeFileSync(launcher, boxLauncherSource());
@@ -113,9 +124,21 @@ function stageCliPackage(packageRoot: string, inputs: ReturnType<typeof resolveI
   nodeFs.copyFileSync(inputs.ffmpeg, join(packageRoot, "runtime", "bin", "ffmpeg"));
   nodeFs.copyFileSync(inputs.ffprobe, join(packageRoot, "runtime", "bin", "ffprobe"));
   for (const file of ["bun", "ffmpeg", "ffprobe"]) chmod(join(packageRoot, "runtime", "bin", file), 0o755);
-  for (const file of ["LICENSE", "ffmpeg.README", "README.md"]) {
-    nodeFs.copyFileSync(join(root, "node_modules", "ffmpeg-ffprobe-static", file), join(packageRoot, "licenses", "ffmpeg-ffprobe-static", file));
-  }
+  nodeFs.cpSync(inputs.ffmpegEvidenceRoot, join(packageRoot, "licenses", "ffmpeg-runtime"), { recursive: true });
+  nodeFs.copyFileSync(join(root, "THIRD_PARTY_NOTICES.md"), join(packageRoot, "THIRD_PARTY_NOTICES.md"));
+  const ffmpegEvidence = readJson(inputs.ffmpegBuildEvidence);
+  writeJson(join(packageRoot, "licenses", "ffmpeg-runtime", "SOURCE_OFFER.json"), {
+    contract_version: "1",
+    id: "koubo-clip-ffmpeg-corresponding-source",
+    version,
+    source_revision: sourceRevision,
+    artifact: {
+      url: ffmpegEvidence.source_bundle.url,
+      size_bytes: ffmpegEvidence.source_bundle.size_bytes,
+      sha256: ffmpegEvidence.source_bundle.sha256,
+    },
+    notice: "This machine-readable offer identifies the corresponding-source asset for the packaged Box FFmpeg runtime. It is auditable engineering metadata, not a legal conclusion.",
+  });
 
   run("bun", [
     "build",
@@ -261,6 +284,7 @@ function writeInstalledRuntimeLock(packageRoot: string): void {
       || entry.path.startsWith("licenses/")
       || entry.path.startsWith("resources/hyperframes/")
       || entry.path === "package.json"
+      || entry.path === "THIRD_PARTY_NOTICES.md"
     ))
     .map((entry) => ({
       path: entry.path,
@@ -289,6 +313,7 @@ function runtimeRole(path: string): string {
   if (path.startsWith("runtime/node_modules/")) return "hyperframes-native-dependency";
   if (path.startsWith("resources/hyperframes/")) return "renderer-resource";
   if (path.startsWith("licenses/")) return "runtime-license";
+  if (path === "THIRD_PARTY_NOTICES.md") return "runtime-license-notice";
   return "metadata";
 }
 
@@ -371,6 +396,7 @@ function makeCliDescriptor(input: { cliRoot: string; cliTarball: string; cliMani
     },
     release_urls: {
       cli: `${repositoryReleaseBaseUrl()}/download/v${version}/${basename(input.cliTarball)}`,
+      ffmpeg_corresponding_source: String(readJson(input.inputs.ffmpegBuildEvidence).source_bundle.url),
     },
     unsupported_targets: unsupportedTargets(lock.unsupported_targets),
     runtime: {
@@ -382,6 +408,11 @@ function makeCliDescriptor(input: { cliRoot: string; cliTarball: string; cliMani
       bun_sha256: sha256File(input.inputs.bun),
       ffmpeg_sha256: sha256File(input.inputs.ffmpeg),
       ffprobe_sha256: sha256File(input.inputs.ffprobe),
+      ffmpeg_build_evidence_sha256: sha256File(input.inputs.ffmpegBuildEvidence),
+      ffmpeg_source_lock_sha256: sha256File(input.inputs.ffmpegSourceLock),
+      ffmpeg_source_bundle_sha256: sha256File(input.inputs.ffmpegSourceBundle),
+      ffmpeg_source_bundle_size_bytes: nodeFs.statSync(input.inputs.ffmpegSourceBundle).size,
+      ffmpeg_source_bundle_url: String(readJson(input.inputs.ffmpegBuildEvidence).source_bundle.url),
       browser_tree_sha256: input.inputs.browserTreeSha256,
     },
   };
@@ -447,13 +478,17 @@ function makeSkillDescriptor(input: { skillRoot: string; cliTarball: string; cli
 
 function resolveInputs(lockJson: Json) {
   const bunPath = process.env.KOUBO_BOX_BUN_PATH ?? realpath(process.execPath);
-  const ffmpegPath = join(root, "node_modules", "ffmpeg-ffprobe-static", "ffmpeg");
-  const ffprobePath = join(root, "node_modules", "ffmpeg-ffprobe-static", "ffprobe");
+  const ffmpegRuntimeRoot = resolve(process.env.KOUBO_BOX_FFMPEG_RUNTIME_ROOT ?? join(root, "dist", "box-runtime", "macos-aarch64"));
+  const ffmpegPath = join(ffmpegRuntimeRoot, "bin", "ffmpeg");
+  const ffprobePath = join(ffmpegRuntimeRoot, "bin", "ffprobe");
+  const ffmpegEvidenceRoot = join(ffmpegRuntimeRoot, "evidence");
+  const ffmpegBuildEvidence = join(ffmpegEvidenceRoot, "build-evidence.json");
+  const ffmpegSourceLock = join(ffmpegEvidenceRoot, "source-lock.json");
+  const ffmpegSourceBundle = resolve(process.env.KOUBO_BOX_FFMPEG_SOURCE_BUNDLE ?? join(root, "dist", "box", `koubo-clip-ffmpeg-sources-${version}.tar.xz`));
   const browserRoot = process.env.KOUBO_BOX_BROWSER_ROOT;
   if (!browserRoot) throw new Error("KOUBO_BOX_BROWSER_ROOT is required for Box packaging and must point to the pinned chrome-headless-shell tree");
   expectFileHash(bunPath, lockJson.inputs.bun.sha256, "Bun runtime");
-  expectFileHash(ffmpegPath, lockJson.inputs.ffmpeg.sha256, "ffmpeg runtime");
-  expectFileHash(ffprobePath, lockJson.inputs.ffprobe.sha256, "ffprobe runtime");
+  verifyBuiltFfmpegInput({ ffmpegRuntimeRoot, ffmpegPath, ffprobePath, ffmpegEvidenceRoot, ffmpegBuildEvidence, ffmpegSourceLock, ffmpegSourceBundle }, lockJson);
   const browserTree = computeDeliveryFileSetDigest({ root: browserRoot });
   const expectedBrowser = `sha256:${lockJson.inputs.chrome_headless_shell.tree_sha256}`;
   if (browserTree.digest !== expectedBrowser || browserTree.file_count !== lockJson.inputs.chrome_headless_shell.file_count || browserTree.byte_length !== lockJson.inputs.chrome_headless_shell.byte_length) {
@@ -463,9 +498,66 @@ function resolveInputs(lockJson: Json) {
     bun: bunPath,
     ffmpeg: ffmpegPath,
     ffprobe: ffprobePath,
+    ffmpegEvidenceRoot,
+    ffmpegBuildEvidence,
+    ffmpegSourceLock,
+    ffmpegSourceBundle,
     browserRoot,
     browserTreeSha256: lockJson.inputs.chrome_headless_shell.tree_sha256 as string,
   };
+}
+
+function verifyBuiltFfmpegInput(
+  input: {
+    ffmpegRuntimeRoot: string;
+    ffmpegPath: string;
+    ffprobePath: string;
+    ffmpegEvidenceRoot: string;
+    ffmpegBuildEvidence: string;
+    ffmpegSourceLock: string;
+    ffmpegSourceBundle: string;
+  },
+  lockJson: Json,
+): void {
+  for (const [path, label] of [
+    [input.ffmpegPath, "ffmpeg runtime"],
+    [input.ffprobePath, "ffprobe runtime"],
+    [input.ffmpegBuildEvidence, "FFmpeg build evidence"],
+    [input.ffmpegSourceLock, "FFmpeg source lock evidence"],
+    [input.ffmpegSourceBundle, "FFmpeg corresponding-source bundle"],
+  ] as const) {
+    if (!nodeFs.existsSync(path) || !nodeFs.statSync(path).isFile()) throw new Error(`${label} is missing: ${path}`);
+  }
+  assertNoSymlinks(input.ffmpegRuntimeRoot);
+  const evidence = readJson(input.ffmpegBuildEvidence);
+  if (evidence.contract_version !== "1" || evidence.target?.os !== target.os || evidence.target?.arch !== target.arch) {
+    throw new Error("FFmpeg build evidence target or contract version does not match the Box target");
+  }
+  const lockedSourcePath = resolve(root, String(lockJson.inputs?.ffmpeg_runtime?.source_lock ?? ""));
+  if (lockedSourcePath !== resolve(root, "third_party", "ffmpeg-runtime", "macos-aarch64", "source-lock.json")) {
+    throw new Error("box-runtime.lock.json must reference the canonical FFmpeg source lock");
+  }
+  expectFileHash(input.ffmpegSourceLock, sha256File(lockedSourcePath), "generated FFmpeg source lock evidence");
+  const binaries = new Map((evidence.binaries ?? []).map((entry: Json) => [entry.path, entry]));
+  for (const [path, relativePath, label] of [
+    [input.ffmpegPath, "bin/ffmpeg", "ffmpeg runtime"],
+    [input.ffprobePath, "bin/ffprobe", "ffprobe runtime"],
+  ] as const) {
+    const entry = binaries.get(relativePath) as Json | undefined;
+    if (!entry || entry.size_bytes !== nodeFs.statSync(path).size || entry.sha256 !== sha256File(path)) {
+      throw new Error(`${label} does not match build-evidence.json`);
+    }
+  }
+  if (evidence.source_bundle?.size_bytes !== nodeFs.statSync(input.ffmpegSourceBundle).size || evidence.source_bundle?.sha256 !== sha256File(input.ffmpegSourceBundle)) {
+    throw new Error("FFmpeg corresponding-source bundle does not match build-evidence.json");
+  }
+  if (evidence.source_bundle?.url !== ffmpegSourceBundleUrl()) {
+    throw new Error("FFmpeg build evidence must use the canonical same-release corresponding-source URL");
+  }
+}
+
+function ffmpegSourceBundleUrl(): string {
+  return `${repositoryReleaseBaseUrl()}/download/v${version}/koubo-clip-ffmpeg-sources-${version}.tar.xz`;
 }
 
 function archive(sourceDir: string, outputPath: string): string {
