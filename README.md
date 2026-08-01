@@ -214,6 +214,19 @@ bun run koubo-clip -- skills install --target codex --force
 
 The npm package includes `skills/koubo-clip` and HyperFrames sidecar resources. The public package name is `koubo-clip`.
 
+### Plugin Box delivery
+
+Plugin Box uses two independent artifacts: a managed CLI package and a Skill package. The CLI artifact excludes `skills/koubo-clip` and owns its Bun, FFmpeg/ffprobe, HyperFrames, browser runtime, resources, runtime lock, and delivery manifest; the Skill artifact lists every payload file with size/SHA-256 and binds to the exact CLI version and delivery digests. Existing npm/manual installs remain combined and continue to support `skills install`.
+
+Box health and offline acceptance use:
+
+```bash
+koubo-clip doctor --json
+koubo-clip test --json
+```
+
+Both commands emit the managed CLI contract v1 envelope. `test --json` runs a temporary local render-contract verify/bind/render/inspect smoke and does not call a cloud provider. See [docs/box-packaging.md](docs/box-packaging.md) for the package layout, locked runtime inputs, supported target, build, and verification commands.
+
 ## skills.sh
 
 The repository root includes `skills.sh.json` so skills.sh can place the public `koubo-clip` skill in the Video group after the GitHub repository is indexed. After indexing, it can also be installed with the skills.sh CLI:
@@ -234,6 +247,8 @@ Required:
 - `npx`, used to invoke the HyperFrames renderer when needed.
 - Optional network access for online ASR, music generation, and visual asset search.
 - Optional provider API keys or MCP configuration.
+
+These dependencies apply to npm and source installs. The current `darwin-arm64` Box CLI artifact carries and verifies its own managed runtime and does not rely on Bun, Node, npx, FFmpeg/ffprobe, HyperFrames, or the current working directory at execution time.
 
 Recommended macOS install with Homebrew:
 
@@ -344,6 +359,16 @@ bun run koubo-clip -- capabilities --json
 bun run koubo-clip -- project status koubo-clips/video --json
 ```
 
+For provider-neutral external ASR, prepare a compressed source-bound upload and import timed results before `project explore --asr external`:
+
+```bash
+koubo-clip project asr-prepare ./work --source-id src-001 --output asr-upload/src-001 --json
+koubo-clip project asr-import ./work --input provider-result.json --json
+koubo-clip project explore ./work --asr external
+```
+
+The default prepared-audio limit is 25 MiB. Text-only results, incomplete/unknown source IDs, invalid or overlapping timings, and source-boundary violations fail closed.
+
 The first half is generated directly by the CLI:
 
 ```bash
@@ -429,8 +454,8 @@ Common files in the project directory:
 
 ## Project Status
 
-- Use `koubo-clip --version` as the installed version source; the README does not hard-code it.
-- Current package status: published to npm with detached authoring and strict render-contract execution in the stable line.
+- Use `koubo-clip --version` as the installed version source. The current repository release target is `0.0.17`.
+- Current package status: the npm stable line remains compatible; 0.0.17 adds separate local Box CLI/Skill artifacts, managed health/self-test contracts, and provider-neutral external ASR handoff.
 - Current recommended development mode: use Bun from the source repository.
 - npm package: `koubo-clip`.
 - Visual assets, music, and some provider capabilities depend on network access, API keys, user assets, or host MCP handoff.
@@ -445,6 +470,8 @@ bun run typecheck
 bun run test
 bun run pack:dry
 bun run package:internal
+KOUBO_BOX_BROWSER_ROOT=/absolute/path/to/chrome-headless-shell-mac-arm64 bun run package:box
+bun run verify:package:box
 ```
 
 Run directly in development:

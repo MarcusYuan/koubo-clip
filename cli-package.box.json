@@ -1,0 +1,97 @@
+{
+  "manifest_version": "1",
+  "id": "koubo-clip",
+  "version": "0.0.17",
+  "publisher": "koubo-clip",
+  "managed_cli_contract_version": "1",
+  "machine_output": {
+    "format": "json",
+    "contract_version": "1",
+    "stdout": "single final JSON object for --json commands",
+    "stderr": "diagnostic logs only"
+  },
+  "artifacts": [
+    {
+      "os": "darwin",
+      "arch": "arm64",
+      "path": "dist/box/koubo-clip-box-cli-0.0.17-darwin-arm64.tgz",
+      "size": 250465786,
+      "sha256": "sha256:157e7752e271cdf2cbd9b8d56d745e1e4af617c503754148036bb72c217c9fc8",
+      "entrypoint": "bin/koubo-clip",
+      "distribution_kind": "box-cli",
+      "unsupported_targets": [
+        {
+          "os": "darwin",
+          "arch": "x64",
+          "status": "fail-closed",
+          "reason": "Box runtime inputs are not pinned for this target."
+        },
+        {
+          "os": "linux",
+          "arch": "x64",
+          "status": "fail-closed",
+          "reason": "Box runtime inputs are not pinned for this target."
+        },
+        {
+          "os": "linux",
+          "arch": "arm64",
+          "status": "fail-closed",
+          "reason": "Box runtime inputs are not pinned for this target."
+        },
+        {
+          "os": "win32",
+          "arch": "x64",
+          "status": "fail-closed",
+          "reason": "Box runtime inputs are not pinned for this target."
+        }
+      ]
+    }
+  ],
+  "health_check": {
+    "command": "bin/koubo-clip",
+    "args": [
+      "doctor",
+      "--json"
+    ],
+    "success_statuses": [
+      "healthy",
+      "degraded",
+      "needs_configuration"
+    ],
+    "failure": {
+      "exit_code": "non-zero",
+      "error_contract_version": "1"
+    }
+  },
+  "permissions": {
+    "network": "none during doctor/test/render",
+    "filesystem": [
+      "read packaged runtime/resources",
+      "read/write user-selected project and output directories"
+    ],
+    "processes": [
+      "packaged bun",
+      "packaged ffmpeg",
+      "packaged ffprobe",
+      "packaged hyperframes",
+      "packaged chrome-headless-shell"
+    ]
+  },
+  "data_policy": {
+    "source_media": "processed locally",
+    "secrets": "not bundled and not printed",
+    "telemetry": "none",
+    "skill_payload": "excluded from the Box CLI package"
+  },
+  "runtime": {
+    "lockfile": "runtime-lock.json",
+    "runtime_lock_digest": "sha256:428a9c28ee0ab5f45bcb649d4b6ebfbc5ac81c0b72984dc97e04ac3112c1ab0a",
+    "delivery_digest": "sha256:ce15501c336413559a72f3b1f147d9d8651c85c205f17b3444a365db46714a61",
+    "renderer_resources_digest": "sha256:51d07c4346916bba3cad591e0ad99c8adf04377bd4f8ee6c23e796a33da7e346",
+    "official_skill_digest": "sha256:444785a685cea3bbe5bcfe0feac71ff0057e7d59babc1174ae80447cd50f0e8a",
+    "bun_sha256": "sha256:1d77af7bfd811aebb7d37bec496a5eed14fe227ded3ab7866d2f39786e8107b6",
+    "ffmpeg_sha256": "sha256:9f865039102a1139c7057d7f21ddaacd106d602fa3af1f99b70f43d520439b8c",
+    "ffprobe_sha256": "sha256:05a26b32c32115785d48b01601e104712bbc6c2b1d363b9cf44c42232684e25e",
+    "browser_tree_sha256": "sha256:092c81c87981cc56e906e2b6af806f6213362f50544d7b88b046a3df9eea859a"
+  }
+}

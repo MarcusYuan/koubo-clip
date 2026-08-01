@@ -289,6 +289,9 @@ vendored 元素进入 renderer 前会经过轻量 adapter 分层。Adapter 从 r
 4. `delivery-manifest.json` 3.0 的 `artifact_contracts_digest` 绑定唯一当前 registry，`delivery_digest` 聚合 CLI、official Skill、renderer resources、runtime compatibility、artifact contracts、schema、capabilities 和 exact dependencies，作为跨 Hermes/LocalAgent 的完整交付身份；component digests 仍用于定位具体损坏面。
 5. 可选内部 tarball，包含当前平台的 `bin/koubo-clip` 二进制、`resources/hyperframes/` 和同一份 bundled skill。
 6. `skills.sh.json` 用于让 skills.sh 识别和展示仓库内的 `koubo-clip` skill。
+7. 可选 Plugin Box 交付由独立 `cli-package.box.json` 和 `skill.box.json` 描述。Box CLI 包拥有 executable、Bun、FFmpeg/ffprobe、HyperFrames runtime/resources 和浏览器运行时，但不包含 Skill；Box Skill 包逐文件绑定 payload，并通过 exact CLI version、official Skill digest 和 delivery digest 与 CLI 关联。
+
+Box CLI 使用 executable-owned root，只解析包内 `bin/`、`runtime/`、`resources/`、`runtime-lock.json` 和 `delivery-manifest.json`。它不从 cwd、PATH、npx 或用户偶然安装的软件选择 renderer/media runtime。源码侧 `box-runtime.lock.json` 固定可复现打包输入；安装态 `runtime-lock.json` 固定最终包文件。缺失配置与已落盘损坏必须由 `doctor --json` 分别报告为 `needs_configuration` 和 `degraded`，严格 smoke 只在 runtime healthy 时执行。
 
 正式发布包还必须包含 artifact contract registry、schemas/templates/examples，并让 delivery identity 绑定 registry/schema digests 和 official Skill digest。安装态验收从 canonical tarball 的空目录安装开始，在不访问源码/tests 的情况下读取 production proposal 3.0 合同、生成 2-4 个完整 options、通过 proposal validator，并继续验证 option fingerprint 到 edit plan/EDL 的绑定。
 

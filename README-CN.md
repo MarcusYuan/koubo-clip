@@ -214,6 +214,19 @@ bun run koubo-clip -- skills install --target codex --force
 
 npm 包会随包发布 `skills/koubo-clip` 和 HyperFrames sidecar resources。当前公开包名是 `koubo-clip`。
 
+### Plugin Box 交付
+
+Plugin Box 使用两个独立构件：受管 CLI 包与 Skill 包。CLI 构件不包含 `skills/koubo-clip`，并自行携带 Bun、FFmpeg/ffprobe、HyperFrames、browser runtime、resources、runtime lock 和 delivery manifest；Skill 构件逐文件列出 size/SHA-256，并绑定精确 CLI 版本与 delivery digests。现有 npm/manual 安装继续采用联合包并保留 `skills install`。
+
+Box 健康检查与离线验收入口：
+
+```bash
+koubo-clip doctor --json
+koubo-clip test --json
+```
+
+两个命令都输出 managed CLI contract v1 envelope。`test --json` 会在临时目录执行本地 render-contract verify/bind/render/inspect smoke，不调用云 provider。包布局、受管运行时输入、当前支持平台、构建与验证命令见 [docs/box-packaging.md](docs/box-packaging.md)。
+
 ## skills.sh
 
 仓库根目录提供 `skills.sh.json`，用于让 skills.sh 在索引公开 GitHub 仓库时把 `koubo-clip` skill 放到 Video 分组。仓库被索引后，也可以通过 skills.sh CLI 安装：
@@ -234,6 +247,8 @@ npx skills add <owner>/<repo>
 - `npx`，用于按需调用 HyperFrames renderer。
 - 可选网络访问，用于在线 ASR、音乐生成、视觉素材搜索。
 - 可选 provider API key 或 MCP 配置。
+
+这些依赖适用于 npm 和源码安装。当前 `darwin-arm64` Box CLI 构件自带并校验受管运行时，执行时不依赖用户安装 Bun、Node、npx、FFmpeg/ffprobe、HyperFrames，也不依赖当前工作目录。
 
 macOS 推荐用 Homebrew：
 
@@ -344,6 +359,16 @@ bun run koubo-clip -- capabilities --json
 bun run koubo-clip -- project status koubo-clips/video --json
 ```
 
+使用 provider-neutral 外部 ASR 时，先生成与 source 绑定的压缩上传音频，再导入有时间轴的结果，最后执行 `project explore --asr external`：
+
+```bash
+koubo-clip project asr-prepare ./work --source-id src-001 --output asr-upload/src-001 --json
+koubo-clip project asr-import ./work --input provider-result.json --json
+koubo-clip project explore ./work --asr external
+```
+
+准备音频默认上限为 25 MiB。Text-only、缺失/未知 source ID、无效或重叠 timing、越过 source 边界都会 fail closed。
+
 前半段由 CLI 直接生成分析和 review 包：
 
 ```bash
@@ -429,8 +454,8 @@ bun run koubo-clip -- project focus-review <project>
 
 ## 项目状态
 
-- 当前安装版本以 `koubo-clip --version` 为准，不在 README 硬编码。
-- 当前包状态：已发布到 npm，稳定发布线包含 detached authoring 和 strict render-contract execution。
+- 当前安装版本以 `koubo-clip --version` 为准；当前仓库发布目标为 `0.0.17`。
+- 当前包状态：npm 稳定发布线保持兼容；0.0.17 新增分离的本地 Box CLI/Skill 构件、managed health/self-test 合同和 provider-neutral 外部 ASR handoff。
 - 当前推荐开发方式：源码仓库中使用 Bun。
 - npm package：`koubo-clip`。
 - 视觉素材、音乐和部分 provider 能力依赖网络、API key、用户资产或 host MCP handoff。
@@ -445,6 +470,8 @@ bun run typecheck
 bun run test
 bun run pack:dry
 bun run package:internal
+KOUBO_BOX_BROWSER_ROOT=/absolute/path/to/chrome-headless-shell-mac-arm64 bun run package:box
+bun run verify:package:box
 ```
 
 开发态直接运行：

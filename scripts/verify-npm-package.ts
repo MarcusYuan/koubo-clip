@@ -12,7 +12,7 @@ try {
   const installRoot = join(root, "install");
   mkdirSync(installRoot, { recursive: true });
   run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--no-package-lock", "--no-save", "--prefix", installRoot, tarball], root, {
-    npm_config_cache: join(root, "npm-cache"),
+    npm_config_cache: process.env.KOUBO_NPM_ACCEPTANCE_CACHE ?? join(root, "npm-cache"),
   });
   const packageRoot = join(installRoot, "node_modules", "koubo-clip");
   const cli = join(packageRoot, "bin", "koubo-clip");
@@ -36,6 +36,15 @@ try {
   expect(capabilities.artifact_schema_versions["render-contract-inspection.json"] === "2.0", "installed CLI did not expose strict inspection 2.0");
   expect(capabilities.render_contract?.schema_version === "2.0", "installed render contract capability is not version 2.0");
   expect(capabilities.capability_ids.includes("caption_layout.safe_area.v1"), "installed CLI is missing caption safe-area capability");
+  expect(capabilities.capability_ids.includes("external_asr.handoff.v1"), "installed CLI is missing external ASR handoff capability");
+  expect(capabilities.capability_ids.includes("box_managed_cli.v1"), "installed CLI is missing managed CLI capability");
+  expect(capabilities.features.external_asr_handoff === true, "installed CLI does not advertise external ASR handoff");
+  const doctor = runCliJson(cli, ["doctor", "--json"], packageRoot);
+  expect(doctor.contract_version === "1" && doctor.ok === true, "installed doctor --json does not use managed CLI contract v1");
+  expect(doctor.result?.id === "koubo-clip" && doctor.result?.version === version, "installed doctor identity does not match package version");
+  expect(["healthy", "degraded", "needs_configuration"].includes(doctor.result?.status), "installed doctor status is outside the managed CLI contract");
+  const selfTest = runCliJson(cli, ["test", "--json"], packageRoot);
+  expect(selfTest.contract_version === "1" && selfTest.ok === true && selfTest.result?.status === "passed", "installed test --json did not pass the local render-contract smoke");
   for (const artifactId of ["render-contract", "source-binding", "render-contract-result", "render-contract-inspection"]) {
     const contract = runCliJson(cli, ["artifact", "contract", artifactId, "--json"], packageRoot).data;
     expect(contract.schema_version === "2.0", `installed ${artifactId} contract is not schema 2.0`);
@@ -71,6 +80,16 @@ try {
   makeVideo(source);
   const identityProject = join(root, "identity-project");
   expect(runCliJson(cli, ["project", "create", source, "--project", identityProject], packageRoot).ok === true, "installed CLI could not derive a portable source identity");
+  const preparedAsr = runCliJson(cli, ["project", "asr-prepare", identityProject, "--output", "external-asr-upload", "--json"], packageRoot);
+  expect(preparedAsr.ok === true && preparedAsr.data?.source_id === "src-001", "installed CLI could not prepare provider-neutral external ASR audio");
+  expect(preparedAsr.data?.size_bytes > 0 && preparedAsr.data?.size_bytes <= 25 * 1024 * 1024, "installed external ASR audio violates the declared upload limit");
+  writeFileSync(join(identityProject, "external-asr-result.json"), `${JSON.stringify({
+    contract_version: "1",
+    provider: "package-acceptance",
+    results: [{ source_id: "src-001", timing_granularity: "segment", segments: [{ start: 0.1, end: 0.9, text: "package external ASR acceptance" }] }],
+  })}\n`);
+  const importedAsr = runCliJson(cli, ["project", "asr-import", identityProject, "--input", "external-asr-result.json", "--json"], packageRoot);
+  expect(importedAsr.ok === true && importedAsr.data?.timing_granularity === "segment", "installed CLI could not import provider-neutral external ASR timings");
   const sourceManifestContract = runCliJson(cli, ["artifact", "contract", "source-manifest", "--json"], packageRoot).data;
   expect(sourceManifestContract.ownership === "host_authored", "installed source-manifest contract is not host-authored");
   expect(sourceManifestContract.role === "command_request", "installed source-manifest contract is not a command request");
@@ -305,7 +324,8 @@ function readJson(path: string): Json {
 function makeVideo(path: string): void {
   run("ffmpeg", [
     "-y", "-f", "lavfi", "-i", "testsrc=size=180x320:rate=30",
-    "-t", "1.2", "-pix_fmt", "yuv420p", path,
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=1.2",
+    "-t", "1.2", "-pix_fmt", "yuv420p", "-c:a", "aac", path,
   ], root);
 }
 

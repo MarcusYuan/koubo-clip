@@ -64,6 +64,7 @@ import {
 import { computeRendererResourcesDigest } from "./delivery-identity";
 import { verifyInstalledDelivery } from "./delivery-runtime";
 import { artifactReference, commitProjectStage, inputFingerprint, readProjectArtifactManifest, recordJsonArtifact, renderContractAuthoringKeys } from "./project-lineage";
+import { resolveManagedRuntimeTool } from "./managed-runtime";
 
 const fsRuntime = nodeFs as unknown as { realpathSync(path: string): string; lstatSync(path: string): { isSymbolicLink(): boolean }; renameSync(from: string, to: string): void };
 const CAPABILITY_IDS = [
@@ -658,7 +659,7 @@ function extractInspectionFrames(outputPath: string, runDir: string, contractDig
   for (const request of requests) {
     const relativePath = join(relativeRoot, `${request.id}.jpg`);
     const target = resolveContainedOutput(runDir, relativePath);
-    const rendered = spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-ss", request.time.toFixed(6), "-i", outputPath, "-frames:v", "1", target], { encoding: "utf8" });
+    const rendered = spawnSync(resolveManagedRuntimeTool("ffmpeg"), ["-hide_banner", "-loglevel", "error", "-y", "-ss", request.time.toFixed(6), "-i", outputPath, "-frames:v", "1", target], { encoding: "utf8" });
     if (rendered.status === 0 && existsSync(target) && statSync(target).isFile()) frames.push(relativePath.replaceAll("\\", "/"));
   }
   return { requested: requests.length, frames };

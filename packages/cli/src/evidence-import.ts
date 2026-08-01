@@ -4,6 +4,7 @@ import { readFileSync, statSync } from "node:fs";
 import * as nodeFs from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import * as nodePath from "node:path";
+import { resolveManagedRuntimeTool } from "./managed-runtime";
 
 export const EVIDENCE_MANIFEST_VERSION = "1.0" as const;
 
@@ -111,7 +112,7 @@ export function parseEvidenceManifest(value: unknown): EvidenceManifest {
 
 export function probeEvidenceJpeg(absolutePath: string): EvidenceProbeResult {
   const result = spawnSync(
-    "ffprobe",
+    resolveManagedRuntimeTool("ffprobe"),
     ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json", absolutePath],
     { encoding: "utf8" },
   );

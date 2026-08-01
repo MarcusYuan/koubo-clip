@@ -48,7 +48,7 @@ V0 只发布一个 skill：`koubo-clip`。只有当命令和 artifact 合同稳�
 
 CLI 不使用 skill。CLI 只读取 project artifacts 和随 npm package 或内部二进制包分发的 sidecar resources。HyperFrames 的 registry、HTML fragments、caption themes、字体、SFX、runtime 配置和示例资源属于 CLI resources，开发态位于 `packages/cli/vendor/hyperframes/`，发布包中随同 CLI 分发。
 
-公开分发主路径是 npm package `koubo-clip`，包含 CLI source、HyperFrames sidecar resources 和 `skills/koubo-clip/`。内部 tarball 仍可用于本地二进制交付，但不是首选公开分发方式。不把 `.env`、API key 或 MCP 配置写入任何发布包。
+公开分发主路径仍是 npm package `koubo-clip`，包含 CLI source、HyperFrames sidecar resources 和 `skills/koubo-clip/`。Plugin Box 是附加交付面：Box Managed CLI 包与 Box Skill 包必须独立生成，CLI 包不得包含用户可见 Skill payload；两个包以精确版本和 digest 关联。内部 tarball 仍可用于本地二进制交付，但不是首选公开分发方式。不把 `.env`、API key 或 MCP 配置写入任何发布包。
 
 ## 第一里程碑非目标
 
@@ -107,6 +107,15 @@ koubo-clip project explore <project> --asr external
 - `auto`: 默认。已有 `transcript.json` 时使用它；否则优先运行线上 Cloudflare Whisper adapter；缺配置时才退到本地 `whisper-cli`。
 - `off`: 要求已有 `transcript.json`；缺失则失败。
 - `external`: 跳过内置 ASR，期待 agent 或用户提供 `transcript.json`。
+
+Provider-neutral 外部 ASR 使用两个 project 命令形成窄边界：
+
+```bash
+koubo-clip project asr-prepare <project> --source-id <source-id> [--output <project-relative-dir>] [--max-bytes <bytes>] --json
+koubo-clip project asr-import <project> --input <project-relative-json> --json
+```
+
+`asr-prepare` 只读取 project 已物化且身份已验证的 source bytes，按 `source_id` 提取 mono 16 kHz AAC/M4A，并写入包含 size、SHA-256、duration 和 upload limit 的 manifest。默认上限为 25 MiB；压缩后仍超限时返回 `ASR_UPLOAD_LIMIT_EXCEEDED`，不得退回上传原始视频。`asr-import` 只接受 provider-neutral contract v1 的 segment/word timings，要求结果完整覆盖 project source IDs，校验有限非负 start/end、严格递增且不重叠、source duration 边界和未知字段，然后原子写入当前 `transcript.json`。Text-only 结果返回 `ASR_TIMING_REQUIRED`，不得伪装成可精确剪辑 transcript。
 
 默认 provider 是 `cloudflare-whisper`：
 
