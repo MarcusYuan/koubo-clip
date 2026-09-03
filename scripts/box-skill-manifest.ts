@@ -10,20 +10,34 @@ export type SkillManifestFile = {
   size: number;
 };
 
-export function parseSkillManifestV1(json: string): Json {
+export function parseSkillManifestV3(json: string): Json {
   const manifest = JSON.parse(json) as Json;
-  verifySkillManifestV1(manifest);
+  verifySkillManifestV3(manifest);
   return manifest;
 }
 
-export function verifySkillManifestV1(manifest: Json): void {
+export function verifySkillManifestV3(manifest: Json): void {
   expect(manifest && typeof manifest === "object" && !Array.isArray(manifest), "Skill manifest must be an object");
-  expect(manifest.manifest_version === "1", "Skill manifest_version must be 1");
+  expect(manifest.manifest_version === "3", "Skill manifest_version must be 3");
+  expect(manifest.managed_cli_entry_contract === "box-home-bin.v1", "Skill manifest v3 must use managed_cli_entry_contract=box-home-bin.v1");
   expect(typeof manifest.id === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(manifest.id), "Skill id is invalid");
   expect(typeof manifest.version === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.version), "Skill version must be SemVer");
   expect(manifest.entrypoint === "SKILL.md", "Skill entrypoint must be SKILL.md");
+  verifyPresentation(manifest.presentation);
   verifySkillManifestFiles(manifest.files);
   verifyCliDependencies(manifest.cli_dependencies);
+}
+
+function verifyPresentation(value: unknown): void {
+  expect(value && typeof value === "object" && !Array.isArray(value), "Skill presentation is required");
+  const presentation = value as Json;
+  expect(presentation.default_locale === "en", "Skill presentation.default_locale must be en");
+  expect(presentation.localizations && typeof presentation.localizations === "object", "Skill presentation.localizations is required");
+  for (const locale of ["en", "zh-CN"]) {
+    const localized = presentation.localizations[locale];
+    expect(localized && typeof localized.display_name === "string" && localized.display_name.length > 0, `Skill presentation ${locale} display_name is required`);
+    expect(typeof localized.short_description === "string" && localized.short_description.length > 0, `Skill presentation ${locale} short_description is required`);
+  }
 }
 
 export function verifySkillManifestFiles(files: unknown): asserts files is SkillManifestFile[] {
