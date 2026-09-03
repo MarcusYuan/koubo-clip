@@ -2,7 +2,7 @@
   "contract_version": "1",
   "delivery": {
     "id": "koubo-clip",
-    "version": "0.0.19"
+    "version": "0.0.20"
   },
   "target": {
     "os": "macos",

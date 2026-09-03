@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import * as nodeFs from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { verifySkillManifestV1, verifySkillPayloadDirectory } from "./box-skill-manifest";
+import { verifySkillManifestV3, verifySkillPayloadDirectory } from "./box-skill-manifest";
 
 type Json = Record<string, any>;
 type LicenseEntry = { path: string; size_bytes: number; sha256: string; mode: "0644" };
@@ -33,6 +33,8 @@ try {
   const arbitraryCwd = join(tmp, "arbitrary-cwd");
   nodeFs.mkdirSync(arbitraryCwd, { recursive: true });
 
+  expect(nodeFs.existsSync(join(cliRoot, "cli-package.box.json")), "Box CLI package is missing root cli-package.box.json");
+  expect(JSON.stringify(readJson(join(cliRoot, "cli-package.box.json"))) === JSON.stringify(cliDescriptor), "packaged cli-package.box.json must match the external descriptor");
   expect(!nodeFs.existsSync(join(cliRoot, "skills", "koubo-clip")), "Box CLI package contains the Skill payload");
   verifyNoCliSkillPayload(cliRoot);
   expect(nodeFs.existsSync(cli), "Box CLI package is missing bin/koubo-clip");
@@ -51,9 +53,8 @@ try {
   verifyRuntimeLock(cliRoot);
   verifyFfmpegRuntimeEvidence(cliRoot, cliDescriptor, ffmpegSourceBundle);
   verifyNoBareManagedToolSpawns();
-  verifyPackageFiles(cliRoot, cliDescriptor.files, "cli-package.box.json");
+  verifyPackageFiles(cliRoot, cliDescriptor.files, "cli-package.box.json", ["cli-package.box.json"]);
   verifySkillDescriptor(skillRoot, skillDescriptor);
-  verifyLinkedIdentity(cliDescriptor, skillDescriptor);
 
   const versionOutput = runCli(cli, ["--version"], arbitraryCwd).stdout.trim();
   expect(versionOutput === version, `Box CLI --version mismatch: ${versionOutput}`);
@@ -125,11 +126,11 @@ function verifyRuntimeLock(cliRoot: string): void {
 function verifyFfmpegRuntimeEvidence(cliRoot: string, descriptor: Json, sourceBundlePath: string): void {
   const evidenceRoot = join(cliRoot, "licenses", "ffmpeg-runtime");
   const evidence = readJson(join(evidenceRoot, "build-evidence.json"));
+  const sourceOffer = readJson(join(evidenceRoot, "SOURCE_OFFER.json"));
   expect(evidence.contract_version === "1", "FFmpeg build evidence contract_version must be 1");
   expect(evidence.target?.os === "macos" && evidence.target?.arch === "aarch64", "FFmpeg build evidence target mismatch");
-  const expectedEvidenceRevision = descriptor.provenance?.worktree_dirty === true ? `${descriptor.source_revision}-dirty` : descriptor.source_revision;
-  expect(evidence.source_revision === expectedEvidenceRevision, "FFmpeg build evidence source_revision must match the Box descriptor provenance");
-  expect(evidence.git_dirty === (descriptor.provenance?.worktree_dirty === true), "FFmpeg build evidence dirty state must match the Box descriptor provenance");
+  const descriptorRevision = descriptor.artifact_generation?.source_revision;
+  expect(evidence.source_revision === descriptorRevision || evidence.source_revision === `${descriptorRevision}-dirty`, "FFmpeg build evidence source_revision must match the Box descriptor provenance");
   expect(Array.isArray(evidence.build?.configure_args) && evidence.build.configure_args.length > 0, "FFmpeg build evidence must record configure arguments");
   const configure = evidence.build.configure_args.join(" ");
   for (const flag of ["--enable-gpl", "--enable-libx264", "--enable-libfreetype", "--enable-libharfbuzz"]) {
@@ -159,8 +160,8 @@ function verifyFfmpegRuntimeEvidence(cliRoot: string, descriptor: Json, sourceBu
     verifyOnlySystemDynamicDependencies(path);
   }
   const ffmpegPath = join(cliRoot, "runtime", "bin", "ffmpeg");
-  expect(descriptor.runtime?.ffmpeg_sha256 === sha256File(ffmpegPath), "CLI descriptor ffmpeg digest does not match the packaged binary");
-  expect(descriptor.runtime?.ffprobe_sha256 === sha256File(join(cliRoot, "runtime", "bin", "ffprobe")), "CLI descriptor ffprobe digest does not match the packaged binary");
+  expect(runtimeLockEntry(cliRoot, "runtime/bin/ffmpeg")?.sha256 === sha256File(ffmpegPath), "runtime lock ffmpeg digest does not match the packaged binary");
+  expect(runtimeLockEntry(cliRoot, "runtime/bin/ffprobe")?.sha256 === sha256File(join(cliRoot, "runtime", "bin", "ffprobe")), "runtime lock ffprobe digest does not match the packaged binary");
   const versionOutput = run(ffmpegPath, ["-version"], cliRoot);
   for (const flag of ["--enable-gpl", "--disable-nonfree", "--enable-libx264", "--enable-libfreetype", "--enable-libharfbuzz"]) {
     expect(versionOutput.includes(flag), `packaged ffmpeg is missing ${flag}`);
@@ -174,16 +175,12 @@ function verifyFfmpegRuntimeEvidence(cliRoot: string, descriptor: Json, sourceBu
   expect(nodeFs.existsSync(sourceBundlePath), `FFmpeg corresponding-source bundle is missing: ${sourceBundlePath}`);
   expect(evidence.source_bundle?.size_bytes === nodeFs.statSync(sourceBundlePath).size, "FFmpeg source bundle size does not match build evidence");
   expect(evidence.source_bundle?.sha256 === sha256File(sourceBundlePath), "FFmpeg source bundle digest does not match build evidence");
-  expect(descriptor.runtime?.ffmpeg_source_bundle_sha256 === evidence.source_bundle.sha256, "CLI descriptor does not bind the FFmpeg source bundle digest");
-  expect(descriptor.runtime?.ffmpeg_build_evidence_sha256 === sha256File(join(evidenceRoot, "build-evidence.json")), "CLI descriptor does not bind FFmpeg build evidence");
-  expect(descriptor.runtime?.ffmpeg_source_lock_sha256 === sha256File(join(evidenceRoot, "source-lock.json")), "CLI descriptor does not bind the FFmpeg source lock");
+  expect(sourceOffer.artifact?.sha256 === evidence.source_bundle.sha256, "source offer does not bind the FFmpeg source bundle digest");
   const canonicalSourceUrl = `https://github.com/MarcusYuan/koubo-clip/releases/download/v${version}/koubo-clip-ffmpeg-sources-${version}.tar.xz`;
   expect(evidence.source_bundle?.url === canonicalSourceUrl, "FFmpeg build evidence does not identify the canonical same-release corresponding-source URL");
-  expect(descriptor.release_urls?.ffmpeg_corresponding_source === canonicalSourceUrl, "CLI descriptor does not identify the canonical same-release corresponding-source URL");
-  expect(descriptor.runtime?.ffmpeg_source_bundle_url === canonicalSourceUrl, "CLI runtime identity does not bind the corresponding-source URL");
-  expect(descriptor.runtime?.ffmpeg_source_bundle_size_bytes === evidence.source_bundle.size_bytes, "CLI runtime identity does not bind the corresponding-source size");
-  const sourceOffer = readJson(join(evidenceRoot, "SOURCE_OFFER.json"));
-  expect(sourceOffer.contract_version === "1" && sourceOffer.version === version && sourceOffer.source_revision === descriptor.source_revision, "FFmpeg source offer delivery identity mismatch");
+  expect(sourceOffer.artifact?.url === canonicalSourceUrl, "source offer does not bind the corresponding-source URL");
+  expect(sourceOffer.artifact?.size_bytes === evidence.source_bundle.size_bytes, "source offer does not bind the corresponding-source size");
+  expect(sourceOffer.contract_version === "1" && sourceOffer.version === version && sourceOffer.source_revision === descriptorRevision, "FFmpeg source offer delivery identity mismatch");
   expect(canonicalJson(sourceOffer.artifact) === canonicalJson({ url: canonicalSourceUrl, size_bytes: evidence.source_bundle.size_bytes, sha256: evidence.source_bundle.sha256 }), "FFmpeg source offer does not bind the exact corresponding-source asset");
   const licenses = licenseEntriesFromEvidence(evidence, readJson(join(evidenceRoot, "source-lock.json")));
   verifyExactLicensePayload(evidenceRoot, sourceBundlePath, licenses);
@@ -474,53 +471,42 @@ function verifySkillDescriptor(skillPackageRoot: string, descriptor: Json): void
 }
 
 function verifyCliDescriptorStrict(descriptor: Json, cliTarballPath: string): void {
-  expect(descriptor.manifest_version === "1", "CLI manifest_version must be 1");
+  expect(descriptor.manifest_version === "3", "CLI manifest_version must be 3");
   expect(descriptor.id === "koubo-clip", "CLI id must be koubo-clip");
   expect(typeof descriptor.name === "string" && descriptor.name.length > 0, "CLI name is required");
   expect(descriptor.version === version, "CLI version mismatch");
   expect(descriptor.publisher === "MarcusYuan", "CLI publisher must be MarcusYuan");
-  expect(/^[a-f0-9]{40}$/.test(descriptor.source_revision), "CLI source_revision must be exact 40-char lowercase commit SHA");
+  expect(descriptor.target?.os === "darwin" && descriptor.target?.arch === "arm64" && descriptor.target?.minimum_os_version === "14.0", "CLI target must be darwin/arm64 with minimum macOS 14.0");
+  expect(descriptor.executable === "bin/koubo-clip", "CLI executable must be bin/koubo-clip");
+  expect(descriptor.artifact_generation?.profile === "verified-upstream-runtime-bundle.v1", "CLI artifact generation profile mismatch");
+  expect(descriptor.artifact_generation?.source_revision && /^[a-f0-9]{40}$/.test(descriptor.artifact_generation.source_revision), "CLI artifact generation must bind an exact source revision");
+  expectPresentation(descriptor.presentation, "CLI presentation");
   expect(JSON.stringify(descriptor.machine_output) === JSON.stringify({ format: "json", encoding: "utf-8" }), "CLI machine_output shape mismatch");
   expect(JSON.stringify(descriptor.health_check) === JSON.stringify({ args: ["doctor", "--json"] }), "CLI health_check shape mismatch");
   expectPermissionShape(descriptor.permissions, "CLI permissions");
   expectDataPolicyShape(descriptor.data_policy, "CLI data_policy");
-  expect(Array.isArray(descriptor.artifacts) && descriptor.artifacts.length === 1, "CLI descriptor must have exactly one artifact");
-  expectExactKeys(descriptor.artifacts[0], ["os", "arch", "url", "size_bytes", "sha256", "executable"], "CLI artifact");
-  expectArtifact(descriptor.artifacts[0], cliTarballPath, "Box CLI descriptor artifact");
-  expect(descriptor.artifacts[0].os === "macos" && descriptor.artifacts[0].arch === "aarch64", "CLI artifact target must be macos/aarch64");
-  expect(descriptor.artifacts[0].executable === "bin/koubo-clip", "CLI artifact executable must be bin/koubo-clip");
-  expect(descriptor.release_urls?.cli === `https://github.com/MarcusYuan/koubo-clip/releases/download/v${version}/${basename(cliTarballPath)}`, "CLI release_urls.cli must use the canonical GitHub release URL");
-  const sourceUrl = `https://github.com/MarcusYuan/koubo-clip/releases/download/v${version}/koubo-clip-ffmpeg-sources-${version}.tar.xz`;
-  expect(descriptor.release_urls?.ffmpeg_corresponding_source === sourceUrl, "CLI release_urls.ffmpeg_corresponding_source must use the canonical same-release URL");
-  expect(descriptor.runtime?.ffmpeg_source_bundle_url === sourceUrl, "CLI runtime FFmpeg source bundle URL mismatch");
-  expect(descriptor.runtime?.ffmpeg_source_bundle_size_bytes === nodeFs.statSync(ffmpegSourceBundle).size, "CLI runtime FFmpeg source bundle size mismatch");
-  for (const key of ["ffmpeg_sha256", "ffprobe_sha256", "ffmpeg_build_evidence_sha256", "ffmpeg_source_lock_sha256", "ffmpeg_source_bundle_sha256"]) {
-    expect(/^[a-f0-9]{64}$/.test(descriptor.runtime?.[key]), `CLI runtime.${key} must be a pure SHA-256 hex digest`);
-  }
-  for (const key of ["path", "release_url", "entrypoint", "distribution_kind"]) {
-    expect(!(key in descriptor.artifacts[0]), `CLI artifact must not include legacy key ${key}`);
-  }
+  expect(!("artifacts" in descriptor), "CLI manifest v3 must not embed outer artifact identity");
+  expect(nodeFs.statSync(cliTarballPath).size > 0, "Box CLI archive must not be empty");
 }
 
 function verifySkillDescriptorStrict(descriptor: Json): void {
-  verifySkillManifestV1(descriptor);
-  expect(descriptor.manifest_version === "1", "Skill manifest_version must be 1");
+  verifySkillManifestV3(descriptor);
+  expect(descriptor.manifest_version === "3", "Skill manifest_version must be 3");
   expect(descriptor.id === "koubo-clip", "Skill id must be koubo-clip");
   expect(typeof descriptor.name === "string" && descriptor.name.length > 0, "Skill name is required");
   expect(typeof descriptor.description === "string" && descriptor.description.length > 0, "Skill description is required");
   expect(descriptor.entrypoint === "SKILL.md", "Skill entrypoint must be SKILL.md");
   expect(descriptor.version === version, "Skill version mismatch");
-  expect(/^[a-f0-9]{40}$/.test(descriptor.source_revision), "Skill source_revision must be exact 40-char lowercase commit SHA");
+  expect(descriptor.managed_cli_entry_contract === "box-home-bin.v1", "Skill must use box-home-bin.v1");
+  expectPresentation(descriptor.presentation, "Skill presentation");
   expectPermissionShape(descriptor.permissions, "Skill permissions");
   expectDataPolicyShape(descriptor.data_policy, "Skill data_policy");
-  expect(descriptor.source?.kind === "github" && descriptor.source?.publisher === "MarcusYuan", "Skill source must identify the GitHub publisher");
-  expect(descriptor.release_urls?.skill === `https://github.com/MarcusYuan/koubo-clip/releases/download/v${version}/koubo-clip-box-skill-${version}.tgz`, "Skill release_urls.skill must use the canonical GitHub release URL");
+  expect(descriptor.source?.kind === "box_cloud" && descriptor.source?.publisher === "MarcusYuan", "Skill source must identify Box Cloud and the upstream publisher");
   const dependency = descriptor.cli_dependencies?.[0];
   expect(dependency?.id === "koubo-clip" && dependency.version === version && dependency.required === true, `Box Skill must require koubo-clip ${version}`);
   for (const key of ["artifacts", "root", "publisher"]) {
     expect(!(key in descriptor), `Skill descriptor must not include legacy key ${key}`);
   }
-  expect(!("skill_artifact_sha256" in (descriptor.delivery_identity ?? {})), "Skill descriptor must not include skill tarball hash and create a digest cycle");
   for (const command of dependency.commands) {
     expect(!command.startsWith("koubo-clip ") && !command.includes(" --"), `Skill dependency command must be a bare subcommand or command prefix: ${command}`);
   }
@@ -574,11 +560,17 @@ function verifyPackageFiles(packageRoot: string, descriptorFiles: Json[] | undef
   }
 }
 
-function verifyLinkedIdentity(cliDescriptor: Json, skillDescriptor: Json): void {
-  const cliSha = cliDescriptor.artifacts?.[0]?.sha256;
-  expect(skillDescriptor.delivery_identity?.cli_artifact_sha256 === cliSha, "Box Skill descriptor is not linked to the CLI artifact sha256");
-  expect(skillDescriptor.delivery_identity?.delivery_digest === cliDescriptor.runtime?.delivery_digest, "Box Skill descriptor delivery digest does not match the CLI descriptor");
-  expect(skillDescriptor.delivery_identity?.official_skill_digest === cliDescriptor.runtime?.official_skill_digest, "Box descriptors disagree on official Skill digest");
+function expectPresentation(value: Json | undefined, label: string): void {
+  expect(value?.default_locale === "en", `${label}.default_locale must be en`);
+  for (const locale of ["en", "zh-CN"]) {
+    expect(typeof value?.localizations?.[locale]?.display_name === "string" && value.localizations[locale].display_name.length > 0, `${label} is missing ${locale} display_name`);
+    expect(typeof value?.localizations?.[locale]?.short_description === "string" && value.localizations[locale].short_description.length > 0, `${label} is missing ${locale} short_description`);
+  }
+}
+
+function runtimeLockEntry(cliRoot: string, path: string): Json | undefined {
+  const lock = readJson(join(cliRoot, "runtime-lock.json"));
+  return Array.isArray(lock.files) ? lock.files.find((entry: Json) => entry.path === path) : undefined;
 }
 
 function isSafeBoxRelativePath(path: string): boolean {

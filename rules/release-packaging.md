@@ -132,7 +132,7 @@ npm publish --access public --registry=https://registry.npmjs.org/
 ## Plugin Box delivery
 
 - Box CLI 与 Box Skill 是独立构件；`cli-package.box.json` 不得引用 CLI tarball 内的用户可见 Skill payload，`skill.box.json` 必须列出全部 payload 文件的 size/SHA-256，并声明 exact CLI version 与主要命令。
-- 两个构件必须通过 CLI artifact digest、official Skill digest、delivery digest 和 renderer resources digest 关联；CLI 安装态验证不得要求 Skill 与 CLI 共址，npm/internal 的联合包验证不得因此放宽。
+- 两个构件必须由同一个 Plugin Box Cloud Release 绑定精确 Artifact identity；Skill descriptor 以精确 CLI version 声明依赖，CLI delivery manifest 继续绑定 official Skill、delivery 和 renderer resources digest。CLI 安装态验证不得要求 Skill 与 CLI 共址，npm/internal 的联合包验证不得因此放宽。
 - Box CLI 只从 package-owned root 定位 executable、HyperFrames runtime/resources、FFmpeg/ffprobe、browser、runtime lock 和 delivery manifest；禁止 cwd/PATH/npx/runtime network fallback。
 - `box-runtime.lock.json` 固定可复现打包输入；每个受支持 os/arch 必须有独立锁定输入和构建入口。未锁定平台必须 fail closed，不能生成声称可用的 artifact。
 - Box 安装态验收必须从任意 cwd 运行 `--version`、`delivery verify --json`、`doctor --json` 和 `test --json`，并验证 CLI/Skill 分离、逐文件 digest、runtime tamper 分类和真实 render/inspect smoke。

@@ -216,13 +216,13 @@ npm 包会随包发布 `skills/koubo-clip` 和 HyperFrames sidecar resources。�
 
 ### Plugin Box 交付
 
-Plugin Box 使用两个独立构件：受管 CLI 包与 Skill 包。CLI 构件不包含 `skills/koubo-clip`，并自行携带 Bun、FFmpeg/ffprobe、HyperFrames、browser runtime、resources、runtime lock 和 delivery manifest；Skill 构件逐文件列出 size/SHA-256，并绑定精确 CLI 版本与 delivery digests。现有 npm/manual 安装继续采用联合包并保留 `skills install`。
+Plugin Box 使用两个独立构件：受管 CLI 包与 Skill 包。CLI 构件不包含 `skills/koubo-clip`，并自行携带 Bun、FFmpeg/ffprobe、HyperFrames、browser runtime、resources、runtime lock 和 delivery manifest；Skill 构件逐文件列出 size/SHA-256，通过 `box-home-bin.v1` 依赖精确 CLI 版本，并由同一个 Cloud Release 与 CLI 关联。现有 npm/manual 安装继续采用联合包并保留 `skills install`。
 
 Box 健康检查与离线验收入口：
 
 ```bash
-koubo-clip doctor --json
-koubo-clip test --json
+"${PLUGIN_BOX_HOME:-$HOME/.box-plugin}/bin/koubo-clip" doctor --json
+"${PLUGIN_BOX_HOME:-$HOME/.box-plugin}/bin/koubo-clip" test --json
 ```
 
 两个命令都输出 managed CLI contract v1 envelope。`test --json` 会在临时目录执行本地 render-contract verify/bind/render/inspect smoke，不调用云 provider。包布局、受管运行时输入、当前支持平台、构建与验证命令见 [docs/box-packaging.md](docs/box-packaging.md)。
@@ -454,8 +454,8 @@ bun run koubo-clip -- project focus-review <project>
 
 ## 项目状态
 
-- 当前安装版本以 `koubo-clip --version` 为准；当前仓库发布目标为 `0.0.19`。
-- 当前包状态：npm 稳定发布线保持兼容；0.0.19 将 Box Skill v1 的逐文件合同修正为严格的 `{ path, sha256, size }`，并使用裸 CLI 子命令，同时保留独立、自包含的 Box CLI、managed health/self-test 合同和 provider-neutral 外部 ASR handoff。
+- 当前安装版本以 `koubo-clip --version` 为准；当前仓库发布目标为 `0.0.20`。
+- 当前包状态：npm 稳定发布线保持兼容；0.0.20 将 Plugin Box CLI 与 Skill descriptor 收敛到 v3，Skill 使用 `box-home-bin.v1`，并保留独立、自包含的 Box CLI、managed health/self-test 合同和 provider-neutral 外部 ASR handoff。
 - 当前推荐开发方式：源码仓库中使用 Bun。
 - npm package：`koubo-clip`。
 - 视觉素材、音乐和部分 provider 能力依赖网络、API key、用户资产或 host MCP handoff。

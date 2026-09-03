@@ -46,7 +46,7 @@ test("koubo-clip skill documents proposal confirmation gate", () => {
   expect(skill).toContain("The user confirms exactly once");
   expect(`${skill}\n${workflow}`).toContain("proposal_fingerprint");
   expect(`${skill}\n${workflow}`).toContain("option_selection_fingerprints");
-  expect(`${skill}\n${workflow}`).toContain("koubo-clip artifact contract production-proposal --json");
+  expect(`${skill}\n${workflow}`).toContain('"$KOUBO_CLIP" artifact contract production-proposal --json');
   expect(`${skill}\n${workflow}`).toContain("production-proposal.json` version `3.0`");
   expect(`${skill}\n${workflow}`).toContain("`contract_version:\"1.0\"`, `confirmed_option_id`, and the matching `proposal_selection_fingerprint`");
   expect(skill).toContain("Before user confirmation, do not write `edit-plan.json`, `focus-candidates.json`, any `focus-*` execution artifacts, `visual-request.json`, `music-request.json`, `asset-manifest.json`, or `enrichment-plan.json`");
@@ -115,7 +115,7 @@ test("koubo-clip skill uses CLI contracts instead of parallel schemas", () => {
   const planning = readFileSync("skills/koubo-clip/references/business-planning.md", "utf8");
   const body = `${skill}\n${workflow}\n${planning}`;
 
-  expect(body).toContain("koubo-clip artifact contract <artifact-id> --json");
+  expect(body).toContain('"$KOUBO_CLIP" artifact contract <artifact-id> --json');
   expect(body).toContain("profile + elements + audio");
   expect(body).toContain("caption_identity");
   expect(body).toContain("audio.music[]");
@@ -124,6 +124,17 @@ test("koubo-clip skill uses CLI contracts instead of parallel schemas", () => {
   expect(body.includes('"direction_id"')).toBe(false);
   expect(body.includes('"visual_asset_slots"')).toBe(false);
   expect(body.includes('"version": "1.1"')).toBe(false);
+});
+
+test("koubo-clip Box skill resolves only the Box-owned stable CLI entry", () => {
+  const skill = readFileSync("skills/koubo-clip/SKILL.md", "utf8");
+  const references = ["workflow.md", "business-planning.md", "media-selection.md"]
+    .map((name) => readFileSync(`skills/koubo-clip/references/${name}`, "utf8"))
+    .join("\n");
+
+  expect(skill).toContain('${PLUGIN_BOX_HOME:-$HOME/.box-plugin}/bin/koubo-clip');
+  expect(skill).toContain('Join-Path $boxHome "bin\\koubo-clip.exe"');
+  expect(/`koubo-clip\s+(?:--|[a-z])/.test(`${skill}\n${references}`)).toBe(false);
 });
 
 test("koubo-clip skill and READMEs use render-result and inspection as completion evidence", () => {
