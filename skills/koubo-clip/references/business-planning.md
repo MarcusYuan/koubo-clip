@@ -7,7 +7,7 @@ Use this reference after `project explore` and `project review`, before asset pr
 Before writing the proposal, run:
 
 ```bash
-koubo-clip artifact contract production-proposal --json
+"$KOUBO_CLIP" artifact contract production-proposal --json
 ```
 
 Fill the returned current template and obey its schema. Do not use this reference, repository source, TypeScript types, test fixtures, or repeated validator failures as a substitute for the contract. The current proposal version is `3.0`.
@@ -15,7 +15,7 @@ Fill the returned current template and obey its schema. Do not use this referenc
 Use the same rule for every later Agent/Host-authored artifact:
 
 ```bash
-koubo-clip artifact contract <artifact-id> --json
+"$KOUBO_CLIP" artifact contract <artifact-id> --json
 ```
 
 ## One Confirmation
@@ -73,7 +73,7 @@ Capabilities fulfill only the confirmed option's `asset_requirements`; they do n
 Before writing final visual/audio usage, run:
 
 ```bash
-koubo-clip artifact contract enrichment-plan --json
+"$KOUBO_CLIP" artifact contract enrichment-plan --json
 ```
 
 Write the unique current `enrichment-plan.json` version `2.0` as `profile + elements + audio`:
@@ -89,7 +89,7 @@ A simplified platform handoff may use the current standalone `asset-usage-plan.j
 
 ## Resume And Completion
 
-On resume, run `koubo-clip capabilities --json` and `koubo-clip project status <project> --json`. Do not scan filenames or infer state from Markdown, a storyboard, or an MP4. `artifact-manifest.json` is CLI-owned.
+On resume, run `"$KOUBO_CLIP" capabilities --json` and `"$KOUBO_CLIP" project status <project> --json`. Do not scan filenames or infer state from Markdown, a storyboard, or an MP4. `artifact-manifest.json` is CLI-owned.
 
 Render success requires current `render-result.json`; inspection success requires current `inspection.json` bound to that render fingerprint. `report.md` is a rebuildable human view.
 

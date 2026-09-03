@@ -11,17 +11,22 @@ This Skill is an authoring surface. A strict render-contract consumer must not l
 
 ## Command
 
-For normal use, prefer the installed binary:
+Resolve the Box-owned stable entry once. Do not invoke `koubo-clip` from the host `PATH`:
 
 ```bash
-koubo-clip ...
+KOUBO_CLIP="${PLUGIN_BOX_HOME:-$HOME/.box-plugin}/bin/koubo-clip"
+"$KOUBO_CLIP" --version
 ```
 
-Inside this repo before internal packaging, use:
+On Windows PowerShell use the matching Box-owned entry:
 
-```bash
-bun packages/cli/src/cli.ts ...
+```powershell
+$boxHome = if ($env:PLUGIN_BOX_HOME) { $env:PLUGIN_BOX_HOME } else { Join-Path $HOME ".box-plugin" }
+$kouboClip = Join-Path $boxHome "bin\koubo-clip.exe"
+& $kouboClip --version
 ```
+
+All command examples below use `$KOUBO_CLIP` for the fixed macOS/Linux entry. On Windows, invoke `$kouboClip` with `&` and the same arguments.
 
 ## Read References
 
@@ -38,32 +43,32 @@ Read only the references needed for the current stage:
 
 ## Workflow
 
-1. Run `koubo-clip --version` and `koubo-clip capabilities --json` before relying on a command or schema. Before writing any Agent/Host-authored artifact, run `koubo-clip artifact contract <artifact-id> --json`, use its current template/schema, and then read the relevant business reference. Never reconstruct a contract from this Skill, repository source, TypeScript types, or validator failures. Choose exactly one provider mode for the project:
+1. Run `"$KOUBO_CLIP" --version` and `"$KOUBO_CLIP" capabilities --json` before relying on a command or schema. Before writing any Agent/Host-authored artifact, run `"$KOUBO_CLIP" artifact contract <artifact-id> --json`, use its current template/schema, and then read the relevant business reference. Never reconstruct a contract from this Skill, repository source, TypeScript types, or validator failures. Choose exactly one provider mode for the project:
    - Use `platform` when the task comes from a host, TaskWorkspace, LocalAgent, workspace refs, asset ids, controlled local artifacts, or the "koubo-clip/口播快剪" employee capability.
    - Use `standalone` for ordinary local CLI use where the user's machine owns provider configuration.
    - If a project already has `project.json`, obey its `provider_execution_mode`; do not mix modes in one project.
-2. Use a three-way target check before creating anything: missing target -> create; existing valid project -> run `koubo-clip project status <project> --json` and resume; existing invalid target -> blocker. Never precreate the project target for `project create`, and do not delete recursively, overwrite, migrate, or retry as a `-v2`/`-v3` parallel project.
-   - When resuming an existing project, run `koubo-clip project status <project> --json` first. Follow its blockers, remediation, `next_commands`, source identity/materialization state, and last checkpoint; never infer state by scanning files.
+2. Use a three-way target check before creating anything: missing target -> create; existing valid project -> run `"$KOUBO_CLIP" project status <project> --json` and resume; existing invalid target -> blocker. Never precreate the project target for `project create`, and do not delete recursively, overwrite, migrate, or retry as a `-v2`/`-v3` parallel project.
+   - When resuming an existing project, run `"$KOUBO_CLIP" project status <project> --json` first. Follow its blockers, remediation, `next_commands`, source identity/materialization state, and last checkpoint; never infer state by scanning files.
    - For a new project:
      - With local media, run `project create <video...> --project <dir> --provider-mode <mode>`; the CLI writes portable identity and a separate verified materialization.
      - Without local media bytes, first fetch the source-manifest artifact contract, fill the host seed manifest outside the project target, then run `project create --source-manifest <host-seed-sources.json> --project <dir> --provider-mode <mode>`. The host seed `sources.json` is external input; the CLI-owned project `sources.json` lives inside the project after creation. Never invent `sources-v2.json` or `sources-v3.json`, and never handwrite `project.json`, internal `sources.json`, or artifact manifests. Treat `local_media_ref` as opaque metadata. Never resolve it, echo it, pass it to a filesystem tool, or copy media into the project.
 3. If the user or host already has a transcript, put it at `<project>/transcript.json`; otherwise:
-   - In `standalone` mode, run `koubo-clip project explore <project> --provider-mode standalone --asr auto`.
-   - In `platform` mode, use `project asr-prepare` to create a source-bound compressed upload artifact when the host needs bytes, have the provider return the provider-neutral timed-result contract inside the project, then run `project asr-import`. Only after the CLI atomically publishes `transcript.json` run `koubo-clip project explore <project> --provider-mode platform --asr external`. Never treat text-only output as precise timing or upload the original video when the prepared audio reports a size blocker.
+   - In `standalone` mode, run `"$KOUBO_CLIP" project explore <project> --provider-mode standalone --asr auto`.
+   - In `platform` mode, use `project asr-prepare` to create a source-bound compressed upload artifact when the host needs bytes, have the provider return the provider-neutral timed-result contract inside the project, then run `project asr-import`. Only after the CLI atomically publishes `transcript.json` run `"$KOUBO_CLIP" project explore <project> --provider-mode platform --asr external`. Never treat text-only output as precise timing or upload the original video when the prepared audio reports a size blocker.
 4. Before a production proposal, read `transcript.json`, `material-report.md`, and `sources.json`; select 1-20 useful, non-padding source-local observation points and write `source-frame-request.json`.
    - With materialized source bytes, run `project source-frames <project> --provider-mode <mode>`.
    - For detached authoring, ask the authorized host to fulfill the request as an evidence directory, then run `project source-frames <project> --import <evidence-dir> --provider-mode <mode>`. Do not copy or trust external frames yourself; the CLI validates containment, hash, size, JPEG probe, source identity, request id, and source time before publishing canonical evidence.
    - The CLI only validates and extracts JPEGs. If the host has vision capability, review `source-frames.json` and the corresponding images through public evidence refs, authorized host staging, or the platform's file-reading interface. In platform mode, never assume workspace tools can read the hidden `.source-frames` directory and never hard-code a host-private evidence path.
    - If standalone vision is unavailable, continue transcript-only and explicitly state that source-image semantic review was not performed. In platform mode, missing host vision is a host-workflow blocker, not a CLI extraction failure.
-5. Run `koubo-clip project review <project> --provider-mode <mode>` and infer the user's business goal from source evidence. Do not jump directly from "做成卖货视频" or similar broad requests to rendering.
-6. Run `koubo-clip artifact contract production-proposal --json`, then fill its complete template as `production-proposal.json` version `3.0` with 2-4 complete options. Each option combines:
+5. Run `"$KOUBO_CLIP" project review <project> --provider-mode <mode>` and infer the user's business goal from source evidence. Do not jump directly from "做成卖货视频" or similar broad requests to rendering.
+6. Run `"$KOUBO_CLIP" artifact contract production-proposal --json`, then fill its complete template as `production-proposal.json` version `3.0` with 2-4 complete options. Each option combines:
    - `business_direction`: suitable use, editing strategy, asset style, risks, and tradeoffs. The option `id` is its only identity; do not add `direction_id`.
    - `edit_execution_plan`: objective, target audience, `duration_target`, narrative structure, ordered `timeline`, text overlays, and confirmation summary. Do not add asset slots here.
    - `asset_requirements`: the only capability-slot authority for visuals, music, SFX, and images after that option is confirmed. Every slot needs the contract-required identity, kind, purpose, and required flag; query/prompt and provider/license/cost/source-risk fields are optional discovery constraints when relevant.
    - The cleanup, subtitle, visual, image, music, SFX, reason, risk, and confirmation fields required by the current CLI contract.
    - Do not ask the user to select a direction and then ask again to confirm the execution plan. The options are the single confirmation surface.
    - Before confirmation, write asset intent only: intent, query, provider preference, license/cost/source risk, and reason. Do not write final `asset_id`, local path, provider URL, download URL, absolute path, or raw MCP payload.
-7. Before confirmation, ensure every `candidate_cleanup` text overlay fits wholly inside one continuous range retained after that option's selected cuts. If an overlay crosses a deletion boundary, split it along the retained subranges reported by the CLI; never ask the CLI to truncate, delete, or silently repair it. Run `koubo-clip project proposal <project> --provider-mode <mode> --json`. If it returns multiple `issues[]`, repair the complete set together and rerun once; do not enter a one-error guessing loop. Only after success, show the complete options and preserve `proposal_fingerprint` plus the `option_selection_fingerprints` map. The user confirms exactly once: `OK` selects `recommended_option_id`, or they provide one option id. After confirmation, do not modify executable proposal content or replace its selection fingerprint. Any material change requires updating, revalidating, and asking for confirmation again. The selected option fingerprint continues to bind edit-plan, compile-edl, enrichment, render, and inspect; it is not just a proposal display token.
+7. Before confirmation, ensure every `candidate_cleanup` text overlay fits wholly inside one continuous range retained after that option's selected cuts. If an overlay crosses a deletion boundary, split it along the retained subranges reported by the CLI; never ask the CLI to truncate, delete, or silently repair it. Run `"$KOUBO_CLIP" project proposal <project> --provider-mode <mode> --json`. If it returns multiple `issues[]`, repair the complete set together and rerun once; do not enter a one-error guessing loop. Only after success, show the complete options and preserve `proposal_fingerprint` plus the `option_selection_fingerprints` map. The user confirms exactly once: `OK` selects `recommended_option_id`, or they provide one option id. After confirmation, do not modify executable proposal content or replace its selection fingerprint. Any material change requires updating, revalidating, and asking for confirmation again. The selected option fingerprint continues to bind edit-plan, compile-edl, enrichment, render, and inspect; it is not just a proposal display token.
    - On resume, the same selection fingerprint is available from `project status --json` at `fingerprints["proposal-selection:<option-id>"]` only while that selection is current. Never read `.virtual/*`; those paths are CLI-internal lineage only.
 8. Convert the confirmed cleanup choice into `edit-plan.json` with `contract_version:"1.0"`, `confirmed_option_id`, and the matching `proposal_selection_fingerprint`. Do not ask users to edit JSON unless they want to. CLI consumers validate this binding and automatically rebuild a stale EDL when prerequisites are complete.
 9. Run `project compile-edl <project>` after the confirmed edit plan. For UI-facing inserts, write `focus-candidates.json`, then run `project focus-candidates`, `project focus-frames`, `project focus-grounding`, and `project focus-review` with the same provider mode. In detached authoring, fulfill focus evidence externally and use `project focus-frames <project> --import <evidence-dir>`; the CLI verifies each output time against the current portable EDL mapping rather than trusting an external source mapping.
@@ -71,19 +76,19 @@ Read only the references needed for the current stage:
    - For each retained request, compare candidates against the viewer job, ASR facts, source-frame evidence, source mode, selected business direction, license/source constraints, and runtime risk. Search order and `recommended` are hints only; neither authorizes acquisition.
    - Write both `selected_candidate_id` and `selection_reason` for every retained request. `reason` explains why the slot exists; `selection_reason` explains why that exact candidate was chosen.
    - In `standalone` mode, run `project visual-catalog` and `project visual-search`, review the returned candidates, write the explicit selection, then run `project visual-acquire` and `project visual-review`.
-   - In `platform` mode, read `koubo-clip artifact contract visual-candidates --json`, then call host/platform visual, component, image, or MCP tools. They must write the contract-valid `visual-candidates.json` with safe project-relative `preview_path` values when previews are needed. Review the candidates, write the explicit selection, and have the host materialize only the selected candidate as a project-local `local_path`. Then run CLI visual commands only as read/import/validate steps with `--provider-mode platform`.
+   - In `platform` mode, read `"$KOUBO_CLIP" artifact contract visual-candidates --json`, then call host/platform visual, component, image, or MCP tools. They must write the contract-valid `visual-candidates.json` with safe project-relative `preview_path` values when previews are needed. Review the candidates, write the explicit selection, and have the host materialize only the selected candidate as a project-local `local_path`. Then run CLI visual commands only as read/import/validate steps with `--provider-mode platform`.
    - `preview_path` is preview-only and never an acquisition source. In platform mode, only the selected candidate's `local_path` can enter acquisition.
    - If the semantic decision is no insert, remove that slot from the final `visual-request.json.requests[]` and retain the reason in business/focus review. If no visual requests remain, skip visual acquire and review.
 11. For approved music, write `music-request.json`.
    - In `standalone` mode, run `project music-catalog`, `project music-acquire`, and `project music-review`.
    - In `platform` mode, call the host/platform music capability first; it must land a project-local music file or compatible acquisition artifact. Then run CLI music commands only as import/validate/review steps with `--provider-mode platform`.
-12. Run `koubo-clip artifact contract enrichment-plan --json`, then write canonical `enrichment-plan.json` version `2.0` as `profile + elements + audio` using output-timeline timestamps, local asset refs, grounding evidence, and reasons.
+12. Run `"$KOUBO_CLIP" artifact contract enrichment-plan --json`, then write canonical `enrichment-plan.json` version `2.0` as `profile + elements + audio` using output-timeline timestamps, local asset refs, grounding evidence, and reasons.
    - Use only `registry_block`, `registry_component`, `animation_rule`, `caption_identity`, and `visual_asset` elements. Generated images are `visual_asset` records distinguished by asset provenance.
    - Put BGM in `audio.music[]` and SFX in `audio.sfx[]`; do not write cards, slots, top-level captions/music, `generated_asset`, or an `sfx` element.
    - For captions, use the public 0.0.13 safe-layout presets only: `placement:auto|center_lower|bottom_safe` and `size:small|medium|large`. The CLI resolves exact placement from output aspect ratio and freezes it into render contract 2.0. Never write CSS, pixels, or arbitrary coordinates, and never parse `local_media_ref`.
    - A simplified platform handoff may write standalone `asset-usage-plan.json`, after fetching its current contract, then run `project enrich-plan` once to normalize it into canonical enrichment.
    - Embedded usage plans in `project.json` or `edit-plan.json` are invalid. Canonical plus handoff input is `ASSET_USAGE_PLAN_CONFLICT`; never merge them.
-13. Run `koubo-clip project enrich-plan <project> --provider-mode <mode>` and show `qa_checks[]`; fix missing assets, provenance, runtime dependency, timing, coordinate evidence, or authority conflicts before render.
+13. Run `"$KOUBO_CLIP" project enrich-plan <project> --provider-mode <mode>` and show `qa_checks[]`; fix missing assets, provenance, runtime dependency, timing, coordinate evidence, or authority conflicts before render.
 14. Choose one execution handoff:
    - Local authoring execution: run `project render`, then `project inspect` as before. Both local and strict execution must use the same frozen execution kernel / frame schedule; inspect can fail closed with structured blockers.
    - Distributed execution: run `render-contract export <project> --output <new-bundle-dir>`. The output directory must not exist. Do not write, edit, patch, merge, or reserialize `render-contract.json`; the CLI alone compiles and signs the frozen closure.

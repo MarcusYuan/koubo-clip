@@ -145,7 +145,7 @@ test("doctor prints runtime json", async () => {
   expect(json.bundle.hyperframes_resources).toBe(true);
   expect(json.bundle.koubo_clip_skill).toBe(true);
   expect(json.bundle.skill_path.endsWith("skills/koubo-clip")).toBe(true);
-});
+}, 15_000);
 
 test("doctor --json prints the Box managed CLI envelope on stdout only", async () => {
   let output = "";

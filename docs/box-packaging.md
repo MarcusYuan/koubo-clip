@@ -10,7 +10,7 @@ dist/box/
   skill.box.json
 ```
 
-Box CLI 包只包含 CLI、HyperFrames resources 和受管运行时，不包含用户可见 Skill payload。Box Skill 包以 `SKILL.md` 为包根，直接包含 `agents/`、`references/` 等 Skill 文件；它通过 `skill.box.json` 中 top-level `files` 的逐文件 byte `size`、纯 64 位 hex SHA-256、精确 CLI 版本、裸子命令/命令前缀和 delivery digests 与 CLI 包关联。每个 Skill `files[]` 项严格只含 `path`、`sha256`、`size`，不得使用 CLI artifact 的 `size_bytes` 字段。npm 包仍可联合携带 Skill，`skills install` 仍服务非 Box 用户。
+Box CLI 包只包含 CLI、HyperFrames resources 和受管运行时，不包含用户可见 Skill payload。Box Skill 包以 `SKILL.md` 为包根，直接包含 `agents/`、`references/` 等 Skill 文件；它通过 `skill.box.json v3` 中 top-level `files` 的逐文件 byte `size`、纯 64 位 hex SHA-256、精确 CLI 版本、裸子命令/命令前缀和 `box-home-bin.v1` 固定入口声明依赖，最终由同一个 Plugin Box Cloud Release 的 Artifact identity 与 CLI 包关联。每个 Skill `files[]` 项严格只含 `path`、`sha256`、`size`，不得使用 CLI artifact 的 `size_bytes` 字段。npm 包仍可联合携带 Skill，`skills install` 仍服务非 Box 用户。
 
 ## 当前平台与运行时输入
 
@@ -57,7 +57,9 @@ KOUBO_BOX_BROWSER_ROOT=/absolute/path/to/chrome-headless-shell-mac-arm64 \
 
 打包脚本从 `package.json` 读取版本号，不在脚本内硬编码 patch 版本。它会拒绝平台不受支持、输入缺失、摘要不匹配、symlink、CLI 包中出现 Skill payload 或任何受管运行时不完整的情况。
 
-本地生成的 `cli-package.box.json` 使用 `bundled://dist/box/...` 标识随包验证的本地 CLI 构件；正式发布构建使用 GitHub Release HTTPS URL。发布系统不得改变 CLI artifact 已声明的 `size_bytes`/SHA-256，也不得改变 Skill `files[]` 已声明的 `size`/SHA-256。
+`cli-package.box.json v3` 只描述目标平台、入口和包内逐文件身份，不再嵌入外层 tarball URL/digest；外层 Artifact identity 由 Plugin Box Cloud Release 固定。发布系统不得改变已经冻结的 tarball bytes，也不得改变 CLI/Skill `files[]` 声明。
+
+仓库根的两个 descriptor 是 v3 authoring template；`package:box` 只把带最终逐文件摘要的 descriptor 写入 `dist/box/` 和各自 tarball 根，不回写源码 template。这样 release job 可以从 clean commit 生成 source-revision 绑定正确的 exact bytes。
 
 ## 验证
 

@@ -216,13 +216,13 @@ The npm package includes `skills/koubo-clip` and HyperFrames sidecar resources. 
 
 ### Plugin Box delivery
 
-Plugin Box uses two independent artifacts: a managed CLI package and a Skill package. The CLI artifact excludes `skills/koubo-clip` and owns its Bun, FFmpeg/ffprobe, HyperFrames, browser runtime, resources, runtime lock, and delivery manifest; the Skill artifact lists every payload file with size/SHA-256 and binds to the exact CLI version and delivery digests. Existing npm/manual installs remain combined and continue to support `skills install`.
+Plugin Box uses two independent artifacts: a managed CLI package and a Skill package. The CLI artifact excludes `skills/koubo-clip` and owns its Bun, FFmpeg/ffprobe, HyperFrames, browser runtime, resources, runtime lock, and delivery manifest; the Skill artifact lists every payload file with size/SHA-256, requires the exact CLI version through `box-home-bin.v1`, and is bound to the CLI by the same Cloud Release. Existing npm/manual installs remain combined and continue to support `skills install`.
 
 Box health and offline acceptance use:
 
 ```bash
-koubo-clip doctor --json
-koubo-clip test --json
+"${PLUGIN_BOX_HOME:-$HOME/.box-plugin}/bin/koubo-clip" doctor --json
+"${PLUGIN_BOX_HOME:-$HOME/.box-plugin}/bin/koubo-clip" test --json
 ```
 
 Both commands emit the managed CLI contract v1 envelope. `test --json` runs a temporary local render-contract verify/bind/render/inspect smoke and does not call a cloud provider. See [docs/box-packaging.md](docs/box-packaging.md) for the package layout, locked runtime inputs, supported target, build, and verification commands.
@@ -454,8 +454,8 @@ Common files in the project directory:
 
 ## Project Status
 
-- Use `koubo-clip --version` as the installed version source. The current repository release target is `0.0.19`.
-- Current package status: the npm stable line remains compatible; 0.0.19 fixes the Box Skill v1 per-file contract to use exact `{ path, sha256, size }` entries and bare CLI subcommands while preserving the separate self-contained Box CLI and all existing managed health/self-test and provider-neutral external ASR behavior.
+- Use `koubo-clip --version` as the installed version source. The current repository release target is `0.0.20`.
+- Current package status: the npm stable line remains compatible; 0.0.20 converges the Plugin Box CLI and Skill descriptors on v3, uses `box-home-bin.v1` for the Skill, and preserves the separate self-contained Box CLI plus the managed health/self-test and provider-neutral external ASR contracts.
 - Current recommended development mode: use Bun from the source repository.
 - npm package: `koubo-clip`.
 - Visual assets, music, and some provider capabilities depend on network access, API keys, user assets, or host MCP handoff.

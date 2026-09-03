@@ -2,7 +2,7 @@
 
 Use this file for the normal project flow. The CLI is the execution surface; this skill is the planning and review surface.
 
-Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabilities --json`. For an existing project, run `koubo-clip project status <project> --json` and follow its blockers, remediation, and `next_commands`; do not recover by scanning filenames. Before writing any external artifact, fetch its unique current contract with `koubo-clip artifact contract <artifact-id> --json`. The CLI contract supplies structure; this reference supplies authoring judgment.
+Before starting or resuming, run `"$KOUBO_CLIP" --version` and `"$KOUBO_CLIP" capabilities --json`. For an existing project, run `"$KOUBO_CLIP" project status <project> --json` and follow its blockers, remediation, and `next_commands`; do not recover by scanning filenames. Before writing any external artifact, fetch its unique current contract with `"$KOUBO_CLIP" artifact contract <artifact-id> --json`. The CLI contract supplies structure; this reference supplies authoring judgment.
 
 ## Stages
 
@@ -26,7 +26,7 @@ Before starting or resuming, run `koubo-clip --version` and `koubo-clip capabili
    - Never make precise cuts from transcript text alone.
 
 4. Build one user-facing proposal with 2-4 complete options.
-   - Run `koubo-clip artifact contract production-proposal --json` and fill its complete template. Do not reconstruct required fields or enums from this reference. The current proposal contract is `3.0`.
+   - Run `"$KOUBO_CLIP" artifact contract production-proposal --json` and fill its complete template. Do not reconstruct required fields or enums from this reference. The current proposal contract is `3.0`.
    - For broad goals such as "卖货视频", "朋友圈吸引咨询", "高级感", "种草", "专业讲解", or "去废话保留卖点", each `production-proposal.json.options[]` item must combine `business_direction`, `edit_execution_plan`, and `asset_requirements`.
    - The option `id` is the only direction identity; do not add `business_direction.direction_id` or `option.recommended`.
    - `edit_execution_plan` contains execution intent and confirmation summary, never asset slots.

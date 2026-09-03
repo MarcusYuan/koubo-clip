@@ -1,18 +1,30 @@
 {
-  "manifest_version": "1",
+  "manifest_version": "3",
   "id": "koubo-clip",
   "name": "Koubo Clip Skill",
   "description": "Agent workflow skill for Koubo Clip talking-head video cleanup and enrichment.",
-  "version": "0.0.19",
-  "source_revision": "5d051c21bd00a85d91a73565cfdd4e6638d3e2b3",
-  "release_mode": "preview",
-  "provenance": {
-    "source_revision": "5d051c21bd00a85d91a73565cfdd4e6638d3e2b3",
-    "release_mode": "preview",
-    "worktree_dirty": true
+  "version": "0.0.20",
+  "presentation": {
+    "default_locale": "en",
+    "localizations": {
+      "en": {
+        "display_name": "Koubo Clip Workflow",
+        "short_description": "Guides agents through reviewed talking-head cleanup and verified rendering."
+      },
+      "zh-CN": {
+        "display_name": "口播快剪工作流",
+        "short_description": "引导 Agent 完成经审核的口播清理与可验证渲染。"
+      }
+    }
   },
   "entrypoint": "SKILL.md",
+  "managed_cli_entry_contract": "box-home-bin.v1",
   "files": [
+    {
+      "path": "SKILL.md",
+      "sha256": "a77554790ae6eef7127673a7b6102693f0fb73779d001f7747bf485bc65a555f",
+      "size": 23561
+    },
     {
       "path": "agents/openai.yaml",
       "sha256": "0a164094a6a35db7bb11661f02b37232069c50b2de441689c6a60f67824ff921",
@@ -20,8 +32,8 @@
     },
     {
       "path": "references/business-planning.md",
-      "sha256": "596ccb3fb7ccc017e76b8abbff1e3c9190ae967592d00bba6541ff68175ac30a",
-      "size": 6934
+      "sha256": "8db417756622d174542d11a3b78664ad8e2398367bc212fd8f6d80d1733e6f49",
+      "size": 6949
     },
     {
       "path": "references/captions.md",
@@ -35,8 +47,8 @@
     },
     {
       "path": "references/media-selection.md",
-      "sha256": "d3fa05e8e5fe02ab4e79b566caf3314a287ed7f0bbe581d0cbddf3e6bb39afe8",
-      "size": 3327
+      "sha256": "f347055f93a520725a53ffb5adef6d8e1440517e9a186618456e271097b8951d",
+      "size": 3330
     },
     {
       "path": "references/motion-and-sfx.md",
@@ -55,23 +67,18 @@
     },
     {
       "path": "references/workflow.md",
-      "sha256": "396fd439728421b410b3404f9a8d620637be65d129cfbffbf5dacbdb968768df",
-      "size": 14141
-    },
-    {
-      "path": "SKILL.md",
-      "sha256": "a8ccda43affa75ffcc480ea535bd9f40d6fd9d531259df4440a1177b275a00c4",
-      "size": 23100
+      "sha256": "040aba9c8d5f403ced9bbf59f75c39e0ec5f057a9f1769171cd5446df8711c85",
+      "size": 14156
     }
   ],
   "source": {
-    "kind": "github",
+    "kind": "box_cloud",
     "publisher": "MarcusYuan"
   },
   "cli_dependencies": [
     {
       "id": "koubo-clip",
-      "version": "0.0.19",
+      "version": "0.0.20",
       "required": true,
       "commands": [
         "capabilities",
@@ -107,14 +114,5 @@
     "remove_on_uninstall": [
       "packaged Skill files"
     ]
-  },
-  "release_urls": {
-    "skill": "https://github.com/MarcusYuan/koubo-clip/releases/download/v0.0.19/koubo-clip-box-skill-0.0.19.tgz"
-  },
-  "delivery_identity": {
-    "cli_artifact_sha256": "869355c202df1ff1a8a1754050f769b6083a643d5392db88074969ba7e5c0ef0",
-    "official_skill_digest": "444785a685cea3bbe5bcfe0feac71ff0057e7d59babc1174ae80447cd50f0e8a",
-    "delivery_digest": "3efa26701fd53a8a71c2a6f0ef96b03d80b9e95a21998392f9050cb4bd231466",
-    "renderer_resources_digest": "63a0ab4a23a75d7c0a355c576a5cded50ba6d7ace9dd29729df296202ea9e3ef"
   }
 }

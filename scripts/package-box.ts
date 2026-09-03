@@ -13,7 +13,7 @@ import {
   computeRuntimeCompatibilityDigest,
 } from "../packages/cli/src/delivery-identity";
 import { artifactContractsDigest } from "../packages/cli/src/artifact-contracts";
-import { type SkillManifestFile, verifySkillManifestV1 } from "./box-skill-manifest";
+import { type SkillManifestFile, verifySkillManifestV3 } from "./box-skill-manifest";
 
 type Json = Record<string, any>;
 type FileEntry = { path: string; size_bytes: number; sha256: string; executable: boolean };
@@ -40,30 +40,19 @@ try {
   stageSkillPackage(skillRoot);
 
   writeInstalledRuntimeLock(cliRoot);
-  const cliManifest = writeDeliveryManifest(cliRoot, "box-cli");
-  const runtimeDigest = computeDeliveryFileSetDigest({ root: cliRoot, files: ["runtime-lock.json"] }).digest;
-  const cliTarball = archive(cliRoot, join(outputDir, `koubo-clip-box-cli-${version}-${target.tag}.tgz`));
-  const skillDigest = computeOfficialSkillDigest({ root: join(root, "skills", "koubo-clip") }).digest;
-
+  writeDeliveryManifest(cliRoot, "box-cli");
   const cliDescriptor = makeCliDescriptor({
     cliRoot,
-    cliTarball,
-    cliManifest,
-    runtimeDigest,
-    inputs,
   });
+  writeJson(join(cliRoot, "cli-package.box.json"), cliDescriptor);
+  const cliTarball = archive(cliRoot, join(outputDir, `koubo-clip-box-cli-${version}-${target.tag}.tgz`));
   const skillDescriptor = makeSkillDescriptor({
     skillRoot,
-    cliTarball,
-    cliManifest,
-    skillDigest,
   });
   writeJson(join(skillRoot, "skill.box.json"), skillDescriptor);
   const skillTarball = archive(skillRoot, join(outputDir, `koubo-clip-box-skill-${version}.tgz`));
   writeJson(join(outputDir, "cli-package.box.json"), cliDescriptor);
   writeJson(join(outputDir, "skill.box.json"), skillDescriptor);
-  writeJson(join(root, "cli-package.box.json"), cliDescriptor);
-  writeJson(join(root, "skill.box.json"), skillDescriptor);
 
   const ffmpegBuildEvidenceAsset = join(outputDir, `koubo-clip-ffmpeg-build-evidence-${version}.json`);
   const ffmpegSourceLockAsset = join(outputDir, `koubo-clip-ffmpeg-source-lock-${version}.json`);
@@ -358,30 +347,29 @@ function writeDeliveryManifest(packageRoot: string, distributionKind: string): J
   return manifest;
 }
 
-function makeCliDescriptor(input: { cliRoot: string; cliTarball: string; cliManifest: Json; runtimeDigest: string; inputs: ReturnType<typeof resolveInputs> }): Json {
-  const artifact = artifactIdentity(input.cliTarball);
+function makeCliDescriptor(input: { cliRoot: string }): Json {
   return {
-    manifest_version: "1",
+    manifest_version: "3",
     id: "koubo-clip",
     name: "Koubo Clip",
     version,
     publisher: "MarcusYuan",
-    source_revision: sourceRevision,
-    release_mode: provenance.release_mode,
-    provenance,
+    presentation: packagePresentation(),
+    target: {
+      os: "darwin",
+      arch: "arm64",
+      minimum_os_version: "14.0",
+    },
+    executable: "bin/koubo-clip",
     managed_cli_contract_version: "1",
     machine_output: { format: "json", encoding: "utf-8" },
-    artifacts: [
-      {
-        os: target.os,
-        arch: target.arch,
-        url: artifactUrl(input.cliTarball),
-        size_bytes: artifact.size_bytes,
-        sha256: artifact.sha256,
-        executable: "bin/koubo-clip",
-      },
-    ],
     files: listFileEntries(input.cliRoot),
+    artifact_generation: {
+      profile: "verified-upstream-runtime-bundle.v1",
+      runtime_contract: "koubo-clip-managed-runtime.v1",
+      source_revision: sourceRevision,
+      release_mode: provenance.release_mode,
+    },
     health_check: { args: ["doctor", "--json"] },
     permissions: {
       file_read: ["packaged runtime/resources", "user-selected project/source media"],
@@ -395,45 +383,22 @@ function makeCliDescriptor(input: { cliRoot: string; cliTarball: string; cliMani
       preserve_on_update: ["user projects", "user media", "user outputs"],
       remove_on_uninstall: ["packaged CLI runtime", "packaged renderer resources", "packaged browser runtime"],
     },
-    release_urls: {
-      cli: `${repositoryReleaseBaseUrl()}/download/v${version}/${basename(input.cliTarball)}`,
-      ffmpeg_corresponding_source: String(readJson(input.inputs.ffmpegBuildEvidence).source_bundle.url),
-    },
-    unsupported_targets: unsupportedTargets(lock.unsupported_targets),
-    runtime: {
-      lockfile: "runtime-lock.json",
-      runtime_lock_digest: hexDigest(input.runtimeDigest),
-      delivery_digest: hexDigest(input.cliManifest.delivery_digest),
-      renderer_resources_digest: hexDigest(input.cliManifest.renderer_resources_digest),
-      official_skill_digest: hexDigest(input.cliManifest.official_skill_digest),
-      bun_sha256: sha256File(input.inputs.bun),
-      ffmpeg_sha256: sha256File(input.inputs.ffmpeg),
-      ffprobe_sha256: sha256File(input.inputs.ffprobe),
-      ffmpeg_build_evidence_sha256: sha256File(input.inputs.ffmpegBuildEvidence),
-      ffmpeg_source_lock_sha256: sha256File(input.inputs.ffmpegSourceLock),
-      ffmpeg_source_bundle_sha256: sha256File(input.inputs.ffmpegSourceBundle),
-      ffmpeg_source_bundle_size_bytes: nodeFs.statSync(input.inputs.ffmpegSourceBundle).size,
-      ffmpeg_source_bundle_url: String(readJson(input.inputs.ffmpegBuildEvidence).source_bundle.url),
-      browser_tree_sha256: input.inputs.browserTreeSha256,
-    },
   };
 }
 
-function makeSkillDescriptor(input: { skillRoot: string; cliTarball: string; cliManifest: Json; skillDigest: string }): Json {
-  const cliArtifact = artifactIdentity(input.cliTarball);
+function makeSkillDescriptor(input: { skillRoot: string }): Json {
   const descriptor = {
-    manifest_version: "1",
+    manifest_version: "3",
     id: "koubo-clip",
     name: "Koubo Clip Skill",
     description: "Agent workflow skill for Koubo Clip talking-head video cleanup and enrichment.",
     version,
-    source_revision: sourceRevision,
-    release_mode: provenance.release_mode,
-    provenance,
+    presentation: packagePresentation(true),
     entrypoint: "SKILL.md",
+    managed_cli_entry_contract: "box-home-bin.v1",
     files: listSkillManifestFiles(input.skillRoot),
     source: {
-      kind: "github",
+      kind: "box_cloud",
       publisher: "MarcusYuan",
     },
     cli_dependencies: [
@@ -464,18 +429,29 @@ function makeSkillDescriptor(input: { skillRoot: string; cliTarball: string; cli
       preserve_on_update: ["user projects", "user media", "user outputs"],
       remove_on_uninstall: ["packaged Skill files"],
     },
-    release_urls: {
-      skill: `${repositoryReleaseBaseUrl()}/download/v${version}/koubo-clip-box-skill-${version}.tgz`,
-    },
-    delivery_identity: {
-      cli_artifact_sha256: cliArtifact.sha256,
-      official_skill_digest: hexDigest(input.skillDigest),
-      delivery_digest: hexDigest(input.cliManifest.delivery_digest),
-      renderer_resources_digest: hexDigest(input.cliManifest.renderer_resources_digest),
+  };
+  verifySkillManifestV3(descriptor);
+  return descriptor;
+}
+
+function packagePresentation(skill = false): Json {
+  return {
+    default_locale: "en",
+    localizations: {
+      en: {
+        display_name: skill ? "Koubo Clip Workflow" : "Koubo Clip",
+        short_description: skill
+          ? "Guides agents through reviewed talking-head cleanup and verified rendering."
+          : "Cleans and enriches talking-head videos with a packaged deterministic media runtime.",
+      },
+      "zh-CN": {
+        display_name: skill ? "口播快剪工作流" : "口播快剪",
+        short_description: skill
+          ? "引导 Agent 完成经审核的口播清理与可验证渲染。"
+          : "使用包内确定性媒体运行时清理并增强口播视频。",
+      },
     },
   };
-  verifySkillManifestV1(descriptor);
-  return descriptor;
 }
 
 function resolveInputs(lockJson: Json) {
@@ -701,19 +677,6 @@ function isExecutable(path: string): boolean {
   return (((nodeFs as any).statSync(path).mode as number) & 0o111) !== 0;
 }
 
-function hexDigest(value: string): string {
-  return value.replace(/^sha256:/, "");
-}
-
-function artifactUrl(path: string): string {
-  const releaseBase = process.env.KOUBO_BOX_RELEASE_BASE_URL;
-  if (releaseBase) {
-    if (!/^https:\/\/[^/]+\/.+/.test(releaseBase)) throw new Error("KOUBO_BOX_RELEASE_BASE_URL must be an HTTPS URL");
-    return `${releaseBase.replace(/\/$/, "")}/${basename(path)}`;
-  }
-  return `bundled://${relative(root, path).replaceAll("\\", "/")}`;
-}
-
 function normalizeOs(value: unknown): string {
   if (value === "darwin") return "macos";
   if (value === "win32") return "windows";
@@ -722,15 +685,6 @@ function normalizeOs(value: unknown): string {
 
 function normalizeArch(value: unknown): string {
   return value === "arm64" ? "aarch64" : String(value);
-}
-
-function unsupportedTargets(value: unknown): Json[] {
-  if (!Array.isArray(value)) return [];
-  return value.map((entry) => ({
-    ...entry,
-    os: normalizeOs(entry.os),
-    arch: normalizeArch(entry.arch),
-  }));
 }
 
 function isCliSkillPayloadPath(path: string): boolean {
