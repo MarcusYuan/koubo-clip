@@ -251,6 +251,8 @@ test("test --json runs a real local render-contract smoke with a stdout envelope
   const json = JSON.parse(output);
   expect(json.contract_version).toBe("1");
   expect(json.ok).toBe(true);
+  expect(json.result.id).toBe("koubo-clip");
+  expect(json.result.version).toBe(packageVersion);
   expect(json.result.status).toBe("passed");
   expect(json.result.steps).toContain("render-contract.inspect");
   expect(json.result.output_size_bytes > 0).toBe(true);

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { productionProposalExample } from "./artifact-contracts";
 import { parseSourcesManifest, type ProductionProposalArtifact } from "./artifacts";
+import { cliVersion } from "./bundle-paths";
 import { assertManagedRuntimeForBox, resolveManagedRuntimeTool } from "./managed-runtime";
 import { bindRenderContract, exportRenderContract, inspectBoundContract, renderBoundContract, verifyRenderContractBundle } from "./render-contract-commands";
 import { createProject, exploreProject, proposalProject, reviewProject } from "./project";
@@ -42,6 +43,7 @@ export async function runSelfTest() {
 
     return {
       id: "koubo-clip",
+      version: cliVersion(),
       status: "passed" as const,
       smoke: "render-contract-minimal",
       steps: ["project.create", "project.explore.external", "project.review", "project.proposal", "render-contract.verify", "render-contract.bind", "render-contract.render", "render-contract.inspect"],
