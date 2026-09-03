@@ -1,7 +1,7 @@
 {
   "schema_version": "3.0",
   "cli_version": "0.0.20",
-  "source_revision": "2c6595812af119dd36ea8d830da28fe344280a5b",
+  "source_revision": "997ff22d21584dae6ddf36fe4337755a671eda30",
   "distribution_kind": "source",
   "cli_payload_digest": "sha256:7c6117d6eb99805db949bf815f357bf844276ca0aaf6ae62c8a88998968dae87",
   "renderer_resources_digest": "sha256:51d07c4346916bba3cad591e0ad99c8adf04377bd4f8ee6c23e796a33da7e346",
@@ -37,5 +37,5 @@
     "gsap@3.15.0",
     "hyperframes@0.7.36"
   ],
-  "delivery_digest": "sha256:b306c75e3d47fb13674f2c092b7bef1bf3c649f33d60265af7bb6a48fe9df490"
+  "delivery_digest": "sha256:2e7cacabf9d7dde9f5326221e46092b332e84d91bbbf02bb6ef0f0d722609a7b"
 }
