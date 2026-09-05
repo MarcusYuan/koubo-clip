@@ -386,3 +386,5 @@ jobs:
             gh release edit "$TAG" --draft=false
           fi
           test "$(gh release view "$TAG" --json isDraft --jq '.isDraft')" = "false"
+          printf 'verified_tag=%s source_revision=%s asset_count=%s\n' "$TAG" "$GITHUB_SHA" "$expected_count"
+          cat "$asset_manifest"

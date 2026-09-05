@@ -12,6 +12,8 @@ test("automatic tag publication cannot write npm and retains both validation job
   expect(source).toContain("Verify installed canonical npm package");
   expect(source).toContain("Verify Box packages from arbitrary cwd");
   expect(source).toContain("actual_sha256");
+  expect(source).toContain("verified_tag=%s source_revision=%s asset_count=%s");
+  expect(source).toContain('cat "$asset_manifest"');
   expect(source).toContain("Release asset ${name} changed after initial verification");
 });
 
