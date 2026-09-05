@@ -37,7 +37,7 @@ jobs:
 
       - run: bun test scripts/release-workflows.test.js
 
-      - run: python3 scripts/test-release-npm-artifact.py
+      - run: python3 -B scripts/test-release-npm-artifact.py
 
       - run: bun run test
 

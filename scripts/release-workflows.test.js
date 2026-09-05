@@ -26,3 +26,9 @@ test("npm publication requires manual dispatch and consumes checked release byte
   expect(source).not.toContain("run package:npm");
   expect(source).toContain("registry tarball digest mismatch");
 });
+
+test("Python regression checks cannot dirty the canonical source checkout", () => {
+  for (const name of ["ci.yml", "release.yml"]) {
+    expect(read(name)).toContain("python3 -B scripts/test-release-npm-artifact.py");
+  }
+});
