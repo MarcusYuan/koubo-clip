@@ -24,6 +24,8 @@ Box CLI 的稳定入口只从包自身定位：
 bin/koubo-clip
 runtime/bin/{bun,ffmpeg,ffprobe,hyperframes,chrome-headless-shell}
 runtime/hyperframes.js
+runtime/hyperframe.manifest.json
+runtime/hyperframe.runtime.iife.js
 runtime/browser/...
 resources/hyperframes/...
 delivery-manifest.json
@@ -31,6 +33,8 @@ runtime-lock.json
 ```
 
 `runtime/bin/chrome-headless-shell` is a package-owned launcher for the pinned browser tree. It disables host audio output during deterministic headless validation, so a machine without an audio device does not turn a muted visual-only composition into a false runtime failure.
+
+HyperFrames 的浏览器运行时 manifest、IIFE、player 和 worker 资源随 CLI bundle 一起复制自锁定依赖，全部进入安装态 runtime lock。wrapper 显式指定包内 manifest，缺失时立即失败，禁止回退到 cwd 下的开发目录。
 
 运行时不依赖用户安装 Bun、Node、npx、HyperFrames、FFmpeg/ffprobe，也不从当前工作目录或 PATH 选择替代版本。缺文件属于 `needs_configuration`；已存在但摘要、布局或可执行属性损坏属于 `degraded`。render/test 不允许联网临时下载 renderer。
 

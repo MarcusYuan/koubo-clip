@@ -145,6 +145,10 @@ function stageCliPackage(packageRoot: string, inputs: ReturnType<typeof resolveI
     "--outfile",
     join(packageRoot, "runtime", "hyperframes.js"),
   ], root);
+  for (const resource of ["hyperframe.manifest.json", "hyperframe.runtime.iife.js", "hyperframe-runtime.js", "hyperframes-player.global.js", "hyperframes-slideshow.global.js", "shaderTransitionWorker.js"]) {
+    nodeFs.copyFileSync(join(root, "node_modules", "hyperframes", "dist", resource), join(packageRoot, "runtime", resource));
+  }
+  nodeFs.cpSync(join(root, "node_modules", "hyperframes", "dist", "commands"), join(packageRoot, "runtime", "commands"), { recursive: true });
   nodeFs.writeFileSync(
     join(packageRoot, "runtime", "bin", "hyperframes"),
     [
@@ -154,13 +158,16 @@ function stageCliPackage(packageRoot: string, inputs: ReturnType<typeof resolveI
       "ROOT=$(CDPATH= cd -- \"$DIR/..\" && pwd)",
       "[ -x \"$DIR/bun\" ] || { printf '%s\\n' 'koubo-clip: managed Bun runtime is missing or not executable' >&2; exit 126; }",
       "[ -f \"$ROOT/hyperframes.js\" ] || { printf '%s\\n' 'koubo-clip: managed HyperFrames runtime is missing' >&2; exit 126; }",
+      "[ -f \"$ROOT/hyperframe.manifest.json\" ] || { printf '%s\\n' 'koubo-clip: managed HyperFrames manifest is missing' >&2; exit 126; }",
       "[ -x \"$DIR/ffmpeg\" ] || { printf '%s\\n' 'koubo-clip: managed FFmpeg runtime is missing or not executable' >&2; exit 126; }",
       "[ -x \"$DIR/ffprobe\" ] || { printf '%s\\n' 'koubo-clip: managed ffprobe runtime is missing or not executable' >&2; exit 126; }",
       "[ -x \"$DIR/chrome-headless-shell\" ] || { printf '%s\\n' 'koubo-clip: managed Chrome Headless Shell launcher is missing or not executable' >&2; exit 126; }",
       "export HYPERFRAMES_FFMPEG_PATH=\"$DIR/ffmpeg\"",
       "export HYPERFRAMES_FFPROBE_PATH=\"$DIR/ffprobe\"",
-      "export PRODUCER_HEADLESS_SHELL_PATH=\"${PRODUCER_HEADLESS_SHELL_PATH:-$DIR/chrome-headless-shell}\"",
-      "export HYPERFRAMES_BROWSER_PATH=\"${HYPERFRAMES_BROWSER_PATH:-$PRODUCER_HEADLESS_SHELL_PATH}\"",
+      "export PRODUCER_HYPERFRAME_MANIFEST_PATH=\"$ROOT/hyperframe.manifest.json\"",
+      "export HYPERFRAMES_NO_UPDATE_CHECK=1 HYPERFRAMES_NO_AUTO_INSTALL=1 HYPERFRAMES_NO_TELEMETRY=1",
+      "export PRODUCER_HEADLESS_SHELL_PATH=\"$DIR/chrome-headless-shell\"",
+      "export HYPERFRAMES_BROWSER_PATH=\"$PRODUCER_HEADLESS_SHELL_PATH\"",
       "exec \"$DIR/bun\" \"$ROOT/hyperframes.js\" \"$@\"",
       "",
     ].join("\n"),
@@ -320,7 +327,7 @@ function runtimeRole(path: string): string {
   if (path === "runtime/bin/bun") return "bun-runtime";
   if (path === "runtime/bin/ffmpeg") return "ffmpeg";
   if (path === "runtime/bin/ffprobe") return "ffprobe";
-  if (path === "runtime/bin/hyperframes" || path === "runtime/hyperframes.js") return "hyperframes-runtime";
+  if (path === "runtime/bin/hyperframes" || path === "runtime/hyperframes.js" || path.startsWith("runtime/commands/") || /^runtime\/(?:hyperframe[^/]*|shaderTransitionWorker\.js)$/.test(path)) return "hyperframes-runtime";
   if (path === "runtime/bin/chrome-headless-shell") return "browser-runtime-launcher";
   if (path.startsWith("runtime/browser/")) return "browser-runtime";
   if (path.startsWith("runtime/node_modules/")) return "hyperframes-native-dependency";

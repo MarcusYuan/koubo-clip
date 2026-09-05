@@ -88,6 +88,7 @@ try {
     schema_version: "1",
     ok: true,
     version,
+    source_revision: cliDescriptor.artifact_generation.source_revision,
     cli_package: artifactIdentity(cliTarball),
     skill_package: artifactIdentity(skillTarball),
     cli_root: cliRoot,
@@ -118,7 +119,7 @@ function verifyRuntimeLock(cliRoot: string): void {
     expect(nodeFs.statSync(fullPath).size === entry.size, `runtime-lock size mismatch: ${entry.path}`);
     expect(sha256File(fullPath) === entry.sha256, `runtime-lock hash mismatch: ${entry.path}`);
   }
-  for (const required of ["bin/koubo-clip", "bin/koubo-clip-runtime", "runtime/bin/bun", "runtime/bin/ffmpeg", "runtime/bin/ffprobe", "runtime/bin/hyperframes", "runtime/bin/chrome-headless-shell", "runtime/hyperframes.js"]) {
+  for (const required of ["bin/koubo-clip", "bin/koubo-clip-runtime", "runtime/bin/bun", "runtime/bin/ffmpeg", "runtime/bin/ffprobe", "runtime/bin/hyperframes", "runtime/bin/chrome-headless-shell", "runtime/hyperframes.js", "runtime/hyperframe.manifest.json", "runtime/hyperframe.runtime.iife.js", "runtime/hyperframe-runtime.js", "runtime/hyperframes-player.global.js", "runtime/hyperframes-slideshow.global.js", "runtime/shaderTransitionWorker.js"]) {
     expect(locked.has(required), `runtime-lock does not list ${required}`);
   }
   for (const required of ["licenses/ffmpeg-runtime/build-evidence.json", "licenses/ffmpeg-runtime/source-lock.json", "licenses/ffmpeg-runtime/build-box-ffmpeg-runtime.sh", "licenses/ffmpeg-runtime/ffmpeg-version.txt", "licenses/ffmpeg-runtime/ffprobe-version.txt", "licenses/ffmpeg-runtime/otool-ffmpeg.txt", "licenses/ffmpeg-runtime/otool-ffprobe.txt", "licenses/ffmpeg-runtime/SOURCE_OFFER.json", "THIRD_PARTY_NOTICES.md"]) {
@@ -396,6 +397,10 @@ function verifyFinalPackagedBrowserRuntime(cliRoot: string, cwd: string): Json {
 
   const browserVersion = runPackageRuntime(browserLauncher, ["--version"], cwd, runtimeBin);
   expect(browserVersion.status === 0 && /HeadlessChrome|Chrome/i.test(browserVersion.stdout), `packaged browser wrapper failed from a special-character install path with package-only PATH: ${browserVersion.stderr || browserVersion.stdout}`);
+  const fromPath = runPackageRuntime("/bin/sh", ["-c", "exec hyperframes --help"], cwd, runtimeBin);
+  expect(fromPath.status === 0 && fromPath.stdout.includes("hyperframes"), "packaged HyperFrames lookup via package-only PATH failed");
+  const fromRelativePath = runPackageRuntime(join(".", relative(cwd, browserLauncher)), ["--version"], cwd, runtimeBin);
+  expect(fromRelativePath.status === 0, "packaged browser relative-path invocation failed");
 
   const lint = runPackageRuntime(hyperframes, ["lint", "."], workspace, runtimeBin);
   expect(lint.status === 0, `packaged HyperFrames lint failed: ${lint.stderr || lint.stdout}`);
@@ -425,6 +430,15 @@ function verifyFinalPackagedBrowserRuntime(cliRoot: string, cwd: string): Json {
   } finally {
     rename(browserBackup, browserBinary);
   }
+  const runtimeManifest = join(cliRoot, "runtime", "hyperframe.manifest.json");
+  rename(runtimeManifest, `${runtimeManifest}.missing-test`);
+  try {
+    const missing = runPackageRuntime(hyperframes, ["render", ".", "--output", join(workspace, "must-not-exist.mp4")], workspace, runtimeBin);
+    expect(missing.status === 126 && missing.stderr.trim() === "koubo-clip: managed HyperFrames manifest is missing", "missing packaged HyperFrames manifest must fail before cwd lookup or rendering");
+    expect(!nodeFs.existsSync(join(workspace, "must-not-exist.mp4")), "missing runtime manifest unexpectedly created an output");
+  } finally {
+    rename(`${runtimeManifest}.missing-test`, runtimeManifest);
+  }
 
   return {
     status: "passed",
@@ -437,6 +451,7 @@ function verifyFinalPackagedBrowserRuntime(cliRoot: string, cwd: string): Json {
     hyperframes_render: "passed",
     hyperframes_inspect: "passed",
     missing_browser_exit_code: 126,
+    missing_hyperframes_manifest_exit_code: 126,
     artifact: {
       format: "mp4",
       codec: "h264",
@@ -462,7 +477,7 @@ function packagedHyperframesSmokeHtml(): string {
   </head>
   <body>
     <main id="stage" data-composition-id="smoke" data-start="0" data-duration="0.3" data-width="160" data-height="90">
-      <div id="label" data-start="0" data-duration="0.3" data-track-index="1">Koubo Clip</div>
+      <div id="label" class="clip" data-start="0" data-duration="0.3" data-track-index="1">Koubo Clip</div>
     </main>
     <script>
       window.__timelines = window.__timelines || {};
