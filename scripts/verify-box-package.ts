@@ -96,6 +96,7 @@ try {
     doctor_status: doctor.json.result.status,
     test_status: smoke.json.result.status,
     packaged_runtime_smoke: packagedRuntimeSmoke,
+    platform_evidence: JSON.parse(run("python3", [join(root, "scripts", "verify-box-macos-target.py"), cliRoot], root)),
   };
   const outputPath = process.env.BOX_PACKAGE_ACCEPTANCE_OUTPUT ?? `${cliTarball}.acceptance.json`;
   writeJson(outputPath, acceptance);

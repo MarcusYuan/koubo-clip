@@ -94,3 +94,7 @@ bun scripts/verify-box-package.ts
 CLI descriptor、Box metadata 和 release-gate report 都绑定这些 exact bytes 的 SHA-256。Release 页面应把 corresponding-source asset 与 Box CLI asset 放在同一 tag 下；不得改写或用其他 commit 重新生成其中任一项。
 
 Box CLI 根目录携带 `THIRD_PARTY_NOTICES.md`，并在 `licenses/ffmpeg-runtime/SOURCE_OFFER.json` 提供版本化机器可读 source offer。该 offer、`cli-package.box.json` 和 `build-evidence.json` 必须同时记录同一 `v<version>` Release 下 corresponding-source asset 的直接 HTTPS URL、size 和 SHA-256；package verification 会拒绝 URL 或 digest 任一不一致。
+
+## GitHub 发布与 npm 的关系
+
+GitHub tag workflow 完成全部 Gate 后发布本次 Actions 构建的 14 个精确构件，不自动发布 npm。Box Cloud 必须回读该 GitHub Release 的 source commit、URL、size 和 SHA-256；本地预验包不能冒充 Actions 最终 bytes。npm 使用另行明确授权的 `Publish verified npm artifact` 手动 workflow，消费相同 GitHub npm tarball，不重新打包。具体规则见 [发布和打包规则](../rules/release-packaging.md)。
