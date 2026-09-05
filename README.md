@@ -454,8 +454,8 @@ Common files in the project directory:
 
 ## Project Status
 
-- Use `koubo-clip --version` as the installed version source. The current repository release target is `0.0.20`.
-- Current package status: the npm stable line remains compatible; 0.0.20 converges the Plugin Box CLI and Skill descriptors on v3, uses `box-home-bin.v1` for the Skill, and preserves the separate self-contained Box CLI plus the managed health/self-test and provider-neutral external ASR contracts.
+- Use `koubo-clip --version` as the installed version source. The current repository release target is `0.0.21`.
+- Current package status: 0.0.21 repairs Box launcher path resolution with shell builtins and adds final-package HyperFrames/Chrome render inspection under a package-only PATH. The v3 descriptors, `box-home-bin.v1` Skill entry, npm compatibility, managed health/self-test and provider-neutral external ASR contracts are preserved.
 - Current recommended development mode: use Bun from the source repository.
 - npm package: `koubo-clip`.
 - Visual assets, music, and some provider capabilities depend on network access, API keys, user assets, or host MCP handoff.

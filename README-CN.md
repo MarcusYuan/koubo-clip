@@ -454,8 +454,8 @@ bun run koubo-clip -- project focus-review <project>
 
 ## 项目状态
 
-- 当前安装版本以 `koubo-clip --version` 为准；当前仓库发布目标为 `0.0.20`。
-- 当前包状态：npm 稳定发布线保持兼容；0.0.20 将 Plugin Box CLI 与 Skill descriptor 收敛到 v3，Skill 使用 `box-home-bin.v1`，并保留独立、自包含的 Box CLI、managed health/self-test 合同和 provider-neutral 外部 ASR handoff。
+- 当前安装版本以 `koubo-clip --version` 为准；当前仓库发布目标为 `0.0.21`。
+- 当前包状态：0.0.21 使用 shell 内建命令修复 Box launcher 路径解析，并增加仅包内 PATH 下最终构件的 HyperFrames/Chrome 渲染检查。继续保留 v3 descriptor、Skill `box-home-bin.v1` 固定入口、npm 兼容、managed health/self-test 合同和 provider-neutral 外部 ASR handoff。
 - 当前推荐开发方式：源码仓库中使用 Bun。
 - npm package：`koubo-clip`。
 - 视觉素材、音乐和部分 provider 能力依赖网络、API key、用户资产或 host MCP handoff。

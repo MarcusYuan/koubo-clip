@@ -75,6 +75,8 @@ bun scripts/verify-box-package.ts
 - CLI 包不包含用户可见 Skill；
 - `--version`、`delivery verify --json` 和 `doctor --json`；
 - `test --json` 的本地、无云费用、真实 render-contract verify/bind/render/inspect 闭环；
+- 从包含空格、中文、单引号和双引号的解包路径，仅使用包内 `runtime/bin` PATH 运行 CLI、HyperFrames 和 Chrome launcher；路径解析只用 shell 内建命令；
+- 对无外部资产的最小 HTML 执行 HyperFrames lint/validate/render/inspect，关闭遥测，并用包内 ffprobe 检查实际 H.264 MP4 的尺寸和时长；缺失 Chrome 二进制必须返回 126 与明确诊断；
 - 删除或修改受管 runtime 文件后的 fail-closed doctor 分类。
 
 本流程只生成和验证本地构件，不执行 npm publish、远端 push 或 GitHub Release。

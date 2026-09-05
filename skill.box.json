@@ -3,7 +3,7 @@
   "id": "koubo-clip",
   "name": "Koubo Clip Skill",
   "description": "Agent workflow skill for Koubo Clip talking-head video cleanup and enrichment.",
-  "version": "0.0.20",
+  "version": "0.0.21",
   "presentation": {
     "default_locale": "en",
     "localizations": {
@@ -78,7 +78,7 @@
   "cli_dependencies": [
     {
       "id": "koubo-clip",
-      "version": "0.0.20",
+      "version": "0.0.21",
       "required": true,
       "commands": [
         "capabilities",

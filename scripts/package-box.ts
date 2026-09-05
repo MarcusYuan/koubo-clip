@@ -150,8 +150,13 @@ function stageCliPackage(packageRoot: string, inputs: ReturnType<typeof resolveI
     [
       "#!/bin/sh",
       "set -eu",
-      "DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)",
+      ...shellLauncherDirectorySource("DIR", "HyperFrames launcher"),
       "ROOT=$(CDPATH= cd -- \"$DIR/..\" && pwd)",
+      "[ -x \"$DIR/bun\" ] || { printf '%s\\n' 'koubo-clip: managed Bun runtime is missing or not executable' >&2; exit 126; }",
+      "[ -f \"$ROOT/hyperframes.js\" ] || { printf '%s\\n' 'koubo-clip: managed HyperFrames runtime is missing' >&2; exit 126; }",
+      "[ -x \"$DIR/ffmpeg\" ] || { printf '%s\\n' 'koubo-clip: managed FFmpeg runtime is missing or not executable' >&2; exit 126; }",
+      "[ -x \"$DIR/ffprobe\" ] || { printf '%s\\n' 'koubo-clip: managed ffprobe runtime is missing or not executable' >&2; exit 126; }",
+      "[ -x \"$DIR/chrome-headless-shell\" ] || { printf '%s\\n' 'koubo-clip: managed Chrome Headless Shell launcher is missing or not executable' >&2; exit 126; }",
       "export HYPERFRAMES_FFMPEG_PATH=\"$DIR/ffmpeg\"",
       "export HYPERFRAMES_FFPROBE_PATH=\"$DIR/ffprobe\"",
       "export PRODUCER_HEADLESS_SHELL_PATH=\"${PRODUCER_HEADLESS_SHELL_PATH:-$DIR/chrome-headless-shell}\"",
@@ -176,9 +181,11 @@ function stageCliPackage(packageRoot: string, inputs: ReturnType<typeof resolveI
     [
       "#!/bin/sh",
       "set -eu",
-      "DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)",
+      ...shellLauncherDirectorySource("DIR", "Chrome Headless Shell launcher"),
       "ROOT=$(CDPATH= cd -- \"$DIR/..\" && pwd)",
-      "exec \"$ROOT/browser/chrome-headless-shell/mac_arm-131.0.6778.85/chrome-headless-shell-mac-arm64/chrome-headless-shell\" --disable-audio-output \"$@\"",
+      "BROWSER=\"$ROOT/browser/chrome-headless-shell/mac_arm-131.0.6778.85/chrome-headless-shell-mac-arm64/chrome-headless-shell\"",
+      "[ -x \"$BROWSER\" ] || { printf '%s\\n' 'koubo-clip: managed Chrome Headless Shell runtime is missing or not executable' >&2; exit 126; }",
+      "exec \"$BROWSER\" --disable-audio-output \"$@\"",
       "",
     ].join("\n"),
   );
@@ -227,7 +234,7 @@ function boxShellLauncherSource(): string {
   return [
     "#!/bin/sh",
     "set -eu",
-    "BIN_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)",
+    ...shellLauncherDirectorySource("BIN_DIR", "CLI launcher"),
     "PACKAGE_ROOT=$(CDPATH= cd -- \"$BIN_DIR/..\" && pwd)",
     "RUNTIME_BIN=\"$PACKAGE_ROOT/runtime/bin\"",
     "BROWSER=\"$RUNTIME_BIN/chrome-headless-shell\"",
@@ -239,9 +246,25 @@ function boxShellLauncherSource(): string {
     "export HYPERFRAMES_FFPROBE_PATH=\"$RUNTIME_BIN/ffprobe\"",
     "export PRODUCER_HEADLESS_SHELL_PATH=\"$BROWSER\"",
     "export HYPERFRAMES_BROWSER_PATH=\"$BROWSER\"",
+    "[ -x \"$BIN_DIR/koubo-clip-runtime\" ] || { printf '%s\\n' 'koubo-clip: managed CLI runtime is missing or not executable' >&2; exit 126; }",
     "exec \"$BIN_DIR/koubo-clip-runtime\" \"$@\"",
     "",
   ].join("\n");
+}
+
+function shellLauncherDirectorySource(variable: string, label: string): string[] {
+  return [
+    "case $0 in",
+    "  */*) KOUBO_LAUNCHER_PATH=$0 ;;",
+    `  *) KOUBO_LAUNCHER_PATH=$(command -v "$0" 2>/dev/null) || { printf '%s\\n' 'koubo-clip: unable to locate the packaged ${label}' >&2; exit 127; } ;;`,
+    "esac",
+    "case $KOUBO_LAUNCHER_PATH in",
+    "  */*) KOUBO_LAUNCHER_DIR=${KOUBO_LAUNCHER_PATH%/*} ;;",
+    "  *) KOUBO_LAUNCHER_DIR=. ;;",
+    "esac",
+    `${variable}=$(CDPATH= cd -- "$KOUBO_LAUNCHER_DIR" 2>/dev/null && pwd -P) || { printf '%s\\n' 'koubo-clip: unable to resolve the packaged ${label} directory' >&2; exit 126; }`,
+    "unset KOUBO_LAUNCHER_PATH KOUBO_LAUNCHER_DIR",
+  ];
 }
 
 function copyRuntimeNodeModules(packageRoot: string, names: string[]): void {
