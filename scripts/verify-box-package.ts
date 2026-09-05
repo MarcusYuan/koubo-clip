@@ -23,7 +23,7 @@ try {
   verifyCliDescriptorStrict(cliDescriptor, cliTarball);
   verifySkillDescriptorStrict(skillDescriptor);
 
-  const unpackRoot = join(tmp, "unpack");
+  const unpackRoot = join(tmp, "解包 path 'single' \"double\"");
   nodeFs.mkdirSync(unpackRoot, { recursive: true });
   run("tar", ["-xzf", cliTarball, "-C", unpackRoot], root);
   run("tar", ["-xzf", skillTarball, "-C", unpackRoot], root);
@@ -32,6 +32,7 @@ try {
   const cli = join(cliRoot, "bin", "koubo-clip");
   const arbitraryCwd = join(tmp, "arbitrary-cwd");
   nodeFs.mkdirSync(arbitraryCwd, { recursive: true });
+  const packageOnlyPathEnv = { PATH: join(cliRoot, "runtime", "bin") };
 
   expect(nodeFs.existsSync(join(cliRoot, "cli-package.box.json")), "Box CLI package is missing root cli-package.box.json");
   expect(JSON.stringify(readJson(join(cliRoot, "cli-package.box.json"))) === JSON.stringify(cliDescriptor), "packaged cli-package.box.json must match the external descriptor");
@@ -56,16 +57,17 @@ try {
   verifyPackageFiles(cliRoot, cliDescriptor.files, "cli-package.box.json", ["cli-package.box.json"]);
   verifySkillDescriptor(skillRoot, skillDescriptor);
 
-  const versionOutput = runCli(cli, ["--version"], arbitraryCwd).stdout.trim();
+  const versionOutput = runCli(cli, ["--version"], arbitraryCwd, packageOnlyPathEnv).stdout.trim();
   expect(versionOutput === version, `Box CLI --version mismatch: ${versionOutput}`);
   const delivery = runCliJson(cli, ["delivery", "verify", "--json"], arbitraryCwd, {
+    ...packageOnlyPathEnv,
     KOUBO_CLIP_SKILL_ROOT: skillRoot,
   });
   expect(delivery.status === 0, `delivery verify --json failed: ${delivery.stderr || delivery.stdout}`);
   expect(delivery.json.ok === true && delivery.json.data?.distribution_kind === "box-cli", "delivery verify did not accept the split Box CLI/Skill identity");
   expect(delivery.json.data?.capability_ids?.includes("external_asr.handoff.v1"), "delivery manifest is missing external_asr.handoff.v1");
   expect(delivery.json.data?.capability_ids?.includes("box_managed_cli.v1"), "delivery manifest is missing box_managed_cli.v1");
-  const doctor = runCliJson(cli, ["doctor", "--json"], arbitraryCwd);
+  const doctor = runCliJson(cli, ["doctor", "--json"], arbitraryCwd, packageOnlyPathEnv);
   expect(doctor.status === 0, `doctor --json failed: ${doctor.stderr || doctor.stdout}`);
   expect(doctor.json.contract_version === "1", "doctor --json is missing contract_version 1");
   expect(doctor.json.ok === true, "doctor --json did not report ok=true");
@@ -73,11 +75,12 @@ try {
   expect(doctor.json.result?.version === version, "doctor result version mismatch");
   expect(["healthy", "degraded", "needs_configuration"].includes(doctor.json.result?.status), "doctor status is outside the Box contract");
 
-  const smoke = runCliJson(cli, ["test", "--json"], arbitraryCwd);
+  const smoke = runCliJson(cli, ["test", "--json"], arbitraryCwd, packageOnlyPathEnv);
   expect(smoke.status === 0, `test --json failed: ${smoke.stderr || smoke.stdout}`);
   expect(smoke.json.contract_version === "1", "test --json is missing contract_version 1");
   expect(smoke.json.ok === true, "test --json did not report ok=true");
   expect(smoke.json.result?.status === "passed", "test --json result.status must be passed");
+  const packagedRuntimeSmoke = verifyFinalPackagedBrowserRuntime(cliRoot, arbitraryCwd);
   verifyNoHostFallbackForRenderAndAsr(cliRoot, cli, arbitraryCwd);
   verifyDoctorTamperClassifications(cliRoot, cli, arbitraryCwd);
 
@@ -85,12 +88,15 @@ try {
     schema_version: "1",
     ok: true,
     version,
+    source_revision: cliDescriptor.artifact_generation.source_revision,
     cli_package: artifactIdentity(cliTarball),
     skill_package: artifactIdentity(skillTarball),
     cli_root: cliRoot,
     skill_root: skillRoot,
     doctor_status: doctor.json.result.status,
     test_status: smoke.json.result.status,
+    packaged_runtime_smoke: packagedRuntimeSmoke,
+    platform_evidence: JSON.parse(run("python3", [join(root, "scripts", "verify-box-macos-target.py"), cliRoot], root)),
   };
   const outputPath = process.env.BOX_PACKAGE_ACCEPTANCE_OUTPUT ?? `${cliTarball}.acceptance.json`;
   writeJson(outputPath, acceptance);
@@ -114,7 +120,7 @@ function verifyRuntimeLock(cliRoot: string): void {
     expect(nodeFs.statSync(fullPath).size === entry.size, `runtime-lock size mismatch: ${entry.path}`);
     expect(sha256File(fullPath) === entry.sha256, `runtime-lock hash mismatch: ${entry.path}`);
   }
-  for (const required of ["bin/koubo-clip", "bin/koubo-clip-runtime", "runtime/bin/bun", "runtime/bin/ffmpeg", "runtime/bin/ffprobe", "runtime/bin/hyperframes", "runtime/bin/chrome-headless-shell", "runtime/hyperframes.js"]) {
+  for (const required of ["bin/koubo-clip", "bin/koubo-clip-runtime", "runtime/bin/bun", "runtime/bin/ffmpeg", "runtime/bin/ffprobe", "runtime/bin/hyperframes", "runtime/bin/chrome-headless-shell", "runtime/hyperframes.js", "runtime/hyperframe.manifest.json", "runtime/hyperframe.runtime.iife.js", "runtime/hyperframe-runtime.js", "runtime/hyperframes-player.global.js", "runtime/hyperframes-slideshow.global.js", "runtime/shaderTransitionWorker.js"]) {
     expect(locked.has(required), `runtime-lock does not list ${required}`);
   }
   for (const required of ["licenses/ffmpeg-runtime/build-evidence.json", "licenses/ffmpeg-runtime/source-lock.json", "licenses/ffmpeg-runtime/build-box-ffmpeg-runtime.sh", "licenses/ffmpeg-runtime/ffmpeg-version.txt", "licenses/ffmpeg-runtime/ffprobe-version.txt", "licenses/ffmpeg-runtime/otool-ffmpeg.txt", "licenses/ffmpeg-runtime/otool-ffprobe.txt", "licenses/ffmpeg-runtime/SOURCE_OFFER.json", "THIRD_PARTY_NOTICES.md"]) {
@@ -376,6 +382,140 @@ function verifyDoctorTamperClassifications(cliRoot: string, cli: string, cwd: st
     expect(permission.json.result?.issues?.some((issue: Json) => issue.code === "MANAGED_RUNTIME_PERMISSION_MISMATCH"), "permission corruption issue code not reported");
   } finally {
     chmod(hyperframes, 0o755);
+  }
+}
+
+function verifyFinalPackagedBrowserRuntime(cliRoot: string, cwd: string): Json {
+  const runtimeBin = join(cliRoot, "runtime", "bin");
+  const hyperframes = join(runtimeBin, "hyperframes");
+  const browserLauncher = join(runtimeBin, "chrome-headless-shell");
+  const browserBinary = join(cliRoot, "runtime", "browser", "chrome-headless-shell", "mac_arm-131.0.6778.85", "chrome-headless-shell-mac-arm64", "chrome-headless-shell");
+  const ffprobe = join(runtimeBin, "ffprobe");
+  const workspace = join(cwd, "真实 render 'single' \"double\" 中文");
+  const output = join(workspace, "smoke.mp4");
+  nodeFs.mkdirSync(workspace, { recursive: true });
+  nodeFs.writeFileSync(join(workspace, "index.html"), packagedHyperframesSmokeHtml());
+
+  const browserVersion = runPackageRuntime(browserLauncher, ["--version"], cwd, runtimeBin);
+  expect(browserVersion.status === 0 && /HeadlessChrome|Chrome/i.test(browserVersion.stdout), `packaged browser wrapper failed from a special-character install path with package-only PATH: ${browserVersion.stderr || browserVersion.stdout}`);
+  const fromPath = runPackageRuntime("/bin/sh", ["-c", "exec hyperframes --help"], cwd, runtimeBin);
+  expect(fromPath.status === 0 && fromPath.stdout.includes("hyperframes"), "packaged HyperFrames lookup via package-only PATH failed");
+  const fromRelativePath = runPackageRuntime(join(".", relative(cwd, browserLauncher)), ["--version"], cwd, runtimeBin);
+  expect(fromRelativePath.status === 0, "packaged browser relative-path invocation failed");
+
+  const lint = runPackageRuntime(hyperframes, ["lint", "."], workspace, runtimeBin);
+  expect(lint.status === 0, `packaged HyperFrames lint failed: ${lint.stderr || lint.stdout}`);
+  const validate = runPackageRuntime(hyperframes, ["validate", ".", "--json", "--no-contrast", "--timeout", "1000"], workspace, runtimeBin);
+  expect(validate.status === 0, `packaged HyperFrames validate failed: ${validate.stderr || validate.stdout}`);
+  expectValidJsonOutput(validate.stdout, "packaged HyperFrames validate");
+  const render = runPackageRuntime(hyperframes, ["render", ".", "--format", "mp4", "--output", output, "--fps", "10", "--quality", "draft", "--workers", "1", "--no-browser-gpu"], workspace, runtimeBin, 180_000);
+  expect(render.status === 0, `packaged HyperFrames render failed: ${render.stderr || render.stdout}`);
+  expect(nodeFs.existsSync(output) && nodeFs.statSync(output).size > 0, "packaged HyperFrames render did not create an MP4 artifact");
+  const inspect = runPackageRuntime(hyperframes, ["inspect", ".", "--json", "--strict", "--at", "0,0.1,0.2"], workspace, runtimeBin);
+  expect(inspect.status === 0, `packaged HyperFrames inspect failed: ${inspect.stderr || inspect.stdout}`);
+  expectValidJsonOutput(inspect.stdout, "packaged HyperFrames inspect");
+
+  const probe = runPackageRuntime(ffprobe, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-show_entries", "format=duration", "-of", "json", output], workspace, runtimeBin);
+  expect(probe.status === 0, `packaged ffprobe could not inspect the HyperFrames artifact: ${probe.stderr || probe.stdout}`);
+  const probeJson = expectValidJsonOutput(probe.stdout, "packaged ffprobe");
+  expect(probeJson.streams?.[0]?.codec_name === "h264", "packaged HyperFrames smoke output is not H.264");
+  expect(probeJson.streams?.[0]?.width === 160 && probeJson.streams?.[0]?.height === 90, "packaged HyperFrames smoke dimensions are not 160x90");
+  expect(Number(probeJson.format?.duration) > 0, "packaged HyperFrames smoke duration is not positive");
+
+  const browserBackup = `${browserBinary}.missing-test`;
+  rename(browserBinary, browserBackup);
+  try {
+    const missing = runPackageRuntime(browserLauncher, ["--version"], cwd, runtimeBin);
+    expect(missing.status === 126, `missing packaged browser runtime must fail with exit 126, got ${missing.status}`);
+    expect(missing.stderr.trim() === "koubo-clip: managed Chrome Headless Shell runtime is missing or not executable", "missing packaged browser runtime did not produce the stable fail-closed diagnostic");
+  } finally {
+    rename(browserBackup, browserBinary);
+  }
+  const runtimeManifest = join(cliRoot, "runtime", "hyperframe.manifest.json");
+  rename(runtimeManifest, `${runtimeManifest}.missing-test`);
+  try {
+    const missing = runPackageRuntime(hyperframes, ["render", ".", "--output", join(workspace, "must-not-exist.mp4")], workspace, runtimeBin);
+    expect(missing.status === 126 && missing.stderr.trim() === "koubo-clip: managed HyperFrames manifest is missing", "missing packaged HyperFrames manifest must fail before cwd lookup or rendering");
+    expect(!nodeFs.existsSync(join(workspace, "must-not-exist.mp4")), "missing runtime manifest unexpectedly created an output");
+  } finally {
+    rename(`${runtimeManifest}.missing-test`, runtimeManifest);
+  }
+
+  return {
+    status: "passed",
+    package_only_path: true,
+    arbitrary_cwd: true,
+    special_character_install_path: true,
+    browser_version: browserVersion.stdout.trim(),
+    hyperframes_lint: "passed",
+    hyperframes_validate: "passed",
+    hyperframes_render: "passed",
+    hyperframes_inspect: "passed",
+    missing_browser_exit_code: 126,
+    missing_hyperframes_manifest_exit_code: 126,
+    artifact: {
+      format: "mp4",
+      codec: "h264",
+      width: 160,
+      height: 90,
+      duration_seconds: Number(probeJson.format.duration),
+      size_bytes: nodeFs.statSync(output).size,
+      sha256: sha256File(output),
+    },
+  };
+}
+
+function packagedHyperframesSmokeHtml(): string {
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; width: 160px; height: 90px; overflow: hidden; background: #111827; }
+      #stage { position: relative; width: 160px; height: 90px; overflow: hidden; color: #ffffff; background: #111827; }
+      #label { position: absolute; inset: 18px 12px; display: grid; place-items: center; border: 2px solid #38bdf8; font: 700 12px system-ui, sans-serif; }
+    </style>
+  </head>
+  <body>
+    <main id="stage" data-composition-id="smoke" data-start="0" data-duration="0.3" data-width="160" data-height="90">
+      <div id="label" class="clip" data-start="0" data-duration="0.3" data-track-index="1">Koubo Clip</div>
+    </main>
+    <script>
+      window.__timelines = window.__timelines || {};
+      const duration = 0.3;
+      let currentTime = 0;
+      const timeline = {
+        seek(value) { currentTime = Math.max(0, Math.min(duration, Number(value) || 0)); return timeline; },
+        pause() { return timeline; },
+        play() { return timeline; },
+        time() { return currentTime; },
+        duration() { return duration; },
+        totalDuration() { return duration; },
+        progress(value) { return timeline.seek((Number(value) || 0) * duration); }
+      };
+      window.__timelines.smoke = timeline;
+    </script>
+  </body>
+</html>
+`;
+}
+
+function runPackageRuntime(command: string, args: string[], cwd: string, runtimeBin: string, timeout = 60_000): { status: number; stdout: string; stderr: string } {
+  const result = spawnSync(command, args, {
+    cwd,
+    env: { ...process.env, PATH: runtimeBin, HYPERFRAMES_NO_TELEMETRY: "1", DO_NOT_TRACK: "1", PRODUCER_HEADLESS_SHELL_PATH: join(runtimeBin, "chrome-headless-shell"), HYPERFRAMES_BROWSER_PATH: join(runtimeBin, "chrome-headless-shell") },
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    timeout,
+  });
+  return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "runtime process did not complete" };
+}
+
+function expectValidJsonOutput(output: string, label: string): Json {
+  try {
+    return JSON.parse(output.trim()) as Json;
+  } catch {
+    throw new Error(`${label} did not write valid JSON: ${output.slice(0, 300)}`);
   }
 }
 

@@ -65,10 +65,10 @@ v0.0.1-rc.1
 - tag 去掉 `v` 后必须等于 `package.json` version。
 - 先通过 typecheck、tests、npm dry-run 和平台 CLI smoke check。
 - GitHub Release 必须标记为 prerelease。
-- npm 发布到 `https://registry.npmjs.org/`，但不能使用 `latest` dist-tag。
+- npm 若另行获准发布，使用独立手动 workflow，且不能使用 `latest` dist-tag。
 - `-beta.N` 使用 npm dist-tag `beta`。
 - `-rc.N` 使用 npm dist-tag `rc`。
-- GitHub Release 上传与 npm publish 完全相同的 canonical portable npm tarball及其外层摘要 metadata。
+- GitHub Release 上传已经安装态验收的 canonical portable npm tarball 及其摘要 metadata；后续独立 npm 发布必须下载并消费这些 exact bytes。
 
 ## 正式发布触发
 
@@ -85,8 +85,8 @@ v0.1.0
 - tag 去掉 `v` 后必须等于 `package.json` version。
 - 先通过 typecheck、tests、npm dry-run 和平台 CLI smoke check。
 - GitHub Release 不能标记为 prerelease。
-- GitHub Release 上传与 npm publish 完全相同的 canonical portable npm tarball及其外层摘要 metadata。
-- npm 发布到 `https://registry.npmjs.org/`，dist-tag 为 `latest`。
+- GitHub Release 上传已经安装态验收的 canonical portable npm tarball 及其摘要 metadata；后续独立 npm 发布必须下载并消费这些 exact bytes。
+- npm 若另行获准发布，使用独立手动 workflow，dist-tag 为 `latest`。
 - npm CI 发布优先使用 trusted publishing / OIDC，不把长期 npm token 写进仓库。
 
 ## npm 首次发布和认证
@@ -101,7 +101,7 @@ npm publish --access public --registry=https://registry.npmjs.org/
 ```
 
 - 如果 npm CLI 给出 `Authenticate your account at:` 链接，必须在浏览器中完成 npm passkey / security key 认证，再回到终端继续。
-- package 已经存在后，后续 tag 发布可以由 GitHub Actions 自动发布。
+- package 已经存在后，后续 npm 发布由独立的 `Publish verified npm artifact` workflow 手动选择已有 Release tag；tag push 不授权 npm 发布。
 - 临时自动发布可以使用 GitHub secret `NPM_TOKEN`，但 token 必须有 package read/write、all packages 和 Bypass 2FA 权限。
 - npm UI 创建的 granular token 可能只有短期有效期；记录到期时间，到期前轮换。
 - 长期方案优先改用 npm Trusted Publishing / OIDC。配置完成并验证后，删除 `NPM_TOKEN`。
@@ -137,3 +137,11 @@ npm publish --access public --registry=https://registry.npmjs.org/
 - `box-runtime.lock.json` 固定可复现打包输入；每个受支持 os/arch 必须有独立锁定输入和构建入口。未锁定平台必须 fail closed，不能生成声称可用的 artifact。
 - Box 安装态验收必须从任意 cwd 运行 `--version`、`delivery verify --json`、`doctor --json` 和 `test --json`，并验证 CLI/Skill 分离、逐文件 digest、runtime tamper 分类和真实 render/inspect smoke。
 - 本地 `package:box`/`verify:package:box` 只生成和验证构件；不得隐式执行 npm publish、远端 push 或 GitHub Release。
+
+## GitHub 与 npm 发布授权分离
+
+`Release` tag workflow 只发布 GitHub Release，保留全部源码、typecheck、tests、npm 安装态与 Box 真实渲染、对应源码和资产完整回读 Gate；不得包含 npm registry 写入或 npm credential。GitHub Actions 同一次 Release run 生成并验收的 14 个构件是该 Release 的 canonical bytes，本地预验候选只保留历史身份，不能混用其 digest。新 tag 必须绑定已在 main 中且通过 PR Gate 的源码，版本与 source_revision 必须一致。
+
+`Publish verified npm artifact` 只允许显式 workflow_dispatch，选择已经公开且非 draft 的 tag。它验证 tag 在 main 中、版本、下载 metadata/source/delivery/hash 和真实安装态，再调用 npm publish；不重新打包。既有版本先回读验证，不能覆盖。GitHub 发布成功不代表 npm 已发布。
+
+CI 和 Release 可以使用固定 URL、size、SHA-256 的 v0.0.20 corresponding-source bundle 填充 source cache。仅复制当前 source lock 中逐项 checksum 匹配的 archives；旧 build evidence、旧二进制和旧 delivery identity 不复用。新构建仍绑定当前源码 commit，任一 size、归档类型或摘要不匹配即失败。

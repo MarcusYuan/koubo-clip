@@ -24,6 +24,8 @@ Box CLI 的稳定入口只从包自身定位：
 bin/koubo-clip
 runtime/bin/{bun,ffmpeg,ffprobe,hyperframes,chrome-headless-shell}
 runtime/hyperframes.js
+runtime/hyperframe.manifest.json
+runtime/hyperframe.runtime.iife.js
 runtime/browser/...
 resources/hyperframes/...
 delivery-manifest.json
@@ -31,6 +33,8 @@ runtime-lock.json
 ```
 
 `runtime/bin/chrome-headless-shell` is a package-owned launcher for the pinned browser tree. It disables host audio output during deterministic headless validation, so a machine without an audio device does not turn a muted visual-only composition into a false runtime failure.
+
+HyperFrames 的浏览器运行时 manifest、IIFE、player 和 worker 资源随 CLI bundle 一起复制自锁定依赖，全部进入安装态 runtime lock。wrapper 显式指定包内 manifest，缺失时立即失败，禁止回退到 cwd 下的开发目录。
 
 运行时不依赖用户安装 Bun、Node、npx、HyperFrames、FFmpeg/ffprobe，也不从当前工作目录或 PATH 选择替代版本。缺文件属于 `needs_configuration`；已存在但摘要、布局或可执行属性损坏属于 `degraded`。render/test 不允许联网临时下载 renderer。
 
@@ -75,6 +79,8 @@ bun scripts/verify-box-package.ts
 - CLI 包不包含用户可见 Skill；
 - `--version`、`delivery verify --json` 和 `doctor --json`；
 - `test --json` 的本地、无云费用、真实 render-contract verify/bind/render/inspect 闭环；
+- 从包含空格、中文、单引号和双引号的解包路径，仅使用包内 `runtime/bin` PATH 运行 CLI、HyperFrames 和 Chrome launcher；路径解析只用 shell 内建命令；
+- 对无外部资产的最小 HTML 执行 HyperFrames lint/validate/render/inspect，关闭遥测，并用包内 ffprobe 检查实际 H.264 MP4 的尺寸和时长；缺失 Chrome 二进制必须返回 126 与明确诊断；
 - 删除或修改受管 runtime 文件后的 fail-closed doctor 分类。
 
 本流程只生成和验证本地构件，不执行 npm publish、远端 push 或 GitHub Release。
@@ -88,3 +94,7 @@ bun scripts/verify-box-package.ts
 CLI descriptor、Box metadata 和 release-gate report 都绑定这些 exact bytes 的 SHA-256。Release 页面应把 corresponding-source asset 与 Box CLI asset 放在同一 tag 下；不得改写或用其他 commit 重新生成其中任一项。
 
 Box CLI 根目录携带 `THIRD_PARTY_NOTICES.md`，并在 `licenses/ffmpeg-runtime/SOURCE_OFFER.json` 提供版本化机器可读 source offer。该 offer、`cli-package.box.json` 和 `build-evidence.json` 必须同时记录同一 `v<version>` Release 下 corresponding-source asset 的直接 HTTPS URL、size 和 SHA-256；package verification 会拒绝 URL 或 digest 任一不一致。
+
+## GitHub 发布与 npm 的关系
+
+GitHub tag workflow 完成全部 Gate 后发布本次 Actions 构建的 14 个精确构件，不自动发布 npm。Box Cloud 必须回读该 GitHub Release 的 source commit、URL、size 和 SHA-256；本地预验包不能冒充 Actions 最终 bytes。npm 使用另行明确授权的 `Publish verified npm artifact` 手动 workflow，消费相同 GitHub npm tarball，不重新打包。具体规则见 [发布和打包规则](../rules/release-packaging.md)。

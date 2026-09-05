@@ -2,7 +2,7 @@
   "manifest_version": "3",
   "id": "koubo-clip",
   "name": "Koubo Clip",
-  "version": "0.0.20",
+  "version": "0.0.21",
   "publisher": "MarcusYuan",
   "presentation": {
     "default_locale": "en",

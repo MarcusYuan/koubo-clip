@@ -35,6 +35,10 @@ jobs:
 
       - run: bun run typecheck
 
+      - run: bun test scripts/release-workflows.test.js
+
+      - run: python3 -B scripts/test-release-npm-artifact.py
+
       - run: bun run test
 
       - run: bun ./bin/koubo-clip --help
@@ -65,6 +69,13 @@ jobs:
           node-version: 22
 
       - run: bun install --frozen-lockfile
+
+      - name: Prepare verified corresponding-source cache
+        env:
+          KOUBO_FFMPEG_SOURCE_CACHE: ${{ runner.temp }}/koubo-ffmpeg-source-cache
+        run: |
+          python3 scripts/prepare-ffmpeg-source-cache.py
+          echo "KOUBO_FFMPEG_SOURCE_CACHE=$KOUBO_FFMPEG_SOURCE_CACHE" >> "$GITHUB_ENV"
 
       - name: Build audited FFmpeg runtime and corresponding-source bundle
         env:

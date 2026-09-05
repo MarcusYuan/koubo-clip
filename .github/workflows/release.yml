@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -79,6 +78,10 @@ jobs:
 
       - run: bun run typecheck
 
+      - run: bun test scripts/release-workflows.test.js
+
+      - run: python3 -B scripts/test-release-npm-artifact.py
+
       - run: bun run test
 
       - run: bun ./bin/koubo-clip --help
@@ -118,6 +121,13 @@ jobs:
           node-version: 22
 
       - run: bun install --frozen-lockfile
+
+      - name: Prepare verified corresponding-source cache
+        env:
+          KOUBO_FFMPEG_SOURCE_CACHE: ${{ runner.temp }}/koubo-ffmpeg-source-cache
+        run: |
+          python3 scripts/prepare-ffmpeg-source-cache.py
+          echo "KOUBO_FFMPEG_SOURCE_CACHE=$KOUBO_FFMPEG_SOURCE_CACHE" >> "$GITHUB_ENV"
 
       - name: Build audited FFmpeg runtime and corresponding-source bundle
         env:
@@ -199,8 +209,6 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org/
 
-      - run: npm install -g npm@^11.5.1
-
       - uses: actions/download-artifact@v4
         with:
           name: koubo-clip-${{ needs.validate.outputs.version }}-canonical-npm
@@ -230,7 +238,7 @@ jobs:
           set -euo pipefail
 
           source_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/koubo-clip-ffmpeg-sources-${VERSION}.tar.xz"
-          notes=$(printf 'npm: koubo-clip@%s (%s)\n\nBox managed FFmpeg corresponding source: %s\n' "$VERSION" "$NPM_TAG" "$source_url")
+          notes=$(printf 'GitHub artifacts: koubo-clip@%s (%s); npm registry publication is a separate explicit workflow\n\nBox managed FFmpeg corresponding source: %s\n' "$VERSION" "$NPM_TAG" "$source_url")
           assets=(
             "dist/box/koubo-clip-ffmpeg-sources-${VERSION}.tar.xz"
             "dist/box/koubo-clip-ffmpeg-source-lock-${VERSION}.json"
@@ -331,68 +339,6 @@ jobs:
 
           echo "was_draft=${release_is_draft}" >> "$GITHUB_OUTPUT"
 
-      - id: npm_auth
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "mode=token" >> "$GITHUB_OUTPUT"
-          else
-            echo "mode=trusted" >> "$GITHUB_OUTPUT"
-          fi
-
-      - id: npm_status
-        env:
-          VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          if npm view "koubo-clip@${VERSION}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish npm with token
-        id: publish_with_token
-        if: steps.npm_status.outputs.exists != 'true' && steps.npm_auth.outputs.mode == 'token'
-        continue-on-error: true
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_TAG: ${{ needs.validate.outputs.npm_tag }}
-        run: npm publish "./dist/koubo-clip-${{ needs.validate.outputs.version }}.tgz" --access public --tag "$NPM_TAG" --provenance
-
-      - name: Publish npm with trusted publishing
-        if: steps.npm_status.outputs.exists != 'true' && (steps.npm_auth.outputs.mode == 'trusted' || steps.publish_with_token.outcome == 'failure')
-        env:
-          NPM_TAG: ${{ needs.validate.outputs.npm_tag }}
-        run: npm publish "./dist/koubo-clip-${{ needs.validate.outputs.version }}.tgz" --access public --tag "$NPM_TAG"
-
-      - name: Verify registry-installed package
-        env:
-          VERSION: ${{ needs.validate.outputs.version }}
-          EXPECTED_SOURCE_REVISION: ${{ github.sha }}
-        run: |
-          mkdir -p dist/registry
-          for attempt in {1..12}; do
-            if npm pack "koubo-clip@${VERSION}" --pack-destination dist/registry --registry=https://registry.npmjs.org/; then
-              break
-            fi
-            if [ "$attempt" = 12 ]; then
-              echo "koubo-clip@${VERSION} was not visible from the npm registry after 12 attempts" >&2
-              exit 1
-            fi
-            sleep 5
-          done
-          bun run verify:package:npm "dist/registry/koubo-clip-${VERSION}.tgz"
-          node <<'NODE'
-          const fs = require("fs");
-          const crypto = require("crypto");
-          const version = process.env.VERSION;
-          const digest = path => crypto.createHash("sha256").update(fs.readFileSync(path)).digest("hex");
-          const canonical = digest(`dist/koubo-clip-${version}.tgz`);
-          const registry = digest(`dist/registry/koubo-clip-${version}.tgz`);
-          if (canonical !== registry) throw new Error(`registry tarball digest mismatch: ${canonical} != ${registry}`);
-          NODE
-
       - name: Publish verified GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -405,7 +351,7 @@ jobs:
           verify_root="$RUNNER_TEMP/github-release-final-verification"
           asset_manifest="$RUNNER_TEMP/github-release-assets-${VERSION}.txt"
           source_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/koubo-clip-ffmpeg-sources-${VERSION}.tar.xz"
-          expected_notes=$(printf 'npm: koubo-clip@%s (%s)\n\nBox managed FFmpeg corresponding source: %s\n' "$VERSION" "$NPM_TAG" "$source_url")
+          expected_notes=$(printf 'GitHub artifacts: koubo-clip@%s (%s); npm registry publication is a separate explicit workflow\n\nBox managed FFmpeg corresponding source: %s\n' "$VERSION" "$NPM_TAG" "$source_url")
           mkdir -p "$verify_root"
           remote_tag_rows=$(git ls-remote --tags origin "refs/tags/${TAG}" "refs/tags/${TAG}^{}")
           remote_tag_sha=$(awk -v ref="refs/tags/${TAG}^{}" '$2 == ref { print $1 }' <<< "$remote_tag_rows")
@@ -440,3 +386,5 @@ jobs:
             gh release edit "$TAG" --draft=false
           fi
           test "$(gh release view "$TAG" --json isDraft --jq '.isDraft')" = "false"
+          printf 'verified_tag=%s source_revision=%s asset_count=%s\n' "$TAG" "$GITHUB_SHA" "$expected_count"
+          cat "$asset_manifest"
