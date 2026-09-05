@@ -134,4 +134,3 @@ jobs:
           const registry = digest(`dist/registry/koubo-clip-${version}.tgz`);
           if (canonical !== registry) throw new Error(`registry tarball digest mismatch: ${canonical} != ${registry}`);
           NODE
-
